@@ -1,0 +1,17 @@
+syntax = "proto3";
+
+option go_package = "./pkt";
+
+message Msg {
+  Op op = 1;
+  bytes value = 2;
+  string key = 3;
+  // hashes of addr:port for now
+  repeated bytes via = 4;
+}
+
+enum Op {
+  WRITE = 0;
+  READ = 1;
+}
+
