@@ -201,25 +201,25 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	}
 }
 
-func exclude(nodes, exclude []netip.AddrPort) []netip.AddrPort {
-	if len(nodes) == 0 {
+func exclude(have, exclude []netip.AddrPort) []netip.AddrPort {
+	if len(have) == 0 {
 		return nil
 	}
 	if len(exclude) == 0 {
-		return nodes
+		return have
 	}
-	result := make([]netip.AddrPort, 0, len(nodes))
-	for _, n := range nodes {
-		if !in(n, exclude) {
-			result = append(result, n)
+	result := make([]netip.AddrPort, 0, len(have))
+	for _, h := range have {
+		if !in(h, exclude) {
+			result = append(result, h)
 		}
 	}
 	return result
 }
 
-func in(n netip.AddrPort, haystack []netip.AddrPort) bool {
-	for _, x := range haystack {
-		if x.Compare(n) == 0 {
+func in(m netip.AddrPort, n []netip.AddrPort) bool {
+	for _, nn := range n {
+		if nn.Compare(m) == 0 {
 			return true
 		}
 	}
