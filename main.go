@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"time"
 
 	"github.com/inneslabs/dave/pkt"
 	"google.golang.org/protobuf/proto"
@@ -20,17 +21,18 @@ var bootstrapAddrs = []string{
 }
 
 type app struct {
-	data       map[string][]byte
-	conn       *net.UDPConn
-	nodes      []netip.AddrPort
-	listenPort uint32
+	data     map[string]*pkt.Kv
+	conn     *net.UDPConn
+	addrs    []netip.AddrPort
+	lstnPort uint32
 }
 
 func main() {
-	listenPortFlag := flag.Int("p", 2034, "listen port")
-	listenFlag := flag.Bool("l", false, "listen")
+	lstnPortFlag := flag.Int("p", 2034, "listen port")
+	lstnFlag := flag.Bool("l", false, "listen")
 	flag.Parse()
-	laddr, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", *listenPortFlag))
+	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
+	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
 	if err != nil {
 		panic(err)
 	}
@@ -39,19 +41,19 @@ func main() {
 		panic(err)
 	}
 	a := &app{
-		data:       make(map[string][]byte),
-		conn:       conn,
-		nodes:      make([]netip.AddrPort, 0, len(bootstrapAddrs)),
-		listenPort: uint32(*listenPortFlag),
+		data:     make(map[string]*pkt.Kv),
+		conn:     conn,
+		addrs:    make([]netip.AddrPort, 0, len(bootstrapAddrs)),
+		lstnPort: uint32(*lstnPortFlag),
 	}
-	go a.listen()
-	for _, b := range bootstrapAddrs {
-		ap, err := netip.ParseAddrPort(b)
+	for _, bastr := range bootstrapAddrs {
+		bap, err := netip.ParseAddrPort(bastr)
 		if err != nil {
 			panic(err)
 		}
-		a.nodes = append(a.nodes, ap)
+		a.addrs = append(a.addrs, bap)
 	}
+	go a.listen()
 	if flag.NArg() > 0 {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
@@ -65,9 +67,12 @@ func main() {
 			val := flag.Arg(2)
 			// SET fanout is 2, but send only to one node before fanout
 			a.gossip(1, &pkt.Msg{
-				Op:  pkt.Op_SET,
-				Key: key,
-				Val: []byte(val),
+				Op: pkt.Op_SET,
+				Kv: &pkt.Kv{
+					Key: key,
+					Val: []byte(val),
+					T:   time.Now().UnixMilli(),
+				},
 			}, nil)
 		case "GET":
 			if flag.NArg() < 2 {
@@ -77,17 +82,20 @@ func main() {
 			key := flag.Arg(1)
 			d, ok := a.data[key]
 			if ok {
-				fmt.Printf("%s: %s\n", key, string(d))
+				fmt.Printf("%s: %s\n", key, string(d.Val))
 				return
 			}
 			fmt.Println("no local copy")
-			a.gossip(1, &pkt.Msg{ // GET fanout is 1
-				Op:  pkt.Op_GET,
-				Key: key,
+			// protocol does not fanout GET (fanout=1)
+			a.gossip(1, &pkt.Msg{
+				Op: pkt.Op_GET,
+				Kv: &pkt.Kv{
+					Key: key,
+				},
 			}, nil)
 		}
 	}
-	if *listenFlag {
+	if *lstnFlag {
 		<-make(chan struct{})
 	}
 }
@@ -110,27 +118,29 @@ func (a *app) listen() {
 			msg.Route = make([]string, 1)
 			msg.Route[0] = raddrPort.String()
 		}
+		log(msg)
 		switch msg.Op {
+		case pkt.Op_VAL:
+			a.set(msg.Kv)
 		case pkt.Op_SET:
+			a.set(msg.Kv)
+			// forward with fanout=2
 			a.forward(2, msg, raddrPort)
-			a.data[msg.Key] = msg.Val
 		case pkt.Op_GET:
-			d, ok := a.data[msg.Key]
+			kv, ok := a.data[msg.Kv.Key]
 			if !ok {
 				fmt.Println("not found, forwarding to 1")
 				a.forward(1, msg, raddrPort)
 			} else {
-				fmt.Printf("found %q: %s\n", msg.Key, string(d))
+				fmt.Printf("found %q: %s\n", kv.Key, string(kv.Val))
 				payload, err := proto.Marshal(&pkt.Msg{
-					Op:  pkt.Op_VAL,
-					Key: msg.Key,
-					Val: d,
+					Op: pkt.Op_VAL,
+					Kv: kv,
 				})
 				if err != nil {
 					panic(err)
 				}
-				// we know that all addrs in route do not yet have the key
-				// send to each addr in route, starting with the first
+				// no addr in route has kv yet, send it
 				for _, j := range msg.Route {
 					addr, err := netip.ParseAddrPort(j)
 					if err != nil {
@@ -141,18 +151,25 @@ func (a *app) listen() {
 						panic(err)
 					}
 				}
-
 			}
-		case pkt.Op_VAL:
-			a.data[msg.Key] = msg.Val
-			log(msg, "got val, stored")
+		}
+	}
+}
+
+func (a *app) set(m *pkt.Kv) {
+	s, ok := a.data[m.Key]
+	if !ok || m.T > s.T {
+		fmt.Printf("set %s: %s\n", m.Key, string(m.Val))
+		a.data[m.Key] = &pkt.Kv{
+			Key: m.Key,
+			Val: m.Val,
+			T:   m.T,
 		}
 	}
 }
 
 func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	if len(msg.Route) >= 3 { // limit to 3 hops
-		fmt.Printf("msg already has 3 hops, don't forward\n")
 		return
 	}
 	route := make([]netip.AddrPort, 0, len(msg.Route)+1)
@@ -167,18 +184,16 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	a.gossip(fanout, &pkt.Msg{
 		Route: append(msg.Route, raddrPort.String()),
 		Op:    msg.Op,
-		Val:   msg.Val,
-		Key:   msg.Key,
+		Kv:    msg.Kv,
 	}, route)
 }
 
 func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
-	log(msg, "gossip")
 	payload, err := proto.Marshal(msg)
 	if err != nil {
 		panic(err)
 	}
-	next := exclude(a.nodes, route)
+	next := exclude(a.addrs, route)
 	sent := 0
 	tried := make(map[string]struct{}, 0)
 	for sent < fanout && len(tried) < len(next) {
@@ -193,6 +208,7 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 			panic(err)
 		}
 		sent++
+		fmt.Println("sent to", addr.String())
 	}
 }
 
@@ -221,10 +237,14 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 	return false
 }
 
-func log(msg *pkt.Msg, txt string) {
+func log(msg *pkt.Msg) {
 	src := "nil"
 	if len(msg.Route) > 0 {
 		src = msg.Route[0]
 	}
-	fmt.Printf("%s :: %s :: %s :: %s // %s \n", src, msg.Op, msg.Key, msg.Val, txt)
+	if msg.Kv != nil {
+		fmt.Printf("%s :: %s :: %s :: %s\n", src, msg.Op, msg.Kv.Key, msg.Kv.Val)
+	} else {
+		fmt.Printf("%s :: %s\n", src, msg.Op)
+	}
 }
