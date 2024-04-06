@@ -129,17 +129,23 @@ func (a *app) listen() {
 				if err != nil {
 					panic(err)
 				}
-				src, err := netip.ParseAddrPort(msg.Route[0])
-				if err != nil {
-					panic(err)
+				// we know that all addrs in route do not yet have the key
+				// send to each addr in route, starting with the first
+				for _, j := range msg.Route {
+					addr, err := netip.ParseAddrPort(j)
+					if err != nil {
+						panic(err)
+					}
+					_, err = a.conn.WriteToUDPAddrPort(payload, addr)
+					if err != nil {
+						panic(err)
+					}
 				}
-				_, err = a.conn.WriteToUDPAddrPort(payload, src)
-				if err != nil {
-					panic(err)
-				}
+
 			}
 		case pkt.Op_VAL:
-			fmt.Printf("%s: %s\n", msg.Key, string(msg.Val))
+			a.data[msg.Key] = msg.Val
+			log(msg, "got val, stored")
 		}
 	}
 }
@@ -167,11 +173,7 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 }
 
 func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
-	src := "nil"
-	if len(route) > 0 {
-		src = route[0].String()
-	}
-	fmt.Printf("%s :: %s :: %s :: %s\n", src, msg.Op, msg.Key, msg.Val)
+	log(msg, "gossip")
 	payload, err := proto.Marshal(msg)
 	if err != nil {
 		panic(err)
@@ -217,4 +219,12 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 		}
 	}
 	return false
+}
+
+func log(msg *pkt.Msg, txt string) {
+	src := "nil"
+	if len(msg.Route) > 0 {
+		src = msg.Route[0]
+	}
+	fmt.Printf("%s :: %s :: %s :: %s // %s \n", src, msg.Op, msg.Key, msg.Val, txt)
 }
