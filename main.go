@@ -13,7 +13,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var bootstrapAddr = []string{
+var bootstrapAddrs = []string{
 	"127.0.0.1:1231",
 	"127.0.0.1:1232",
 	"127.0.0.1:1233",
@@ -43,13 +43,13 @@ func main() {
 	a := &app{
 		data:       make(map[string][]byte),
 		conn:       conn,
-		nodes:      make([]netip.AddrPort, 0, len(bootstrapAddr)),
+		nodes:      make([]netip.AddrPort, 0, len(bootstrapAddrs)),
 		listenPort: uint32(*listenPortFlag),
 	}
 	go func() {
 		a.listen()
 	}()
-	for _, b := range bootstrapAddr {
+	for _, b := range bootstrapAddrs {
 		ap, err := netip.ParseAddrPort(b)
 		if err != nil {
 			panic(err)
@@ -67,7 +67,7 @@ func main() {
 			}
 			key := flag.Arg(1)
 			value := flag.Arg(2)
-			// SET fanout is 2
+			// SET fanout is 2, but send only to one node before fanout
 			a.gossip(1, &pkt.Msg{
 				Op:    pkt.Op_SET,
 				Key:   key,
