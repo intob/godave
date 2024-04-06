@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/netip"
 	"strings"
-	"sync"
 
 	"github.com/inneslabs/dave/pkt"
 	"google.golang.org/protobuf/proto"
@@ -39,16 +38,13 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	defer conn.Close()
 	a := &app{
 		data:       make(map[string][]byte),
 		conn:       conn,
 		nodes:      make([]netip.AddrPort, 0, len(bootstrapAddrs)),
 		listenPort: uint32(*listenPortFlag),
 	}
-	go func() {
-		a.listen()
-	}()
+	go a.listen()
 	for _, b := range bootstrapAddrs {
 		ap, err := netip.ParseAddrPort(b)
 		if err != nil {
@@ -60,18 +56,18 @@ func main() {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
-		case "SET": // gossip the data
+		case "SET":
 			if flag.NArg() < 3 {
 				fmt.Println("SET failed: correct usage is set <key> <value>")
 				return
 			}
 			key := flag.Arg(1)
-			value := flag.Arg(2)
+			val := flag.Arg(2)
 			// SET fanout is 2, but send only to one node before fanout
 			a.gossip(1, &pkt.Msg{
-				Op:    pkt.Op_SET,
-				Key:   key,
-				Value: []byte(value),
+				Op:  pkt.Op_SET,
+				Key: key,
+				Val: []byte(val),
 			}, nil)
 		case "GET":
 			if flag.NArg() < 2 {
@@ -84,63 +80,56 @@ func main() {
 				fmt.Printf("%s: %s\n", key, string(d))
 				return
 			}
-			fmt.Println("no local copy, gossip Op_GET")
-			// GET fanout is 1
-			a.gossip(1, &pkt.Msg{
+			fmt.Println("no local copy")
+			a.gossip(1, &pkt.Msg{ // GET fanout is 1
 				Op:  pkt.Op_GET,
 				Key: key,
 			}, nil)
 		}
 	}
 	if *listenFlag {
-		var wg sync.WaitGroup
-		wg.Add(1)
-		wg.Wait()
+		<-make(chan struct{})
 	}
 }
 
 func (a *app) listen() {
 	fmt.Printf("listening on %s\n", a.conn.LocalAddr().String())
+	defer a.conn.Close()
 	for {
 		buf := make([]byte, 2048)
 		n, raddrPort, err := a.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			panic(err)
 		}
-		//fmt.Println(raddr, string(buf[:n]))
-		p := &pkt.Msg{}
-		err = proto.Unmarshal(buf[:n], p)
+		msg := &pkt.Msg{}
+		err = proto.Unmarshal(buf[:n], msg)
 		if err != nil {
 			panic(err)
 		}
-		if len(p.Route) == 0 {
-			p.Route = make([]string, 1)
-			p.Route[0] = raddrPort.String()
+		if len(msg.Route) == 0 {
+			msg.Route = make([]string, 1)
+			msg.Route[0] = raddrPort.String()
 		}
-		fmt.Printf("%s :: %s :: %s :: %s\n", p.Op, p.Key, string(p.Value), p.Route[0])
-		switch p.Op {
+		switch msg.Op {
 		case pkt.Op_SET:
-			a.forward(2, p, raddrPort)
-			// store
-			a.data[p.Key] = p.Value
+			a.forward(2, msg, raddrPort)
+			a.data[msg.Key] = msg.Val
 		case pkt.Op_GET:
-			// try to read
-			d, ok := a.data[p.Key]
+			d, ok := a.data[msg.Key]
 			if !ok {
 				fmt.Println("not found, forwarding to 1")
-				a.forward(1, p, raddrPort)
+				a.forward(1, msg, raddrPort)
 			} else {
-				fmt.Printf("found %q: %s\n", p.Key, string(d))
-				// reply with val
+				fmt.Printf("found %q: %s\n", msg.Key, string(d))
 				payload, err := proto.Marshal(&pkt.Msg{
-					Op:    pkt.Op_VAL,
-					Key:   p.Key,
-					Value: d,
+					Op:  pkt.Op_VAL,
+					Key: msg.Key,
+					Val: d,
 				})
 				if err != nil {
 					panic(err)
 				}
-				src, err := netip.ParseAddrPort(p.Route[0])
+				src, err := netip.ParseAddrPort(msg.Route[0])
 				if err != nil {
 					panic(err)
 				}
@@ -150,19 +139,18 @@ func (a *app) listen() {
 				}
 			}
 		case pkt.Op_VAL:
-			// got value!
-			fmt.Printf("%s: %s\n", p.Key, string(p.Value))
+			fmt.Printf("%s: %s\n", msg.Key, string(msg.Val))
 		}
 	}
 }
 
-func (a *app) forward(fanout int, p *pkt.Msg, raddrPort netip.AddrPort) {
-	if len(p.Route) >= 3 { // limit to 3 hops
-		//fmt.Printf("msg already has 3 hops, don't forward")
+func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
+	if len(msg.Route) >= 3 { // limit to 3 hops
+		fmt.Printf("msg already has 3 hops, don't forward\n")
 		return
 	}
-	route := make([]netip.AddrPort, 0, len(p.Route)+1)
-	for _, a := range p.Route {
+	route := make([]netip.AddrPort, 0, len(msg.Route)+1)
+	for _, a := range msg.Route {
 		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
 			panic(err)
@@ -171,14 +159,19 @@ func (a *app) forward(fanout int, p *pkt.Msg, raddrPort netip.AddrPort) {
 	}
 	route = append(route, raddrPort)
 	a.gossip(fanout, &pkt.Msg{
-		Route: append(p.Route, raddrPort.String()),
-		Op:    p.Op,
-		Value: p.Value,
-		Key:   p.Key,
+		Route: append(msg.Route, raddrPort.String()),
+		Op:    msg.Op,
+		Val:   msg.Val,
+		Key:   msg.Key,
 	}, route)
 }
 
 func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
+	src := "nil"
+	if len(route) > 0 {
+		src = route[0].String()
+	}
+	fmt.Printf("%s :: %s :: %s :: %s\n", src, msg.Op, msg.Key, msg.Val)
 	payload, err := proto.Marshal(msg)
 	if err != nil {
 		panic(err)
@@ -186,7 +179,7 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	next := exclude(a.nodes, route)
 	sent := 0
 	tried := make(map[string]struct{}, 0)
-	for sent < fanout && len(tried) < len(a.nodes) { // fanout = 2
+	for sent < fanout && len(tried) < len(next) {
 		addr := next[rand.Intn(len(next))]
 		_, alreadyTried := tried[addr.String()]
 		if alreadyTried {
@@ -201,20 +194,20 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	}
 }
 
-func exclude(have, exclude []netip.AddrPort) []netip.AddrPort {
-	if len(have) == 0 {
+func exclude(from, not []netip.AddrPort) []netip.AddrPort {
+	if len(from) == 0 {
 		return nil
 	}
-	if len(exclude) == 0 {
-		return have
+	if len(not) == 0 {
+		return from
 	}
-	result := make([]netip.AddrPort, 0, len(have))
-	for _, h := range have {
-		if !in(h, exclude) {
-			result = append(result, h)
+	out := make([]netip.AddrPort, 0, len(from)-len(not))
+	for _, m := range from {
+		if !in(m, not) {
+			out = append(out, m)
 		}
 	}
-	return result
+	return out
 }
 
 func in(m netip.AddrPort, n []netip.AddrPort) bool {
