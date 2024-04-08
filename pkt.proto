@@ -5,7 +5,7 @@ option go_package = "./pkt";
 message Msg {
   Op op = 1;
   optional Kv kv = 6;
-  repeated string route = 3; // set of addr:port
+  repeated string addrs = 3; // set of addr:port
 }
 
 message Kv {
@@ -18,5 +18,7 @@ enum Op {
   SET = 0;
   GET = 1;
   VAL = 2;
+  GETADDR = 3;
+  ADDR = 4;
 }
 

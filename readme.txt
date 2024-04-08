@@ -1,0 +1,1 @@
+Simple eventually-constistent distributed key-value store.

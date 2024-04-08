@@ -13,24 +13,24 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-var bootstrapAddrs = []string{
-	"127.0.0.1:1231",
-	"127.0.0.1:1232",
-	"127.0.0.1:1233",
-	"127.0.0.1:1234",
-}
-
 type app struct {
 	data     map[string]*pkt.Kv
 	conn     *net.UDPConn
-	addrs    []netip.AddrPort
+	addrs    map[string]*addr
 	lstnPort uint32
+}
+
+type addr struct {
+	ip netip.AddrPort
+	//seen time.Time
 }
 
 func main() {
 	lstnPortFlag := flag.Int("p", 2034, "listen port")
 	lstnFlag := flag.Bool("l", false, "listen")
+	bootstrapFlag := flag.String("bootstrap", "", "bootstrap addr")
 	flag.Parse()
+	bootstrap := *bootstrapFlag
 	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
 	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
 	if err != nil {
@@ -43,21 +43,27 @@ func main() {
 	a := &app{
 		data:     make(map[string]*pkt.Kv),
 		conn:     conn,
-		addrs:    make([]netip.AddrPort, 0, len(bootstrapAddrs)),
+		addrs:    make(map[string]*addr, 1),
 		lstnPort: uint32(*lstnPortFlag),
 	}
-	for _, bastr := range bootstrapAddrs {
-		bap, err := netip.ParseAddrPort(bastr)
+	if bootstrap != "" {
+		bap, err := netip.ParseAddrPort(bootstrap)
 		if err != nil {
 			panic(err)
 		}
-		a.addrs = append(a.addrs, bap)
+		a.addrs[bootstrap] = &addr{
+			ip: bap,
+		}
 	}
 	go a.listen()
 	if flag.NArg() > 0 {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
+		case "GETADDR":
+			a.gossip(1, &pkt.Msg{
+				Op: pkt.Op_GETADDR,
+			}, nil)
 		case "SET":
 			if flag.NArg() < 3 {
 				fmt.Println("SET failed: correct usage is set <key> <value>")
@@ -114,12 +120,29 @@ func (a *app) listen() {
 		if err != nil {
 			panic(err)
 		}
-		if len(msg.Route) == 0 {
-			msg.Route = make([]string, 1)
-			msg.Route[0] = raddrPort.String()
+		if len(msg.Addrs) == 0 {
+			msg.Addrs = make([]string, 1)
+			msg.Addrs[0] = raddrPort.String()
 		}
 		log(msg)
 		switch msg.Op {
+		case pkt.Op_GETADDR:
+			a.giveAddr(raddrPort)
+		case pkt.Op_ADDR:
+			for _, addrstr := range msg.Addrs {
+				pap, err := netip.ParseAddrPort(addrstr)
+				if err != nil {
+					panic(err)
+				}
+				_, ok := a.addrs[addrstr]
+				if !ok {
+					fmt.Println("added", addrstr)
+					a.addrs[addrstr] = &addr{
+						ip: pap,
+					}
+				}
+
+			}
 		case pkt.Op_VAL:
 			a.set(msg.Kv)
 		case pkt.Op_SET:
@@ -129,7 +152,6 @@ func (a *app) listen() {
 		case pkt.Op_GET:
 			kv, ok := a.data[msg.Kv.Key]
 			if !ok {
-				fmt.Println("not found, forwarding to 1")
 				a.forward(1, msg, raddrPort)
 			} else {
 				fmt.Printf("found %q: %s\n", kv.Key, string(kv.Val))
@@ -140,8 +162,8 @@ func (a *app) listen() {
 				if err != nil {
 					panic(err)
 				}
-				// no addr in route has kv yet, send it
-				for _, j := range msg.Route {
+				// no addr in addrs has kv yet, send it
+				for _, j := range msg.Addrs {
 					addr, err := netip.ParseAddrPort(j)
 					if err != nil {
 						panic(err)
@@ -153,6 +175,38 @@ func (a *app) listen() {
 				}
 			}
 		}
+	}
+}
+
+// send 2 random addresses, excluding raddr
+func (a *app) giveAddr(raddr netip.AddrPort) {
+	addrs := a.list(len(a.addrs)-1, func(ad *addr) bool {
+		return ad.ip.Compare(raddr) != 0
+	})
+	n := 2
+	if len(addrs) < 2 {
+		n = len(addrs)
+	}
+	ans := make([]string, 0, n)
+	if len(addrs) > 1 {
+		r := addrs[rand.Intn(len(addrs))]
+		ans = append(ans, r.String())
+		addrs = exclude(addrs, []netip.AddrPort{r})
+	}
+	if len(addrs) > 0 {
+		r := addrs[rand.Intn(len(addrs))]
+		ans = append(ans, r.String())
+	}
+	payload, err := proto.Marshal(&pkt.Msg{
+		Op:    pkt.Op_ADDR,
+		Addrs: ans,
+	})
+	if err != nil {
+		panic(err)
+	}
+	_, err = a.conn.WriteToUDPAddrPort(payload, raddr)
+	if err != nil {
+		panic(err)
 	}
 }
 
@@ -169,11 +223,11 @@ func (a *app) set(m *pkt.Kv) {
 }
 
 func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
-	if len(msg.Route) >= 3 { // limit to 3 hops
+	if len(msg.Addrs) >= 3 {
 		return
 	}
-	route := make([]netip.AddrPort, 0, len(msg.Route)+1)
-	for _, a := range msg.Route {
+	route := make([]netip.AddrPort, 0, len(msg.Addrs)+1)
+	for _, a := range msg.Addrs {
 		ap, err := netip.ParseAddrPort(a)
 		if err != nil {
 			panic(err)
@@ -182,7 +236,7 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	}
 	route = append(route, raddrPort)
 	a.gossip(fanout, &pkt.Msg{
-		Route: append(msg.Route, raddrPort.String()),
+		Addrs: append(msg.Addrs, raddrPort.String()),
 		Op:    msg.Op,
 		Kv:    msg.Kv,
 	}, route)
@@ -193,23 +247,38 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	if err != nil {
 		panic(err)
 	}
-	next := exclude(a.addrs, route)
-	sent := 0
-	tried := make(map[string]struct{}, 0)
-	for sent < fanout && len(tried) < len(next) {
+	cap := len(a.addrs) - len(route)
+	if cap < 0 {
+		cap = 0
+	}
+	next := a.list(cap, func(ad *addr) bool {
+		return !in(ad.ip, route)
+	})
+	var sent int
+	sentTo := make(map[string]struct{}, 0)
+	for sent < fanout && len(sentTo) < len(next) {
 		addr := next[rand.Intn(len(next))]
-		_, alreadyTried := tried[addr.String()]
-		if alreadyTried {
+		_, alreadySentTo := sentTo[addr.String()]
+		if alreadySentTo {
 			continue
 		}
-		tried[addr.String()] = struct{}{}
+		sentTo[addr.String()] = struct{}{}
 		_, err := a.conn.WriteToUDPAddrPort(payload, addr)
 		if err != nil {
 			panic(err)
 		}
 		sent++
-		fmt.Println("sent to", addr.String())
 	}
+}
+
+func (a *app) list(cap int, add func(ad *addr) bool) []netip.AddrPort {
+	addrs := make([]netip.AddrPort, 0, cap)
+	for _, addr := range a.addrs {
+		if add(addr) {
+			addrs = append(addrs, addr.ip)
+		}
+	}
+	return addrs
 }
 
 func exclude(from, not []netip.AddrPort) []netip.AddrPort {
@@ -239,8 +308,8 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 
 func log(msg *pkt.Msg) {
 	src := "nil"
-	if len(msg.Route) > 0 {
-		src = msg.Route[0]
+	if len(msg.Addrs) > 0 {
+		src = msg.Addrs[0]
 	}
 	if msg.Kv != nil {
 		fmt.Printf("%s :: %s :: %s :: %s\n", src, msg.Op, msg.Kv.Key, msg.Kv.Val)
