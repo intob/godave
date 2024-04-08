@@ -21,8 +21,8 @@ type app struct {
 }
 
 type addr struct {
-	ip netip.AddrPort
-	//seen time.Time
+	ip   netip.AddrPort
+	seen time.Time
 }
 
 func main() {
@@ -55,6 +55,7 @@ func main() {
 		}
 	}
 	go a.listen()
+	go a.pingAddrs()
 	if flag.NArg() > 0 {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
@@ -109,7 +110,7 @@ func (a *app) listen() {
 	defer a.conn.Close()
 	for {
 		buf := make([]byte, 2048)
-		n, raddrPort, err := a.conn.ReadFromUDPAddrPort(buf)
+		n, raddr, err := a.conn.ReadFromUDPAddrPort(buf)
 		if err != nil {
 			panic(err)
 		}
@@ -120,12 +121,16 @@ func (a *app) listen() {
 		}
 		if len(msg.Addrs) == 0 {
 			msg.Addrs = make([]string, 1)
-			msg.Addrs[0] = raddrPort.String()
+			msg.Addrs[0] = raddr.String()
+		}
+		r, ok := a.addrs[raddr.String()]
+		if ok {
+			r.seen = time.Now()
 		}
 		log(msg)
 		switch msg.Op {
 		case pkt.Op_GETADDR:
-			a.giveAddr(raddrPort)
+			a.giveAddr(raddr)
 		case pkt.Op_ADDR:
 			for _, addrstr := range msg.Addrs {
 				pap, err := netip.ParseAddrPort(addrstr)
@@ -139,17 +144,16 @@ func (a *app) listen() {
 						ip: pap,
 					}
 				}
-
 			}
 		case pkt.Op_VAL:
 			a.set(msg.Kv)
 		case pkt.Op_SET:
 			a.set(msg.Kv)
-			a.forward(2, msg, raddrPort) // forward SET, fanout=2
+			a.forward(2, msg, raddr) // forward SET, fanout=2
 		case pkt.Op_GET:
 			kv, ok := a.data[msg.Kv.Key]
 			if !ok {
-				a.forward(1, msg, raddrPort) // forward GET, fanout=1
+				a.forward(1, msg, raddr) // forward GET, fanout=1
 			} else {
 				fmt.Printf("found %q: %s\n", kv.Key, string(kv.Val))
 				payload, err := proto.Marshal(&pkt.Msg{
@@ -175,8 +179,47 @@ func (a *app) listen() {
 	}
 }
 
+func (a *app) pingAddrs() {
+	last := time.Now()
+	for {
+		if time.Since(last) < 10*time.Second {
+			time.Sleep(10*time.Second - time.Since(last))
+		}
+		last = time.Now()
+		addr := a.addrToPing()
+		if addr != nil {
+			payload, err := proto.Marshal(&pkt.Msg{
+				Op: pkt.Op_GETADDR,
+			})
+			if err != nil {
+				panic(err)
+			}
+			_, err = a.conn.WriteToUDPAddrPort(payload, addr.ip)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Println("pinged", addr.ip.String())
+		}
+	}
+}
+
+func (a *app) addrToPing() *addr {
+	var quiet *addr
+	for _, r := range a.addrs {
+		if quiet == nil {
+			quiet = r
+		} else if r.seen.Before(quiet.seen) {
+			quiet = r
+		}
+	}
+	return quiet
+}
+
 // send 2 random addresses, excluding raddr
 func (a *app) giveAddr(raddr netip.AddrPort) {
+	if len(a.addrs) == 0 {
+		return
+	}
 	addrs := a.list(len(a.addrs)-1, func(ad *addr) bool {
 		return ad.ip.Compare(raddr) != 0
 	})
