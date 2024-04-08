@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const PING_PERIOD = 2 * time.Second
+const PING_PERIOD = time.Second
 
 type app struct {
 	lstnPort uint32
@@ -235,7 +235,7 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 		return
 	}
 	addrs := a.list(len(a.addrs)-1, func(ad *addr) bool {
-		return ad.ip.Compare(raddr) != 0
+		return ad.ip.Compare(raddr) != 0 && ad.pinged.Load() == 0
 	})
 	ans := make([]netip.AddrPort, 0)
 	for len(ans) < 2 && len(ans) < len(addrs)-1 { // -1 for raddr
