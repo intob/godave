@@ -15,9 +15,9 @@ message Kv {
 }
 
 enum Op {
-  SET = 0;
-  GET = 1;
-  VAL = 2;
+  SETKV = 0;
+  GETKV = 1;
+  KV = 2;
   GETADDR = 3;
   ADDR = 4;
 }

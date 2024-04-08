@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}",
-            "args": ["-l", "-p", "1231"]
+            "args": ["-l", "-p", "1233", "-b", "127.0.0.1:1234", "set", "test", "joey"]
         }
     ]
 }

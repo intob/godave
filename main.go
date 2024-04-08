@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	PING_PERIOD    = time.Second
-	DROP_THRESHOLD = 8
+	PING_PERIOD      = time.Second
+	DROP_THRESHOLD   = 8
+	FORWARD_DISTANCE = 4
 )
 
 type app struct {
@@ -62,29 +63,30 @@ func main() {
 			panic(err)
 		}
 	}
+	time.Sleep(10 * time.Millisecond) // wait to bootstrap
 	if flag.NArg() > 0 {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
-		case "SET":
+		case pkt.Op_SETKV.String():
 			if flag.NArg() < 3 {
-				fmt.Println("SET failed: correct usage is set <key> <value>")
+				fmt.Println("SETKV failed: correct usage is setkv <key> <value>")
 				return
 			}
 			key := flag.Arg(1)
 			val := flag.Arg(2)
 			// SET fanout is 2, but send only to one node before fanout
 			a.gossip(1, &pkt.Msg{
-				Op: pkt.Op_SET,
+				Op: pkt.Op_SETKV,
 				Kv: &pkt.Kv{
 					Key: key,
 					Val: []byte(val),
 					T:   time.Now().UnixMilli(),
 				},
 			}, nil)
-		case "GET":
+		case pkt.Op_GETKV.String():
 			if flag.NArg() < 2 {
-				fmt.Println("GET failed: correct usage is read <key>")
+				fmt.Println("GETKV failed: correct usage is getkv <key>")
 				return
 			}
 			key := flag.Arg(1)
@@ -93,9 +95,8 @@ func main() {
 				fmt.Printf("%s: %s\n", key, string(d.Val))
 				return
 			}
-			fmt.Println("no local copy")
 			a.gossip(1, &pkt.Msg{
-				Op: pkt.Op_GET,
+				Op: pkt.Op_GETKV,
 				Kv: &pkt.Kv{
 					Key: key,
 				},
@@ -153,18 +154,18 @@ func (a *app) listen() {
 					}
 				}
 			}
-		case pkt.Op_VAL:
-			a.set(msg.Kv)
-		case pkt.Op_SET:
+		case pkt.Op_KV:
+			a.set(msg.Kv) // don't forward
+		case pkt.Op_SETKV:
 			a.set(msg.Kv)
 			a.forward(2, msg, raddr) // forward SET, fanout=2
-		case pkt.Op_GET:
+		case pkt.Op_GETKV:
 			kv, ok := a.data[msg.Kv.Key]
 			if !ok {
 				a.forward(1, msg, raddr) // forward GET, fanout=1
 			} else {
 				payload := marshal(&pkt.Msg{
-					Op: pkt.Op_VAL,
+					Op: pkt.Op_KV,
 					Kv: kv,
 				})
 				// no addr in addrs has kv yet, send to each
@@ -258,6 +259,7 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 }
 
 func (a *app) set(m *pkt.Kv) {
+	fmt.Printf("set m:%+v\n", m.Key)
 	s, ok := a.data[m.Key]
 	if !ok || m.T > s.T {
 		a.data[m.Key] = &pkt.Kv{
@@ -269,7 +271,7 @@ func (a *app) set(m *pkt.Kv) {
 }
 
 func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
-	if len(msg.Addrs) >= 4 {
+	if len(msg.Addrs) >= FORWARD_DISTANCE {
 		return
 	}
 	route := make([]netip.AddrPort, 0, len(msg.Addrs)+1)
