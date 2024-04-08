@@ -14,25 +14,28 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const PING_PERIOD = time.Second
+const (
+	PING_PERIOD    = time.Second
+	DROP_THRESHOLD = 8
+)
 
 type app struct {
 	lstnPort uint32
 	conn     *net.UDPConn
-	addrs    map[string]*addr
+	peers    map[string]*peer
 	data     map[string]*pkt.Kv
 }
 
-type addr struct {
-	ip     netip.AddrPort
-	seen   time.Time
-	pinged atomic.Uint32
+type peer struct {
+	ip    netip.AddrPort
+	seen  time.Time
+	nping atomic.Uint32
 }
 
 func main() {
 	lstnPortFlag := flag.Int("p", 2034, "listen port")
 	lstnFlag := flag.Bool("l", false, "listen")
-	bootstapFlag := flag.String("b", "", "bootstrap addr")
+	bootstapFlag := flag.String("b", "", "bootstrap peer")
 	flag.Parse()
 	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
 	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
@@ -46,12 +49,12 @@ func main() {
 	a := &app{
 		data:     make(map[string]*pkt.Kv),
 		conn:     conn,
-		addrs:    make(map[string]*addr, 1),
+		peers:    make(map[string]*peer, 1),
 		lstnPort: uint32(*lstnPortFlag),
 	}
 	go a.listen()
-	go a.pingAddrs()
-	go a.dropUnresponsive()
+	go a.pingPeers()
+	go a.dropPeers()
 	if *bootstapFlag != "" {
 		payload := marshal(&pkt.Msg{Op: pkt.Op_GETADDR})
 		_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(*bootstapFlag))
@@ -122,30 +125,30 @@ func (a *app) listen() {
 			msg.Addrs = make([]string, 1)
 			msg.Addrs[0] = raddr.String()
 		}
-		r, ok := a.addrs[raddr.String()]
+		r, ok := a.peers[raddr.String()]
 		if ok {
 			r.seen = time.Now()
 		} else {
-			r = &addr{
+			r = &peer{
 				ip:   raddr,
 				seen: time.Now(),
 			}
-			a.addrs[raddr.String()] = r
+			a.peers[raddr.String()] = r
 		}
 		log(msg)
 		switch msg.Op {
 		case pkt.Op_GETADDR:
 			a.giveAddr(raddr)
 		case pkt.Op_ADDR:
-			if r.pinged.Load() > 0 {
-				r.pinged.Store(0)
+			if r.nping.Load() > 0 {
+				r.nping.Store(0)
 			}
 			for _, addrstr := range msg.Addrs {
 				pap := parseAddr(addrstr)
-				_, ok := a.addrs[addrstr]
+				_, ok := a.peers[addrstr]
 				if !ok {
 					fmt.Printf("added :%s\n", addrstr)
-					a.addrs[addrstr] = &addr{
+					a.peers[addrstr] = &peer{
 						ip: pap,
 					}
 				}
@@ -176,34 +179,30 @@ func (a *app) listen() {
 	}
 }
 
-func (a *app) dropUnresponsive() {
+func (a *app) dropPeers() {
 	last := time.Now()
 	for {
 		if time.Since(last) < PING_PERIOD {
 			time.Sleep(PING_PERIOD - time.Since(last))
 		}
 		last = time.Now()
-		nunresponsive := 0
-		for adstr, ad := range a.addrs {
-			if ad.pinged.Load() > 8 {
-				nunresponsive++
-				fmt.Printf("%s has not responded for 8 pings\n", adstr)
+		for adstr, ad := range a.peers {
+			if ad.nping.Load() > DROP_THRESHOLD {
+				delete(a.peers, adstr)
+				fmt.Printf("%s has not responded for 8 pings, dropped\n", adstr)
 			}
-		}
-		if nunresponsive > 0 {
-			fmt.Printf("unresponsive: %d of %d\n", nunresponsive, len(a.addrs))
 		}
 	}
 }
 
-func (a *app) pingAddrs() {
+func (a *app) pingPeers() {
 	last := time.Now()
 	for {
 		if time.Since(last) < PING_PERIOD {
 			time.Sleep(PING_PERIOD - time.Since(last))
 		}
 		last = time.Now()
-		addr := a.addrToPing()
+		addr := a.peerToPing()
 		if addr != nil {
 			payload := marshal(&pkt.Msg{
 				Op: pkt.Op_GETADDR,
@@ -212,14 +211,14 @@ func (a *app) pingAddrs() {
 			if err != nil {
 				panic(err)
 			}
-			addr.pinged.Add(1)
+			addr.nping.Add(1)
 		}
 	}
 }
 
-func (a *app) addrToPing() *addr {
-	var quiet *addr
-	for _, r := range a.addrs {
+func (a *app) peerToPing() *peer {
+	var quiet *peer
+	for _, r := range a.peers {
 		if quiet == nil {
 			quiet = r
 		} else if r.seen.Before(quiet.seen) {
@@ -231,11 +230,11 @@ func (a *app) addrToPing() *addr {
 
 // send 2 random addresses, excluding raddr
 func (a *app) giveAddr(raddr netip.AddrPort) {
-	if len(a.addrs) == 0 {
+	if len(a.peers) == 0 {
 		return
 	}
-	addrs := a.list(len(a.addrs)-1, func(ad *addr) bool {
-		return ad.ip.Compare(raddr) != 0 && ad.pinged.Load() == 0
+	addrs := a.list(len(a.peers)-1, func(p *peer) bool {
+		return p.ip.Compare(raddr) != 0 && p.nping.Load() == 0
 	})
 	ans := make([]netip.AddrPort, 0)
 	for len(ans) < 2 && len(ans) < len(addrs)-1 { // -1 for raddr
@@ -287,12 +286,12 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 
 func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	payload := marshal(msg)
-	cap := len(a.addrs) - len(route)
+	cap := len(a.peers) - len(route)
 	if cap < 0 {
 		cap = 0
 	}
-	next := a.list(cap, func(ad *addr) bool {
-		return !in(ad.ip, route)
+	next := a.list(cap, func(p *peer) bool {
+		return !in(p.ip, route)
 	})
 	var sent int
 	sentTo := make(map[string]struct{}, 0)
@@ -327,11 +326,11 @@ func marshal(m *pkt.Msg) []byte {
 	return b
 }
 
-func (a *app) list(cap int, add func(ad *addr) bool) []netip.AddrPort {
+func (a *app) list(cap int, add func(p *peer) bool) []netip.AddrPort {
 	addrs := make([]netip.AddrPort, 0, cap)
-	for _, addr := range a.addrs {
-		if add(addr) {
-			addrs = append(addrs, addr.ip)
+	for _, p := range a.peers {
+		if add(p) {
+			addrs = append(addrs, p.ip)
 		}
 	}
 	return addrs
