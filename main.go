@@ -28,9 +28,8 @@ type addr struct {
 func main() {
 	lstnPortFlag := flag.Int("p", 2034, "listen port")
 	lstnFlag := flag.Bool("l", false, "listen")
-	bootstrapFlag := flag.String("bootstrap", "", "bootstrap addr")
+	bootstapFlag := flag.String("b", "", "bootstrap addr")
 	flag.Parse()
-	bootstrap := *bootstrapFlag
 	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
 	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
 	if err != nil {
@@ -46,12 +45,12 @@ func main() {
 		addrs:    make(map[string]*addr, 1),
 		lstnPort: uint32(*lstnPortFlag),
 	}
-	if bootstrap != "" {
-		bap, err := netip.ParseAddrPort(bootstrap)
+	if *bootstapFlag != "" {
+		bap, err := netip.ParseAddrPort(*bootstapFlag)
 		if err != nil {
 			panic(err)
 		}
-		a.addrs[bootstrap] = &addr{
+		a.addrs[*bootstapFlag] = &addr{
 			ip: bap,
 		}
 	}
@@ -92,7 +91,6 @@ func main() {
 				return
 			}
 			fmt.Println("no local copy")
-			// protocol does not fanout GET (fanout=1)
 			a.gossip(1, &pkt.Msg{
 				Op: pkt.Op_GET,
 				Kv: &pkt.Kv{
@@ -147,12 +145,11 @@ func (a *app) listen() {
 			a.set(msg.Kv)
 		case pkt.Op_SET:
 			a.set(msg.Kv)
-			// forward with fanout=2
-			a.forward(2, msg, raddrPort)
+			a.forward(2, msg, raddrPort) // forward SET, fanout=2
 		case pkt.Op_GET:
 			kv, ok := a.data[msg.Kv.Key]
 			if !ok {
-				a.forward(1, msg, raddrPort)
+				a.forward(1, msg, raddrPort) // forward GET, fanout=1
 			} else {
 				fmt.Printf("found %q: %s\n", kv.Key, string(kv.Val))
 				payload, err := proto.Marshal(&pkt.Msg{
@@ -162,7 +159,7 @@ func (a *app) listen() {
 				if err != nil {
 					panic(err)
 				}
-				// no addr in addrs has kv yet, send it
+				// no addr in addrs has kv yet, send to each
 				for _, j := range msg.Addrs {
 					addr, err := netip.ParseAddrPort(j)
 					if err != nil {
