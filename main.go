@@ -7,22 +7,26 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/inneslabs/dave/pkt"
 	"google.golang.org/protobuf/proto"
 )
 
+const PING_PERIOD = 2 * time.Second
+
 type app struct {
-	data     map[string]*pkt.Kv
+	lstnPort uint32
 	conn     *net.UDPConn
 	addrs    map[string]*addr
-	lstnPort uint32
+	data     map[string]*pkt.Kv
 }
 
 type addr struct {
-	ip   netip.AddrPort
-	seen time.Time
+	ip     netip.AddrPort
+	seen   time.Time
+	pinged atomic.Uint32
 }
 
 func main() {
@@ -45,25 +49,20 @@ func main() {
 		addrs:    make(map[string]*addr, 1),
 		lstnPort: uint32(*lstnPortFlag),
 	}
+	go a.listen()
+	go a.pingAddrs()
+	go a.dropUnresponsive()
 	if *bootstapFlag != "" {
-		bap, err := netip.ParseAddrPort(*bootstapFlag)
+		payload := marshal(&pkt.Msg{Op: pkt.Op_GETADDR})
+		_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(*bootstapFlag))
 		if err != nil {
 			panic(err)
 		}
-		a.addrs[*bootstapFlag] = &addr{
-			ip: bap,
-		}
 	}
-	go a.listen()
-	go a.pingAddrs()
 	if flag.NArg() > 0 {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
-		case "GETADDR":
-			a.gossip(1, &pkt.Msg{
-				Op: pkt.Op_GETADDR,
-			}, nil)
 		case "SET":
 			if flag.NArg() < 3 {
 				fmt.Println("SET failed: correct usage is set <key> <value>")
@@ -126,20 +125,26 @@ func (a *app) listen() {
 		r, ok := a.addrs[raddr.String()]
 		if ok {
 			r.seen = time.Now()
+		} else {
+			r = &addr{
+				ip:   raddr,
+				seen: time.Now(),
+			}
+			a.addrs[raddr.String()] = r
 		}
 		log(msg)
 		switch msg.Op {
 		case pkt.Op_GETADDR:
 			a.giveAddr(raddr)
 		case pkt.Op_ADDR:
+			if r.pinged.Load() > 0 {
+				r.pinged.Store(0)
+			}
 			for _, addrstr := range msg.Addrs {
-				pap, err := netip.ParseAddrPort(addrstr)
-				if err != nil {
-					panic(err)
-				}
+				pap := parseAddr(addrstr)
 				_, ok := a.addrs[addrstr]
 				if !ok {
-					fmt.Println("added", addrstr)
+					fmt.Printf("added :%s\n", addrstr)
 					a.addrs[addrstr] = &addr{
 						ip: pap,
 					}
@@ -155,21 +160,13 @@ func (a *app) listen() {
 			if !ok {
 				a.forward(1, msg, raddr) // forward GET, fanout=1
 			} else {
-				fmt.Printf("found %q: %s\n", kv.Key, string(kv.Val))
-				payload, err := proto.Marshal(&pkt.Msg{
+				payload := marshal(&pkt.Msg{
 					Op: pkt.Op_VAL,
 					Kv: kv,
 				})
-				if err != nil {
-					panic(err)
-				}
 				// no addr in addrs has kv yet, send to each
 				for _, j := range msg.Addrs {
-					addr, err := netip.ParseAddrPort(j)
-					if err != nil {
-						panic(err)
-					}
-					_, err = a.conn.WriteToUDPAddrPort(payload, addr)
+					_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(j))
 					if err != nil {
 						panic(err)
 					}
@@ -179,26 +176,43 @@ func (a *app) listen() {
 	}
 }
 
+func (a *app) dropUnresponsive() {
+	last := time.Now()
+	for {
+		if time.Since(last) < PING_PERIOD {
+			time.Sleep(PING_PERIOD - time.Since(last))
+		}
+		last = time.Now()
+		nunresponsive := 0
+		for adstr, ad := range a.addrs {
+			if ad.pinged.Load() > 8 {
+				nunresponsive++
+				fmt.Printf("%s has not responded for 8 pings\n", adstr)
+			}
+		}
+		if nunresponsive > 0 {
+			fmt.Printf("unresponsive: %d of %d\n", nunresponsive, len(a.addrs))
+		}
+	}
+}
+
 func (a *app) pingAddrs() {
 	last := time.Now()
 	for {
-		if time.Since(last) < 10*time.Second {
-			time.Sleep(10*time.Second - time.Since(last))
+		if time.Since(last) < PING_PERIOD {
+			time.Sleep(PING_PERIOD - time.Since(last))
 		}
 		last = time.Now()
 		addr := a.addrToPing()
 		if addr != nil {
-			payload, err := proto.Marshal(&pkt.Msg{
+			payload := marshal(&pkt.Msg{
 				Op: pkt.Op_GETADDR,
 			})
+			_, err := a.conn.WriteToUDPAddrPort(payload, addr.ip)
 			if err != nil {
 				panic(err)
 			}
-			_, err = a.conn.WriteToUDPAddrPort(payload, addr.ip)
-			if err != nil {
-				panic(err)
-			}
-			fmt.Println("pinged", addr.ip.String())
+			addr.pinged.Add(1)
 		}
 	}
 }
@@ -223,28 +237,22 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 	addrs := a.list(len(a.addrs)-1, func(ad *addr) bool {
 		return ad.ip.Compare(raddr) != 0
 	})
-	n := 2
-	if len(addrs) < 2 {
-		n = len(addrs)
-	}
-	ans := make([]string, 0, n)
-	if len(addrs) > 1 {
+	ans := make([]netip.AddrPort, 0)
+	for len(ans) < 2 && len(ans) < len(addrs)-1 { // -1 for raddr
 		r := addrs[rand.Intn(len(addrs))]
-		ans = append(ans, r.String())
-		addrs = exclude(addrs, []netip.AddrPort{r})
+		if !in(r, ans) && r.Compare(raddr) != 0 {
+			ans = append(ans, r)
+		}
 	}
-	if len(addrs) > 0 {
-		r := addrs[rand.Intn(len(addrs))]
-		ans = append(ans, r.String())
+	ansstr := make([]string, len(ans))
+	for i, ad := range ans {
+		ansstr[i] = ad.String()
 	}
-	payload, err := proto.Marshal(&pkt.Msg{
+	payload := marshal(&pkt.Msg{
 		Op:    pkt.Op_ADDR,
-		Addrs: ans,
+		Addrs: ansstr,
 	})
-	if err != nil {
-		panic(err)
-	}
-	_, err = a.conn.WriteToUDPAddrPort(payload, raddr)
+	_, err := a.conn.WriteToUDPAddrPort(payload, raddr)
 	if err != nil {
 		panic(err)
 	}
@@ -253,7 +261,6 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 func (a *app) set(m *pkt.Kv) {
 	s, ok := a.data[m.Key]
 	if !ok || m.T > s.T {
-		fmt.Printf("set %s: %s\n", m.Key, string(m.Val))
 		a.data[m.Key] = &pkt.Kv{
 			Key: m.Key,
 			Val: m.Val,
@@ -263,16 +270,12 @@ func (a *app) set(m *pkt.Kv) {
 }
 
 func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
-	if len(msg.Addrs) >= 3 {
+	if len(msg.Addrs) >= 4 {
 		return
 	}
 	route := make([]netip.AddrPort, 0, len(msg.Addrs)+1)
-	for _, a := range msg.Addrs {
-		ap, err := netip.ParseAddrPort(a)
-		if err != nil {
-			panic(err)
-		}
-		route = append(route, ap)
+	for _, addr := range msg.Addrs {
+		route = append(route, parseAddr(addr))
 	}
 	route = append(route, raddrPort)
 	a.gossip(fanout, &pkt.Msg{
@@ -283,10 +286,7 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 }
 
 func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
-	payload, err := proto.Marshal(msg)
-	if err != nil {
-		panic(err)
-	}
+	payload := marshal(msg)
 	cap := len(a.addrs) - len(route)
 	if cap < 0 {
 		cap = 0
@@ -311,6 +311,22 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	}
 }
 
+func parseAddr(addr string) netip.AddrPort {
+	bap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		panic(err)
+	}
+	return bap
+}
+
+func marshal(m *pkt.Msg) []byte {
+	b, err := proto.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 func (a *app) list(cap int, add func(ad *addr) bool) []netip.AddrPort {
 	addrs := make([]netip.AddrPort, 0, cap)
 	for _, addr := range a.addrs {
@@ -319,22 +335,6 @@ func (a *app) list(cap int, add func(ad *addr) bool) []netip.AddrPort {
 		}
 	}
 	return addrs
-}
-
-func exclude(from, not []netip.AddrPort) []netip.AddrPort {
-	if len(from) == 0 {
-		return nil
-	}
-	if len(not) == 0 {
-		return from
-	}
-	out := make([]netip.AddrPort, 0, len(from)-len(not))
-	for _, m := range from {
-		if !in(m, not) {
-			out = append(out, m)
-		}
-	}
-	return out
 }
 
 func in(m netip.AddrPort, n []netip.AddrPort) bool {
