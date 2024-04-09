@@ -21,11 +21,11 @@ import (
 )
 
 const (
-	FANOUT_GETDAT    = 1
+	FANOUT_GETDAT    = 2
 	FANOUT_SETDAT    = 2
 	FORWARD_DISTANCE = 6
 	NADDR            = 3
-	PING_PERIOD      = 100 * time.Millisecond
+	PING_PERIOD      = time.Second
 	DROP_THRESHOLD   = 8
 	DIFFICULTY_MIN   = 3
 	BOOTSTRAP_MSG    = 8
@@ -119,7 +119,7 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			a.gossip(FANOUT_GETDAT*2, &pkt.Msg{
+			a.gossip(FANOUT_GETDAT, &pkt.Msg{
 				Op:  pkt.Op_GETDAT,
 				Key: key,
 			}, nil)
