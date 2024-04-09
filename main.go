@@ -172,10 +172,7 @@ func (a *app) listen() <-chan *pkt.Msg {
 			if err != nil {
 				fmt.Println(err)
 			} else {
-				select {
-				case msgch <- msg:
-				default:
-				}
+				msgch <- msg
 			}
 		}
 	}()
