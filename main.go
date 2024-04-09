@@ -458,13 +458,13 @@ func getPrefixLen(key []byte) int {
 }
 
 func timeToBytes(t time.Time) []byte {
-	millis := t.UnixNano() / 1000000 // Convert nanoseconds to milliseconds
+	milli := t.UnixNano() / 1000000
 	bytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(millis))
+	binary.BigEndian.PutUint64(bytes, uint64(milli))
 	return bytes
 }
 
 func bytesToTime(bytes []byte) time.Time {
-	millis := int64(binary.BigEndian.Uint64(bytes))
-	return time.Unix(0, millis*1000000) // Convert milliseconds to nanoseconds
+	milli := int64(binary.BigEndian.Uint64(bytes))
+	return time.Unix(0, milli*1000000)
 }
