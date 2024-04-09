@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	PING_PERIOD      = time.Second
+	PING_PERIOD      = 100 * time.Millisecond
 	DROP_THRESHOLD   = 8
 	FORWARD_DISTANCE = 4
 )
@@ -44,7 +44,6 @@ type dat struct {
 
 func main() {
 	lstnPortFlag := flag.Int("p", 2034, "listen port")
-	lstnFlag := flag.Bool("l", false, "listen")
 	bootstapFlag := flag.String("b", "", "bootstrap peer")
 	flag.Parse()
 	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
@@ -56,13 +55,14 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	fmt.Printf("listening on %s :: ", conn.LocalAddr().String())
 	a := &app{
 		lstnPort: uint32(*lstnPortFlag),
 		conn:     conn,
 		peers:    make(map[string]*peer, 1),
 		data:     make(map[string]*dat),
 	}
-	go a.listen()
+	msgs := a.listen()
 	go a.pingPeers()
 	go a.dropPeers()
 	if *bootstapFlag != "" {
@@ -72,9 +72,17 @@ func main() {
 			panic(err)
 		}
 	}
-	time.Sleep(10 * time.Millisecond) // wait to bootstrap
+	var n int
+	fmt.Print("bootstrap")
+	for range msgs {
+		n++
+		fmt.Printf(".")
+		if n >= 3 {
+			fmt.Print("\n")
+			break
+		}
+	}
 	if flag.NArg() > 0 {
-		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
 		case pkt.Op_SETDAT.String():
@@ -115,87 +123,111 @@ func main() {
 			}, nil)
 		}
 	}
-	if *lstnFlag {
-		<-make(chan struct{})
+	for m := range msgs {
+		switch m.Op {
+		case pkt.Op_DAT:
+			fmt.Printf("DAT :: %s\n", string(m.Chunk.Val))
+		case pkt.Op_SETDAT:
+			fmt.Printf("SETDAT :: %x\n", m.Key)
+		}
 	}
 }
 
-func (a *app) listen() {
-	fmt.Printf("listening on %s\n", a.conn.LocalAddr().String())
-	defer a.conn.Close()
-	for {
-		buf := make([]byte, 2048)
-		n, raddr, err := a.conn.ReadFromUDPAddrPort(buf)
-		if err != nil {
-			panic(err)
-		}
-		msg := &pkt.Msg{}
-		err = proto.Unmarshal(buf[:n], msg)
-		if err != nil {
-			panic(err)
-		}
-		if len(msg.Addrs) == 0 {
-			msg.Addrs = make([]string, 1)
-			msg.Addrs[0] = raddr.String()
-		}
-		r, ok := a.peers[raddr.String()]
-		if ok {
-			r.seen = time.Now()
-		} else {
-			r = &peer{
-				ip:   raddr,
-				seen: time.Now(),
+func (a *app) listen() <-chan *pkt.Msg {
+	msgch := make(chan *pkt.Msg, 1)
+	go func() {
+		defer a.conn.Close()
+		for {
+			buf := make([]byte, 2048)
+			n, raddr, err := a.conn.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				panic(err)
 			}
-			a.peers[raddr.String()] = r
-		}
-		log(msg)
-		switch msg.Op {
-		case pkt.Op_GETADDR:
-			a.giveAddr(raddr)
-		case pkt.Op_ADDR:
-			if r.nping.Load() > 0 {
-				r.nping.Store(0)
+			msg := &pkt.Msg{}
+			err = proto.Unmarshal(buf[:n], msg)
+			if err != nil {
+				panic(err)
 			}
-			for _, addrstr := range msg.Addrs {
-				pap := parseAddr(addrstr)
-				_, ok := a.peers[addrstr]
-				if !ok {
-					fmt.Printf("added :%s\n", addrstr)
-					a.peers[addrstr] = &peer{
-						ip: pap,
-					}
+			if len(msg.Addrs) == 0 {
+				msg.Addrs = make([]string, 1)
+				msg.Addrs[0] = raddr.String()
+			}
+			r, ok := a.peers[raddr.String()]
+			if ok {
+				r.seen = time.Now()
+			} else {
+				r = &peer{
+					ip:   raddr,
+					seen: time.Now(),
+				}
+				a.peers[raddr.String()] = r
+			}
+			err = a.handleMsg(msg, r)
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				select {
+				case msgch <- msg:
+				default:
 				}
 			}
-		case pkt.Op_DAT: // don't forward, just store
-			if checkWork(msg) >= 2 { // difficulty required? hmm
-				a.set(msg)
-			}
-		case pkt.Op_SETDAT:
-			if checkWork(msg) >= 2 {
-				a.set(msg)
-				a.forward(2, msg, raddr) // forward SET, fanout=2
-			}
-		case pkt.Op_GETDAT:
-			dat, ok := a.data[hex.EncodeToString(msg.Key)]
+		}
+	}()
+	return msgch
+}
+
+func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
+	switch msg.Op {
+	case pkt.Op_GETADDR:
+		a.giveAddr(r.ip)
+	case pkt.Op_ADDR:
+		if r.nping.Load() > 0 {
+			r.nping.Store(0)
+		}
+		for _, addrstr := range msg.Addrs {
+			pap := parseAddr(addrstr)
+			_, ok := a.peers[addrstr]
 			if !ok {
-				a.forward(1, msg, raddr) // forward GET, fanout=1
-			} else {
-				payload := marshal(&pkt.Msg{
-					Op:    pkt.Op_DAT,
-					Chunk: dat.chunk,
-					Nonce: dat.nonce,
-					Key:   msg.Key,
-				})
-				// no addr in addrs has chunk yet, send to each
-				for _, j := range msg.Addrs {
-					_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(j))
-					if err != nil {
-						panic(err)
-					}
+				//fmt.Printf("added :%s\n", addrstr)
+				a.peers[addrstr] = &peer{
+					ip: pap,
+				}
+			}
+		}
+	case pkt.Op_DAT: // don't forward, just store
+		if checkWork(msg) >= 2 { // difficulty required? hmm
+			a.set(msg)
+		} else {
+			return fmt.Errorf("work is invalid: key: %x", msg.Key)
+		}
+	case pkt.Op_SETDAT:
+		if checkWork(msg) >= 2 {
+			a.set(msg)
+			a.forward(2, msg, r.ip) // forward SET, fanout=2
+		} else {
+			return fmt.Errorf("work is invalid: key: %x", msg.Key)
+		}
+	case pkt.Op_GETDAT:
+		dat, ok := a.data[hex.EncodeToString(msg.Key)]
+		if !ok {
+			a.forward(1, msg, r.ip) // forward GET, fanout=1
+		} else {
+			payload := marshal(&pkt.Msg{
+				Op:    pkt.Op_DAT,
+				Chunk: dat.chunk,
+				Nonce: dat.nonce,
+				Key:   msg.Key,
+			})
+			// no addr in addrs has chunk yet, send to each
+			for _, j := range msg.Addrs {
+				_, err := a.conn.WriteToUDPAddrPort(payload, parseAddr(j))
+				if err != nil {
+					panic(err)
 				}
 			}
 		}
 	}
+	return nil
 }
 
 func (a *app) dropPeers() {
@@ -208,7 +240,6 @@ func (a *app) dropPeers() {
 		for adstr, ad := range a.peers {
 			if ad.nping.Load() > DROP_THRESHOLD {
 				delete(a.peers, adstr)
-				fmt.Printf("%s has not responded for 8 pings, dropped\n", adstr)
 			}
 		}
 	}
@@ -217,10 +248,6 @@ func (a *app) dropPeers() {
 func (a *app) pingPeers() {
 	last := time.Now()
 	for {
-		if time.Since(last) < PING_PERIOD {
-			time.Sleep(PING_PERIOD - time.Since(last))
-		}
-		last = time.Now()
 		addr := a.peerToPing()
 		if addr != nil {
 			payload := marshal(&pkt.Msg{
@@ -232,6 +259,10 @@ func (a *app) pingPeers() {
 			}
 			addr.nping.Add(1)
 		}
+		if time.Since(last) < PING_PERIOD {
+			time.Sleep(PING_PERIOD - time.Since(last))
+		}
+		last = time.Now()
 	}
 }
 
@@ -359,18 +390,6 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 		}
 	}
 	return false
-}
-
-func log(msg *pkt.Msg) {
-	src := "nil"
-	if len(msg.Addrs) > 0 {
-		src = msg.Addrs[0]
-	}
-	if msg.Chunk != nil {
-		fmt.Printf("%s :: %s :: %x :: %s\n", src, msg.Op, msg.Key, msg.Chunk.Val)
-	} else {
-		fmt.Printf("%s :: %s\n", src, msg.Op)
-	}
 }
 
 // work computes a key of the given difficulty
