@@ -3,11 +3,12 @@ syntax = "proto3";
 option go_package = "./pkt";
 
 message Msg {
-  Op op = 1;
-  repeated string addrs = 2;
-  optional bytes val = 3;
-  optional bytes key = 4;
-  optional bytes nonce = 5;
+  Op op = 1; // operation
+  repeated string addrs = 2; // set of addr:port
+  optional bytes val = 3; // anything
+  optional bytes time = 4; // big-endian unix milli
+  optional bytes nonce = 5; // 32B random
+  optional bytes key = 6; // 32B sha256
 }
 
 enum Op {

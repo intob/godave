@@ -4,10 +4,11 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"math/rand"
+	mrand "math/rand"
 	"net"
 	"net/netip"
 	"strings"
@@ -22,12 +23,12 @@ import (
 const (
 	FANOUT_GETDAT    = 1
 	FANOUT_SETDAT    = 2
-	FORWARD_DISTANCE = 5
+	FORWARD_DISTANCE = 6
 	NADDR            = 3
-	PING_PERIOD      = 250 * time.Millisecond
+	PING_PERIOD      = 100 * time.Millisecond
 	DROP_THRESHOLD   = 8
 	DIFFICULTY_MIN   = 3
-	BOOTSTRAP_MSG    = 5
+	BOOTSTRAP_MSG    = 8
 )
 
 type app struct {
@@ -45,6 +46,7 @@ type peer struct {
 
 type dat struct {
 	val   []byte
+	time  []byte
 	nonce []byte
 }
 
@@ -117,10 +119,12 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			a.gossip(FANOUT_GETDAT, &pkt.Msg{
+			a.gossip(FANOUT_GETDAT*2, &pkt.Msg{
 				Op:  pkt.Op_GETDAT,
 				Key: key,
 			}, nil)
+		default:
+			panic("command not recognized")
 		}
 	}
 	for m := range msgs {
@@ -129,6 +133,8 @@ func main() {
 			fmt.Printf("DAT :: %s\n", string(m.Val))
 		case pkt.Op_SETDAT:
 			fmt.Printf("SETDAT :: %x\n", m.Key)
+		case pkt.Op_GETDAT:
+			fmt.Printf("GETDAT :: %x\n", m.Key)
 		}
 	}
 }
@@ -162,7 +168,7 @@ func (a *app) listen() <-chan *pkt.Msg {
 				}
 				a.peers[raddr.String()] = r
 			}
-			err = a.handleMsg(msg, r)
+			err = a.handle(msg, r)
 			if err != nil {
 				fmt.Println(err)
 			} else {
@@ -176,7 +182,7 @@ func (a *app) listen() <-chan *pkt.Msg {
 	return msgch
 }
 
-func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
+func (a *app) handle(msg *pkt.Msg, r *peer) error {
 	switch msg.Op {
 	case pkt.Op_GETADDR:
 		a.giveAddr(r.ip)
@@ -216,6 +222,7 @@ func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
 			payload := marshal(&pkt.Msg{
 				Op:    pkt.Op_DAT,
 				Val:   dat.val,
+				Time:  dat.time,
 				Nonce: dat.nonce,
 				Key:   msg.Key,
 			})
@@ -281,7 +288,7 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 	})
 	ans := make([]netip.AddrPort, 0, NADDR)
 	for len(ans) < NADDR && len(ans) < len(addrs)-1 { // -1 for raddr
-		r := addrs[rand.Intn(len(addrs))]
+		r := addrs[mrand.Intn(len(addrs))]
 		if !in(r, ans) && r.Compare(raddr) != 0 {
 			ans = append(ans, r)
 		}
@@ -300,6 +307,7 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 func (a *app) set(msg *pkt.Msg) {
 	a.data[hex.EncodeToString(msg.Key)] = &dat{
 		val:   msg.Val,
+		time:  msg.Time,
 		nonce: msg.Nonce,
 	}
 }
@@ -317,8 +325,9 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 		Addrs: append(msg.Addrs, raddrPort.String()),
 		Op:    msg.Op,
 		Val:   msg.Val,
-		Key:   msg.Key,
+		Time:  msg.Time,
 		Nonce: msg.Nonce,
+		Key:   msg.Key,
 	}, route)
 }
 
@@ -334,7 +343,7 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 	var sent int
 	sentTo := make(map[string]struct{}, 0)
 	for sent < fanout && len(sentTo) < len(next) {
-		addr := next[rand.Intn(len(next))]
+		addr := next[mrand.Intn(len(next))]
 		_, alreadySentTo := sentTo[addr.String()]
 		if alreadySentTo {
 			continue
@@ -392,14 +401,24 @@ func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
 	go func() {
 		prefix := make([]byte, difficulty)
 		nonce := make([]byte, 32)
+		t := time.Now()
+		tb := timeToBytes(t)
+		var n uint64
 		for {
+			n++
+			if n%10000 == 0 && time.Since(t) > time.Second {
+				t = time.Now()
+				tb = timeToBytes(t)
+			}
 			crand.Read(nonce)
 			h := sha256.New()
 			h.Write(msg.Val)
+			h.Write(tb)
 			h.Write(nonce)
 			sum := h.Sum(nil)
 			if bytes.HasPrefix(sum, prefix) {
 				msg.Nonce = nonce
+				msg.Time = tb
 				msg.Key = sum
 				result <- msg
 				return
@@ -416,10 +435,15 @@ func checkWork(msg *pkt.Msg) int {
 	}
 	h := sha256.New()
 	h.Write(msg.Val)
+	h.Write(msg.Time)
 	h.Write(msg.Nonce)
 	sum := h.Sum(nil)
 	if !bytes.Equal(sum, msg.Key) {
 		return -1
+	}
+	t := bytesToTime(msg.Time)
+	if t.After(time.Now()) {
+		return -2
 	}
 	return pl
 }
@@ -431,4 +455,16 @@ func getPrefixLen(key []byte) int {
 		}
 	}
 	return len(key)
+}
+
+func timeToBytes(t time.Time) []byte {
+	millis := t.UnixNano() / 1000000 // Convert nanoseconds to milliseconds
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(millis))
+	return bytes
+}
+
+func bytesToTime(bytes []byte) time.Time {
+	millis := int64(binary.BigEndian.Uint64(bytes))
+	return time.Unix(0, millis*1000000) // Convert milliseconds to nanoseconds
 }
