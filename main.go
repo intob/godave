@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	crand "crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"math/rand"
@@ -24,13 +28,18 @@ type app struct {
 	lstnPort uint32
 	conn     *net.UDPConn
 	peers    map[string]*peer
-	data     map[string]*pkt.Kv
+	data     map[string]*dat
 }
 
 type peer struct {
 	ip    netip.AddrPort
 	seen  time.Time
 	nping atomic.Uint32
+}
+
+type dat struct {
+	chunk *pkt.Chunk
+	nonce []byte
 }
 
 func main() {
@@ -48,10 +57,10 @@ func main() {
 		panic(err)
 	}
 	a := &app{
-		data:     make(map[string]*pkt.Kv),
+		lstnPort: uint32(*lstnPortFlag),
 		conn:     conn,
 		peers:    make(map[string]*peer, 1),
-		lstnPort: uint32(*lstnPortFlag),
+		data:     make(map[string]*dat),
 	}
 	go a.listen()
 	go a.pingPeers()
@@ -68,38 +77,41 @@ func main() {
 		fmt.Println(flag.Args())
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
-		case pkt.Op_SETKV.String():
-			if flag.NArg() < 3 {
-				fmt.Println("SETKV failed: correct usage is setkv <key> <value>")
-				return
-			}
-			key := flag.Arg(1)
-			val := flag.Arg(2)
-			// SET fanout is 2, but send only to one node before fanout
-			a.gossip(1, &pkt.Msg{
-				Op: pkt.Op_SETKV,
-				Kv: &pkt.Kv{
-					Key: key,
-					Val: []byte(val),
-					T:   time.Now().UnixMilli(),
-				},
-			}, nil)
-		case pkt.Op_GETKV.String():
+		case pkt.Op_SETDAT.String():
 			if flag.NArg() < 2 {
-				fmt.Println("GETKV failed: correct usage is getkv <key>")
+				fmt.Println("SETDAT failed: correct usage is setdat <value>")
 				return
 			}
-			key := flag.Arg(1)
-			d, ok := a.data[key]
-			if ok {
-				fmt.Printf("%s: %s\n", key, string(d.Val))
+			val := flag.Arg(1)
+			m := &pkt.Msg{
+				Op: pkt.Op_SETDAT,
+				Chunk: &pkt.Chunk{
+					Val: []byte(val),
+				},
+			}
+			mch := work(m, 2)
+			m = <-mch
+			fmt.Printf("%x\n", m.Key)
+			// SETDAT fanout is 2, but send only to one node before fanout
+			a.gossip(1, m, nil)
+		case pkt.Op_GETDAT.String():
+			if flag.NArg() < 2 {
+				fmt.Println("GETDAT failed: correct usage is getdat <key>")
 				return
+			}
+			keyHex := flag.Arg(1)
+			d, ok := a.data[keyHex]
+			if ok {
+				fmt.Printf("%s: %s\n", keyHex, string(d.chunk.Val))
+				return
+			}
+			key, err := hex.DecodeString(keyHex)
+			if err != nil {
+				panic(err)
 			}
 			a.gossip(1, &pkt.Msg{
-				Op: pkt.Op_GETKV,
-				Kv: &pkt.Kv{
-					Key: key,
-				},
+				Op:  pkt.Op_GETDAT,
+				Key: key,
 			}, nil)
 		}
 	}
@@ -154,21 +166,27 @@ func (a *app) listen() {
 					}
 				}
 			}
-		case pkt.Op_KV:
-			a.set(msg.Kv) // don't forward
-		case pkt.Op_SETKV:
-			a.set(msg.Kv)
-			a.forward(2, msg, raddr) // forward SET, fanout=2
-		case pkt.Op_GETKV:
-			kv, ok := a.data[msg.Kv.Key]
+		case pkt.Op_DAT: // don't forward, just store
+			if checkWork(msg) >= 2 { // difficulty required? hmm
+				a.set(msg)
+			}
+		case pkt.Op_SETDAT:
+			if checkWork(msg) >= 2 {
+				a.set(msg)
+				a.forward(2, msg, raddr) // forward SET, fanout=2
+			}
+		case pkt.Op_GETDAT:
+			dat, ok := a.data[hex.EncodeToString(msg.Key)]
 			if !ok {
 				a.forward(1, msg, raddr) // forward GET, fanout=1
 			} else {
 				payload := marshal(&pkt.Msg{
-					Op: pkt.Op_KV,
-					Kv: kv,
+					Op:    pkt.Op_DAT,
+					Chunk: dat.chunk,
+					Nonce: dat.nonce,
+					Key:   msg.Key,
 				})
-				// no addr in addrs has kv yet, send to each
+				// no addr in addrs has chunk yet, send to each
 				for _, j := range msg.Addrs {
 					_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(j))
 					if err != nil {
@@ -258,15 +276,10 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 	}
 }
 
-func (a *app) set(m *pkt.Kv) {
-	fmt.Printf("set m:%+v\n", m.Key)
-	s, ok := a.data[m.Key]
-	if !ok || m.T > s.T {
-		a.data[m.Key] = &pkt.Kv{
-			Key: m.Key,
-			Val: m.Val,
-			T:   m.T,
-		}
+func (a *app) set(msg *pkt.Msg) {
+	a.data[hex.EncodeToString(msg.Key)] = &dat{
+		chunk: msg.Chunk,
+		nonce: msg.Nonce,
 	}
 }
 
@@ -282,7 +295,8 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	a.gossip(fanout, &pkt.Msg{
 		Addrs: append(msg.Addrs, raddrPort.String()),
 		Op:    msg.Op,
-		Kv:    msg.Kv,
+		Chunk: msg.Chunk,
+		Key:   msg.Key,
 	}, route)
 }
 
@@ -352,9 +366,75 @@ func log(msg *pkt.Msg) {
 	if len(msg.Addrs) > 0 {
 		src = msg.Addrs[0]
 	}
-	if msg.Kv != nil {
-		fmt.Printf("%s :: %s :: %s :: %s\n", src, msg.Op, msg.Kv.Key, msg.Kv.Val)
+	if msg.Chunk != nil {
+		fmt.Printf("%s :: %s :: %x :: %s\n", src, msg.Op, msg.Key, msg.Chunk.Val)
 	} else {
 		fmt.Printf("%s :: %s\n", src, msg.Op)
 	}
+}
+
+// work computes a key of the given difficulty
+func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
+	result := make(chan *pkt.Msg)
+	go func() {
+		prefix := make([]byte, difficulty)
+		nonce := make([]byte, 32)
+		var (
+			t   time.Time
+			cb  []byte
+			err error
+		)
+		for {
+			if cb == nil || time.Since(t) > time.Second {
+				msg.Chunk.T = time.Now().UnixMilli()
+				cb, err = proto.Marshal(msg.Chunk)
+				if err != nil {
+					panic(err)
+				}
+			}
+			_, err := crand.Read(nonce)
+			if err != nil {
+				panic(err)
+			}
+			h := sha256.New()
+			h.Write(cb)
+			h.Write(nonce)
+			sum := h.Sum(nil)
+			if bytes.HasPrefix(sum, prefix) {
+				msg.Nonce = nonce
+				msg.Key = sum
+				result <- msg
+				return
+			}
+		}
+	}()
+	return result
+}
+
+func checkWork(msg *pkt.Msg) int {
+	pl := getPrefixLen(msg.Key)
+	if pl == 0 {
+		return 0
+	}
+	cb, err := proto.Marshal(msg.Chunk)
+	if err != nil {
+		panic(err)
+	}
+	h := sha256.New()
+	h.Write(cb)
+	h.Write(msg.Nonce)
+	sum := h.Sum(nil)
+	if !bytes.Equal(sum, msg.Key) {
+		return -1
+	}
+	return pl
+}
+
+func getPrefixLen(key []byte) int {
+	for i, j := range key {
+		if j != 0 {
+			return i
+		}
+	}
+	return len(key)
 }

@@ -4,20 +4,21 @@ option go_package = "./pkt";
 
 message Msg {
   Op op = 1;
-  optional Kv kv = 6;
-  repeated string addrs = 3; // set of addr:port
+  repeated string addrs = 2;
+  optional Chunk chunk = 3;
+  optional bytes key = 4;
+  optional bytes nonce = 5;
 }
 
-message Kv {
-  string key = 1;
+message Chunk {
+  int64 t = 1;
   bytes val = 2;
-  int64 t = 3;
 }
 
 enum Op {
-  SETKV = 0;
-  GETKV = 1;
-  KV = 2;
+  SETDAT = 0;
+  GETDAT = 1;
+  DAT = 2;
   GETADDR = 3;
   ADDR = 4;
 }
