@@ -16,6 +16,7 @@ import (
 
 	"github.com/inneslabs/dave/pkt"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
@@ -67,10 +68,7 @@ func main() {
 	go a.dropPeers()
 	if *bootstapFlag != "" {
 		payload := marshal(&pkt.Msg{Op: pkt.Op_GETADDR})
-		_, err = a.conn.WriteToUDPAddrPort(payload, parseAddr(*bootstapFlag))
-		if err != nil {
-			panic(err)
-		}
+		a.writeAddr(payload, parseAddr(*bootstapFlag))
 	}
 	var n int
 	fmt.Print("bootstrap")
@@ -188,7 +186,6 @@ func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
 			pap := parseAddr(addrstr)
 			_, ok := a.peers[addrstr]
 			if !ok {
-				//fmt.Printf("added :%s\n", addrstr)
 				a.peers[addrstr] = &peer{
 					ip: pap,
 				}
@@ -218,12 +215,8 @@ func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
 				Nonce: dat.nonce,
 				Key:   msg.Key,
 			})
-			// no addr in addrs has chunk yet, send to each
 			for _, j := range msg.Addrs {
-				_, err := a.conn.WriteToUDPAddrPort(payload, parseAddr(j))
-				if err != nil {
-					panic(err)
-				}
+				a.writeAddr(payload, parseAddr(j))
 			}
 		}
 	}
@@ -253,10 +246,7 @@ func (a *app) pingPeers() {
 			payload := marshal(&pkt.Msg{
 				Op: pkt.Op_GETADDR,
 			})
-			_, err := a.conn.WriteToUDPAddrPort(payload, addr.ip)
-			if err != nil {
-				panic(err)
-			}
+			a.writeAddr(payload, addr.ip)
 			addr.nping.Add(1)
 		}
 		if time.Since(last) < PING_PERIOD {
@@ -301,10 +291,7 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 		Op:    pkt.Op_ADDR,
 		Addrs: ansstr,
 	})
-	_, err := a.conn.WriteToUDPAddrPort(payload, raddr)
-	if err != nil {
-		panic(err)
-	}
+	a.writeAddr(payload, raddr)
 }
 
 func (a *app) set(msg *pkt.Msg) {
@@ -349,28 +336,16 @@ func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
 			continue
 		}
 		sentTo[addr.String()] = struct{}{}
-		_, err := a.conn.WriteToUDPAddrPort(payload, addr)
-		if err != nil {
-			panic(err)
-		}
+		a.writeAddr(payload, addr)
 		sent++
 	}
 }
 
-func parseAddr(addr string) netip.AddrPort {
-	bap, err := netip.ParseAddrPort(addr)
+func (a *app) writeAddr(payload []byte, addr netip.AddrPort) {
+	_, err := a.conn.WriteToUDPAddrPort(payload, addr)
 	if err != nil {
 		panic(err)
 	}
-	return bap
-}
-
-func marshal(m *pkt.Msg) []byte {
-	b, err := proto.Marshal(m)
-	if err != nil {
-		panic(err)
-	}
-	return b
 }
 
 func (a *app) list(cap int, add func(p *peer) bool) []netip.AddrPort {
@@ -381,6 +356,22 @@ func (a *app) list(cap int, add func(p *peer) bool) []netip.AddrPort {
 		}
 	}
 	return addrs
+}
+
+func parseAddr(addr string) netip.AddrPort {
+	bap, err := netip.ParseAddrPort(addr)
+	if err != nil {
+		panic(err)
+	}
+	return bap
+}
+
+func marshal(m protoreflect.ProtoMessage) []byte {
+	b, err := proto.Marshal(m)
+	if err != nil {
+		panic(err)
+	}
+	return b
 }
 
 func in(m netip.AddrPort, n []netip.AddrPort) bool {
@@ -399,17 +390,13 @@ func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
 		prefix := make([]byte, difficulty)
 		nonce := make([]byte, 32)
 		var (
-			t   time.Time
-			cb  []byte
-			err error
+			t  time.Time
+			cb []byte
 		)
 		for {
 			if cb == nil || time.Since(t) > time.Second {
 				msg.Chunk.T = time.Now().UnixMilli()
-				cb, err = proto.Marshal(msg.Chunk)
-				if err != nil {
-					panic(err)
-				}
+				cb = marshal(msg.Chunk)
 			}
 			_, err := crand.Read(nonce)
 			if err != nil {
