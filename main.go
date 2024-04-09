@@ -20,16 +20,20 @@ import (
 )
 
 const (
+	FANOUT_GETDAT    = 1
+	FANOUT_SETDAT    = 2
+	FORWARD_DISTANCE = 4
+	NADDR            = 3
 	PING_PERIOD      = 100 * time.Millisecond
 	DROP_THRESHOLD   = 8
-	FORWARD_DISTANCE = 4
+	DIFFICULTY_MIN   = 3
 )
 
 type app struct {
 	lstnPort uint32
 	conn     *net.UDPConn
-	peers    map[string]*peer
-	data     map[string]*dat
+	peers    <-chan *peer //map[string]*peer
+	data     <-chan *dat  //map[string]*dat
 }
 
 type peer struct {
@@ -95,7 +99,7 @@ func main() {
 					Val: []byte(val),
 				},
 			}
-			mch := work(m, 2)
+			mch := work(m, DIFFICULTY_MIN)
 			m = <-mch
 			fmt.Printf("%x\n", m.Key)
 			// SETDAT fanout is 2, but send only to one node before fanout
@@ -115,7 +119,7 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			a.gossip(1, &pkt.Msg{
+			a.gossip(FANOUT_GETDAT, &pkt.Msg{
 				Op:  pkt.Op_GETDAT,
 				Key: key,
 			}, nil)
@@ -191,23 +195,25 @@ func (a *app) handleMsg(msg *pkt.Msg, r *peer) error {
 				}
 			}
 		}
-	case pkt.Op_DAT: // don't forward, just store
-		if checkWork(msg) >= 2 { // difficulty required? hmm
+	case pkt.Op_DAT:
+		check := checkWork(msg)
+		if check >= DIFFICULTY_MIN {
 			a.set(msg)
 		} else {
-			return fmt.Errorf("work is invalid: key: %x", msg.Key)
+			return fmt.Errorf("work is invalid :: %d :: %x", check, msg.Key)
 		}
 	case pkt.Op_SETDAT:
-		if checkWork(msg) >= 2 {
+		check := checkWork(msg)
+		if check >= DIFFICULTY_MIN {
 			a.set(msg)
-			a.forward(2, msg, r.ip) // forward SET, fanout=2
+			a.forward(FANOUT_SETDAT, msg, r.ip)
 		} else {
-			return fmt.Errorf("work is invalid: key: %x", msg.Key)
+			return fmt.Errorf("work is invalid :: %d :: %x", check, msg.Key)
 		}
 	case pkt.Op_GETDAT:
 		dat, ok := a.data[hex.EncodeToString(msg.Key)]
 		if !ok {
-			a.forward(1, msg, r.ip) // forward GET, fanout=1
+			a.forward(FANOUT_GETDAT, msg, r.ip)
 		} else {
 			payload := marshal(&pkt.Msg{
 				Op:    pkt.Op_DAT,
@@ -268,7 +274,7 @@ func (a *app) peerToPing() *peer {
 	return quiet
 }
 
-// send 2 random addresses, excluding raddr
+// send NADDR random addresses, excluding raddr
 func (a *app) giveAddr(raddr netip.AddrPort) {
 	if len(a.peers) == 0 {
 		return
@@ -276,8 +282,8 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 	addrs := a.list(len(a.peers)-1, func(p *peer) bool {
 		return p.ip.Compare(raddr) != 0 && p.nping.Load() == 0
 	})
-	ans := make([]netip.AddrPort, 0)
-	for len(ans) < 2 && len(ans) < len(addrs)-1 { // -1 for raddr
+	ans := make([]netip.AddrPort, 0, NADDR)
+	for len(ans) < NADDR && len(ans) < len(addrs)-1 { // -1 for raddr
 		r := addrs[rand.Intn(len(addrs))]
 		if !in(r, ans) && r.Compare(raddr) != 0 {
 			ans = append(ans, r)
