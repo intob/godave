@@ -7,15 +7,12 @@ import (
 	"time"
 
 	"github.com/inneslabs/dave/pkt"
-	"google.golang.org/protobuf/proto"
 )
 
 func TestWorkDifficulty2(t *testing.T) {
 	// Test case 2: Check if the function returns a key with 3 leading zeros
 	msg := &pkt.Msg{
-		Chunk: &pkt.Chunk{
-			T: time.Now().UnixMilli(),
-		},
+		Val: []byte("hello"),
 	}
 	const difficulty = 2
 	prefix := make([]byte, difficulty)
@@ -31,29 +28,18 @@ func TestWorkDifficulty2(t *testing.T) {
 	}
 }
 
-func TestCheckWorkValidPrefix3(t *testing.T) {
-	difficulty := 3
-	wantPrefix := 3
-
+func TestCheckWorkValidPrefix2(t *testing.T) {
+	difficulty := 2
+	wantPrefix := 2
 	msg := &pkt.Msg{
-		Chunk: &pkt.Chunk{
-			Val: []byte("hello"),
-		},
+		Val: []byte("hello"),
 	}
-
 	resultCh := work(msg, difficulty)
 	validMsg := <-resultCh
-
-	cb, err := proto.Marshal(validMsg.Chunk)
-	if err != nil {
-		t.Fatalf("failed to marshal chunk: %v", err)
-	}
-
 	h := sha256.New()
-	h.Write(cb)
+	h.Write(validMsg.Val)
 	h.Write(validMsg.Nonce)
 	validMsg.Key = h.Sum(nil)
-
 	gotPrefix := checkWork(validMsg)
 	if gotPrefix != wantPrefix {
 		t.Errorf("checkWork() = %d, want %d", gotPrefix, wantPrefix)
@@ -63,26 +49,15 @@ func TestCheckWorkValidPrefix3(t *testing.T) {
 func TestCheckWorkValidPrefix0(t *testing.T) {
 	difficulty := 0
 	wantPrefix := 0
-
 	msg := &pkt.Msg{
-		Chunk: &pkt.Chunk{
-			Val: []byte("hello"),
-		},
+		Val: []byte("hello"),
 	}
-
 	resultCh := work(msg, difficulty)
 	validMsg := <-resultCh
-
-	cb, err := proto.Marshal(validMsg.Chunk)
-	if err != nil {
-		t.Fatalf("failed to marshal chunk: %v", err)
-	}
-
 	h := sha256.New()
-	h.Write(cb)
+	h.Write(validMsg.Val)
 	h.Write(validMsg.Nonce)
 	validMsg.Key = h.Sum(nil)
-
 	gotPrefix := checkWork(validMsg)
 	if gotPrefix != wantPrefix {
 		t.Errorf("checkWork() = %d, want %d", gotPrefix, wantPrefix)
@@ -92,28 +67,16 @@ func TestCheckWorkValidPrefix0(t *testing.T) {
 func TestCheckWorkInvalid(t *testing.T) {
 	difficulty := 2
 	wantPrefix := -1
-
 	msg := &pkt.Msg{
-		Chunk: &pkt.Chunk{
-			Val: []byte("hello"),
-		},
+		Val: []byte("hello"),
 	}
-
 	resultCh := work(msg, difficulty)
 	validMsg := <-resultCh
-
 	// Modify the key to make it invalid
 	validMsg.Key[31] ^= 1
-
-	cb, err := proto.Marshal(validMsg.Chunk)
-	if err != nil {
-		t.Fatalf("failed to marshal chunk: %v", err)
-	}
-
 	h := sha256.New()
-	h.Write(cb)
+	h.Write(validMsg.Val)
 	h.Write(validMsg.Nonce)
-
 	gotPrefix := checkWork(validMsg)
 	if gotPrefix != wantPrefix {
 		t.Errorf("checkWork() = %d, want %d", gotPrefix, wantPrefix)
