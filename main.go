@@ -22,7 +22,7 @@ import (
 const (
 	FANOUT_GETDAT    = 1
 	FANOUT_SETDAT    = 2
-	FORWARD_DISTANCE = 4
+	FORWARD_DISTANCE = 5
 	NADDR            = 3
 	PING_PERIOD      = 100 * time.Millisecond
 	DROP_THRESHOLD   = 8
@@ -32,8 +32,8 @@ const (
 type app struct {
 	lstnPort uint32
 	conn     *net.UDPConn
-	peers    <-chan *peer //map[string]*peer
-	data     <-chan *dat  //map[string]*dat
+	peers    map[string]*peer
+	data     map[string]*dat
 }
 
 type peer struct {
