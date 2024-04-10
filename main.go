@@ -509,9 +509,9 @@ func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
 }
 
 func checkWork(msg *pkt.Msg) int {
-	pl := getPrefixLen(msg.Key)
-	if pl == 0 {
-		return 0
+	n := leadingZeros(msg.Key)
+	if n == 0 {
+		return n
 	}
 	h := sha256.New()
 	h.Write(msg.Val)
@@ -525,10 +525,10 @@ func checkWork(msg *pkt.Msg) int {
 	if t.After(time.Now()) {
 		return -2
 	}
-	return pl
+	return n
 }
 
-func getPrefixLen(key []byte) int {
+func leadingZeros(key []byte) int {
 	for i, j := range key {
 		if j != 0 {
 			return i
