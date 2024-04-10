@@ -84,8 +84,9 @@ func main() {
 		data:     make(map[string]*dat),
 	}
 	if *etcHostsFlag {
-		a.etcHosts()
+		a.readHosts("/etc/hosts")
 	}
+	a.readHosts("hosts")
 	if *peerFlag != "" {
 		err = a.bootstrap(*peerFlag)
 		if err != nil {
@@ -157,11 +158,12 @@ func main() {
 	}
 }
 
-func (a *app) etcHosts() {
-	f, err := os.Open("/etc/hosts")
+func (a *app) readHosts(fname string) error {
+	f, err := os.Open(fname)
 	if err != nil {
-		panic(err)
+		return err
 	}
+	defer f.Close()
 	s := bufio.NewScanner(f)
 	for s.Scan() {
 		l := s.Text()
@@ -178,7 +180,7 @@ func (a *app) etcHosts() {
 			}
 		}
 	}
-
+	return nil
 }
 
 func (a *app) bootstrap(addr string) error {
