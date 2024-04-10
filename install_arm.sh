@@ -12,4 +12,3 @@ echo "export GOPATH=\$HOME/go" >> ~/.profile
 echo "export PATH=\$PATH:/usr/local/go/bin:\$GOPATH/bin" >> ~/.profile
 source ~/.profile
 go version
-git clone https://github.com/inneslabs/dave

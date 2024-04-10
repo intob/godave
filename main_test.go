@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/inneslabs/dave/pkt"
+	"github.com/intob/dave/pkt"
 )
 
 const TEST_DIFFICULTY = 4
