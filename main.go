@@ -89,12 +89,12 @@ func main() {
 	go a.pingPeers()
 	go a.dropPeers()
 	var n int
-	fmt.Printf("listening on %s :: bootstrap", conn.LocalAddr().String())
+	fmt.Printf("listening on %s :: bootstrap\033[0K", conn.LocalAddr().String())
 	for range msgs {
 		n++
-		fmt.Printf(".")
+		fmt.Printf(".\033[0K")
 		if n >= BOOTSTRAP_MSG {
-			fmt.Print("\n")
+			fmt.Print("\n\033[0K")
 			break
 		}
 	}
