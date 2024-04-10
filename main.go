@@ -67,7 +67,14 @@ func main() {
 	}
 	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
-		panic(err)
+		laddr, err = net.ResolveUDPAddr("udp", ":0")
+		if err != nil {
+			panic(err)
+		}
+		conn, err = net.ListenUDP("udp", laddr)
+		if err != nil {
+			panic(err)
+		}
 	}
 	a := &app{
 		lstnPort: uint32(*portFlag),
