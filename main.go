@@ -24,6 +24,7 @@ import (
 )
 
 const (
+	PACKET_SIZE      = 32768
 	PORT_DEFAULT     = 1618
 	FANOUT_GETDAT    = 2
 	FANOUT_SETDAT    = 2
@@ -206,7 +207,7 @@ func (a *app) listen() <-chan *pkt.Msg {
 	go func() {
 		defer a.conn.Close()
 		for {
-			buf := make([]byte, 2048)
+			buf := make([]byte, PACKET_SIZE)
 			n, raddr, err := a.conn.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				panic(err)
