@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	mrand "math/rand"
@@ -77,7 +76,12 @@ func main() {
 	if *etcHostsFlag {
 		a.etcHosts()
 	}
-	a.bootstrap(*peerFlag)
+	if *peerFlag != "" {
+		err = a.bootstrap(*peerFlag)
+		if err != nil {
+			panic(err)
+		}
+	}
 	msgs := a.listen()
 	go a.pingPeers()
 	go a.dropPeers()
@@ -168,8 +172,8 @@ func (a *app) etcHosts() {
 }
 
 func (a *app) bootstrap(addr string) error {
-	if addr == "" {
-		return errors.New("addr is empty")
+	if strings.HasPrefix(addr, ":") {
+		addr = "127.0.0.1" + addr
 	}
 	ad, err := parseAddr(addr)
 	if err != nil {
@@ -178,6 +182,10 @@ func (a *app) bootstrap(addr string) error {
 	a.peers[ad.String()] = &peer{
 		ip: ad,
 	}
+	payload := marshal(&pkt.Msg{
+		Op: pkt.Op_GETADDR,
+	})
+	a.writeAddr(payload, ad)
 	return nil
 }
 
