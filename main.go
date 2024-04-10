@@ -1,16 +1,19 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	mrand "math/rand"
 	"net"
 	"net/netip"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -21,6 +24,7 @@ import (
 )
 
 const (
+	PORT_DEFAULT     = 2024
 	FANOUT_GETDAT    = 2
 	FANOUT_SETDAT    = 2
 	FORWARD_DISTANCE = 6
@@ -51,10 +55,11 @@ type dat struct {
 }
 
 func main() {
-	lstnPortFlag := flag.Int("p", 2034, "listen port")
-	bootstapFlag := flag.String("b", "", "bootstrap peer")
+	portFlag := flag.Int("p", PORT_DEFAULT, "listen port")
+	peerFlag := flag.String("b", "", "bootstrap peer")
+	etcHostsFlag := flag.Bool("h", false, "bootstrap from /etc/hosts")
 	flag.Parse()
-	laddrstr := fmt.Sprintf(":%d", *lstnPortFlag)
+	laddrstr := fmt.Sprintf(":%d", *portFlag)
 	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
 	if err != nil {
 		panic(err)
@@ -63,22 +68,21 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	fmt.Printf("listening on %s :: ", conn.LocalAddr().String())
 	a := &app{
-		lstnPort: uint32(*lstnPortFlag),
+		lstnPort: uint32(*portFlag),
 		conn:     conn,
 		peers:    make(map[string]*peer, 1),
 		data:     make(map[string]*dat),
 	}
+	if *etcHostsFlag {
+		a.etcHosts()
+	}
+	a.bootstrap(*peerFlag)
 	msgs := a.listen()
 	go a.pingPeers()
 	go a.dropPeers()
-	if *bootstapFlag != "" {
-		payload := marshal(&pkt.Msg{Op: pkt.Op_GETADDR})
-		a.writeAddr(payload, parseAddr(*bootstapFlag))
-	}
 	var n int
-	fmt.Print("bootstrap")
+	fmt.Printf("listening on %s :: bootstrap", conn.LocalAddr().String())
 	for range msgs {
 		n++
 		fmt.Printf(".")
@@ -139,6 +143,44 @@ func main() {
 	}
 }
 
+func (a *app) etcHosts() {
+	f, err := os.Open("/etc/hosts")
+	if err != nil {
+		panic(err)
+	}
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		l := s.Text()
+		if l != "" && !strings.HasPrefix(l, "#") {
+			l = strings.ReplaceAll(l, "\t", " ")
+			fields := strings.Split(l, " ")
+			if len(fields) == 0 {
+				continue
+			}
+			addr := fmt.Sprintf("%s:%d", fields[0], PORT_DEFAULT)
+			err = a.bootstrap(addr)
+			if err != nil {
+				fmt.Println(err)
+			}
+		}
+	}
+
+}
+
+func (a *app) bootstrap(addr string) error {
+	if addr == "" {
+		return errors.New("addr is empty")
+	}
+	ad, err := parseAddr(addr)
+	if err != nil {
+		return fmt.Errorf("err parsing addr: %v", err)
+	}
+	a.peers[ad.String()] = &peer{
+		ip: ad,
+	}
+	return nil
+}
+
 func (a *app) listen() <-chan *pkt.Msg {
 	msgch := make(chan *pkt.Msg, 1)
 	go func() {
@@ -187,12 +229,16 @@ func (a *app) handle(msg *pkt.Msg, r *peer) error {
 		if r.nping.Load() > 0 {
 			r.nping.Store(0)
 		}
-		for _, addrstr := range msg.Addrs {
-			pap := parseAddr(addrstr)
-			_, ok := a.peers[addrstr]
+		for _, adstr := range msg.Addrs {
+			ad, err := parseAddr(adstr)
+			if err != nil {
+				fmt.Printf("err parsing addr %q :: %v\n", adstr, err)
+				continue
+			}
+			_, ok := a.peers[adstr]
 			if !ok {
-				a.peers[addrstr] = &peer{
-					ip: pap,
+				a.peers[adstr] = &peer{
+					ip: ad,
 				}
 			}
 		}
@@ -224,7 +270,10 @@ func (a *app) handle(msg *pkt.Msg, r *peer) error {
 				Key:   msg.Key,
 			})
 			for _, j := range msg.Addrs {
-				a.writeAddr(payload, parseAddr(j))
+				jp, err := parseAddr(j)
+				if err == nil {
+					a.writeAddr(payload, jp)
+				}
 			}
 		}
 	}
@@ -315,7 +364,10 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	}
 	route := make([]netip.AddrPort, 0, len(msg.Addrs)+1)
 	for _, addr := range msg.Addrs {
-		route = append(route, parseAddr(addr))
+		addr, err := parseAddr(addr)
+		if err == nil {
+			route = append(route, addr)
+		}
 	}
 	route = append(route, raddrPort)
 	a.gossip(fanout, &pkt.Msg{
@@ -368,12 +420,18 @@ func (a *app) list(cap int, add func(p *peer) bool) []netip.AddrPort {
 	return addrs
 }
 
-func parseAddr(addr string) netip.AddrPort {
+func parseAddr(addr string) (netip.AddrPort, error) {
 	bap, err := netip.ParseAddrPort(addr)
 	if err != nil {
-		panic(err)
+		hosts, err := net.LookupHost(addr)
+		if err != nil {
+			return netip.AddrPort{}, err
+		}
+		for _, h := range hosts {
+			return netip.ParseAddrPort(h)
+		}
 	}
-	return bap
+	return bap, nil
 }
 
 func marshal(m protoreflect.ProtoMessage) []byte {
