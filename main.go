@@ -396,27 +396,24 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
 	result := make(chan *pkt.Msg)
 	go func() {
-		prefix := make([]byte, difficulty)
-		nonce := make([]byte, 32)
+		zeros := make([]byte, difficulty)
 		t := time.Now()
-		tb := timeToBytes(t)
+		msg.Time = timeToBytes(t)
+		msg.Nonce = make([]byte, 32)
 		var n uint64
 		for {
 			n++
 			if n%10000 == 0 && time.Since(t) > time.Second {
 				t = time.Now()
-				tb = timeToBytes(t)
+				msg.Time = timeToBytes(t)
 			}
-			crand.Read(nonce)
+			crand.Read(msg.Nonce)
 			h := sha256.New()
 			h.Write(msg.Val)
-			h.Write(tb)
-			h.Write(nonce)
-			sum := h.Sum(nil)
-			if bytes.HasPrefix(sum, prefix) {
-				msg.Nonce = nonce
-				msg.Time = tb
-				msg.Key = sum
+			h.Write(msg.Time)
+			h.Write(msg.Nonce)
+			msg.Key = h.Sum(nil)
+			if bytes.HasPrefix(msg.Key, zeros) {
 				result <- msg
 				return
 			}
