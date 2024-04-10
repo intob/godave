@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -38,6 +39,7 @@ type app struct {
 	lstnPort uint32
 	conn     *net.UDPConn
 	peers    map[string]*peer
+	pmu      *sync.Mutex
 	data     map[string]*dat
 }
 
@@ -71,6 +73,7 @@ func main() {
 		lstnPort: uint32(*portFlag),
 		conn:     conn,
 		peers:    make(map[string]*peer, 1),
+		pmu:      &sync.Mutex{},
 		data:     make(map[string]*dat),
 	}
 	if *etcHostsFlag {
@@ -216,7 +219,9 @@ func (a *app) listen() <-chan *pkt.Msg {
 					ip:   raddr,
 					seen: time.Now(),
 				}
+				a.pmu.Lock()
 				a.peers[raddr.String()] = r
+				a.pmu.Unlock()
 			}
 			err = a.handle(msg, r)
 			if err != nil {
@@ -245,9 +250,11 @@ func (a *app) handle(msg *pkt.Msg, r *peer) error {
 			}
 			_, ok := a.peers[adstr]
 			if !ok {
+				a.pmu.Lock()
 				a.peers[adstr] = &peer{
 					ip: ad,
 				}
+				a.pmu.Unlock()
 			}
 		}
 	case pkt.Op_DAT:
@@ -295,11 +302,13 @@ func (a *app) dropPeers() {
 			time.Sleep(PING_PERIOD - time.Since(last))
 		}
 		last = time.Now()
+		a.pmu.Lock()
 		for adstr, ad := range a.peers {
 			if ad.nping.Load() > DROP_THRESHOLD {
 				delete(a.peers, adstr)
 			}
 		}
+		a.pmu.Unlock()
 	}
 }
 
@@ -323,6 +332,7 @@ func (a *app) pingPeers() {
 
 func (a *app) peerToPing() *peer {
 	var quiet *peer
+	a.pmu.Lock()
 	for _, r := range a.peers {
 		if quiet == nil {
 			quiet = r
@@ -330,6 +340,7 @@ func (a *app) peerToPing() *peer {
 			quiet = r
 		}
 	}
+	a.pmu.Unlock()
 	return quiet
 }
 
@@ -420,11 +431,13 @@ func (a *app) writeAddr(payload []byte, addr netip.AddrPort) {
 
 func (a *app) list(cap int, add func(p *peer) bool) []netip.AddrPort {
 	addrs := make([]netip.AddrPort, 0, cap)
+	a.pmu.Lock()
 	for _, p := range a.peers {
 		if add(p) {
 			addrs = append(addrs, p.ip)
 		}
 	}
+	a.pmu.Unlock()
 	return addrs
 }
 
