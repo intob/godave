@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	PORT_DEFAULT     = 2024
+	PORT_DEFAULT     = 6109
 	FANOUT_GETDAT    = 2
 	FANOUT_SETDAT    = 2
 	FORWARD_DISTANCE = 6
