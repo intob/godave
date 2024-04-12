@@ -142,7 +142,6 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 		for {
 			select {
 			case pkt := <-pktsch:
-				//fmt.Printf("pkt :: %v :: %x :: %+v\n", pkt.msg.Op, pkt.msg.Key, pkt.msg.Addrs)
 				ipstr := pkt.ip.String()
 				p, ok := peers[ipstr]
 				if !ok {
@@ -169,16 +168,18 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 					})
 					writeAddr(conn, payload, pkt.ip)
 				case davepb.Op_SETDAT:
-					if CheckWork(pkt.msg) >= WORK_MIN && len(pkt.msg.Addrs) < FWD_DIST {
+					if len(pkt.msg.Addrs) < FWD_DIST && CheckWork(pkt.msg) >= WORK_MIN {
 						payload := marshal(pkt.msg)
 						for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
 							writeAddr(conn, payload, parseAddr(rad))
 						}
 					}
 				case davepb.Op_GETDAT:
-					payload := marshal(pkt.msg)
-					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
-						writeAddr(conn, payload, parseAddr(rad))
+					if len(pkt.msg.Addrs) < FWD_DIST {
+						payload := marshal(pkt.msg)
+						for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
+							writeAddr(conn, payload, parseAddr(rad))
+						}
 					}
 				case davepb.Op_DAT:
 					work := CheckWork(pkt.msg)
@@ -194,7 +195,6 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 				}
 			case msend := <-sendch:
 				payload := marshal(msend)
-				fmt.Printf("send %d bytes :: %v :: %x\n", len(payload), msend.Op, msend.Key)
 				switch msend.Op {
 				case davepb.Op_SETDAT:
 					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
