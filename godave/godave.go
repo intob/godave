@@ -157,7 +157,6 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 						peers[maddrstr] = &peer{
 							ip: maddr,
 						}
-						fmt.Println("added", maddrstr)
 					}
 				}
 				switch pkt.msg.Op {
@@ -209,7 +208,6 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 					panic(fmt.Sprintf("unsupported op %v", msend.Op))
 				}
 			case <-time.After(PING_PERIOD):
-				fmt.Printf("ping_")
 				peer := quiet(peers)
 				if peer != nil {
 					payload := marshal(&davepb.Msg{
@@ -217,7 +215,6 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 					})
 					writeAddr(conn, payload, peer.ip)
 					peer.nping += 1
-					fmt.Printf("%s\n", peer.ip)
 				}
 				for key, p := range peers {
 					if p.nping > DROP_THRESHOLD {
