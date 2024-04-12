@@ -1,3 +1,24 @@
+//
+// THIS PROGRAM IS BROKEN. REFERENCE IMPLEMENTATION IS CURRENTLY GODAVE
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+//
+
 package main
 
 import (
@@ -18,19 +39,19 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/intob/dave/pkt"
+	"github.com/intob/dave/protodave"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
-	PACKET_SIZE      = 32768
+	PACKET_SIZE      = 2048
 	PORT_DEFAULT     = 1618
 	FANOUT_GETDAT    = 2
 	FANOUT_SETDAT    = 2
 	FORWARD_DISTANCE = 6
 	NADDR            = 3
-	PING_PERIOD      = time.Second
+	PING_PERIOD      = 200 * time.Millisecond
 	DROP_THRESHOLD   = 8
 	DIFFICULTY_MIN   = 3
 	BOOTSTRAP_MSG    = 8
@@ -110,21 +131,21 @@ func main() {
 	if flag.NArg() > 0 {
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
-		case pkt.Op_SETDAT.String():
+		case protodave.Op_SETDAT.String():
 			if flag.NArg() < 2 {
 				fmt.Println("SETDAT failed: correct usage is setdat <value>")
 				return
 			}
 			val := flag.Arg(1)
-			m := &pkt.Msg{
-				Op:  pkt.Op_SETDAT,
+			m := &protodave.Msg{
+				Op:  protodave.Op_SETDAT,
 				Val: []byte(val),
 			}
 			mch := work(m, DIFFICULTY_MIN)
 			m = <-mch
 			fmt.Printf("%x\n", m.Key)
 			a.gossip(FANOUT_SETDAT, m, nil)
-		case pkt.Op_GETDAT.String():
+		case protodave.Op_GETDAT.String():
 			if flag.NArg() < 2 {
 				fmt.Println("GETDAT failed: correct usage is getdat <key>")
 				return
@@ -139,8 +160,8 @@ func main() {
 			if err != nil {
 				panic(err)
 			}
-			a.gossip(FANOUT_GETDAT, &pkt.Msg{
-				Op:  pkt.Op_GETDAT,
+			a.gossip(FANOUT_GETDAT, &protodave.Msg{
+				Op:  protodave.Op_GETDAT,
 				Key: key,
 			}, nil)
 		default:
@@ -149,11 +170,11 @@ func main() {
 	}
 	for m := range msgs {
 		switch m.Op {
-		case pkt.Op_DAT:
+		case protodave.Op_DAT:
 			fmt.Printf("DAT :: %s\n", string(m.Val))
-		case pkt.Op_SETDAT:
+		case protodave.Op_SETDAT:
 			fmt.Printf("SETDAT :: %x\n", m.Key)
-		case pkt.Op_GETDAT:
+		case protodave.Op_GETDAT:
 			fmt.Printf("GETDAT :: %x\n", m.Key)
 		}
 	}
@@ -195,15 +216,15 @@ func (a *app) bootstrap(addr string) error {
 	a.peers[ad.String()] = &peer{
 		ip: ad,
 	}
-	payload := marshal(&pkt.Msg{
-		Op: pkt.Op_GETADDR,
+	payload := marshal(&protodave.Msg{
+		Op: protodave.Op_GETADDR,
 	})
 	a.writeAddr(payload, ad)
 	return nil
 }
 
-func (a *app) listen() <-chan *pkt.Msg {
-	msgch := make(chan *pkt.Msg, 1)
+func (a *app) listen() <-chan *protodave.Msg {
+	msgch := make(chan *protodave.Msg, 1)
 	go func() {
 		defer a.conn.Close()
 		for {
@@ -212,7 +233,7 @@ func (a *app) listen() <-chan *pkt.Msg {
 			if err != nil {
 				panic(err)
 			}
-			msg := &pkt.Msg{}
+			msg := &protodave.Msg{}
 			err = proto.Unmarshal(buf[:n], msg)
 			if err != nil {
 				panic(err)
@@ -244,11 +265,11 @@ func (a *app) listen() <-chan *pkt.Msg {
 	return msgch
 }
 
-func (a *app) handle(msg *pkt.Msg, r *peer) error {
+func (a *app) handle(msg *protodave.Msg, r *peer) error {
 	switch msg.Op {
-	case pkt.Op_GETADDR:
+	case protodave.Op_GETADDR:
 		a.giveAddr(r.ip)
-	case pkt.Op_ADDR:
+	case protodave.Op_ADDR:
 		if r.nping.Load() > 0 {
 			r.nping.Store(0)
 		}
@@ -267,14 +288,14 @@ func (a *app) handle(msg *pkt.Msg, r *peer) error {
 				a.pmu.Unlock()
 			}
 		}
-	case pkt.Op_DAT:
+	case protodave.Op_DAT:
 		check := checkWork(msg)
 		if check >= DIFFICULTY_MIN {
 			a.set(msg)
 		} else {
 			return fmt.Errorf("work is invalid :: %d :: %x", check, msg.Key)
 		}
-	case pkt.Op_SETDAT:
+	case protodave.Op_SETDAT:
 		check := checkWork(msg)
 		if check >= DIFFICULTY_MIN {
 			a.set(msg)
@@ -282,13 +303,13 @@ func (a *app) handle(msg *pkt.Msg, r *peer) error {
 		} else {
 			return fmt.Errorf("work is invalid :: %d :: %x", check, msg.Key)
 		}
-	case pkt.Op_GETDAT:
+	case protodave.Op_GETDAT:
 		dat, ok := a.data[hex.EncodeToString(msg.Key)]
 		if !ok {
 			a.forward(FANOUT_GETDAT, msg, r.ip)
 		} else {
-			payload := marshal(&pkt.Msg{
-				Op:    pkt.Op_DAT,
+			payload := marshal(&protodave.Msg{
+				Op:    protodave.Op_DAT,
 				Val:   dat.val,
 				Time:  dat.time,
 				Nonce: dat.nonce,
@@ -327,8 +348,8 @@ func (a *app) pingPeers() {
 	for {
 		addr := a.peerToPing()
 		if addr != nil {
-			payload := marshal(&pkt.Msg{
-				Op: pkt.Op_GETADDR,
+			payload := marshal(&protodave.Msg{
+				Op: protodave.Op_GETADDR,
 			})
 			a.writeAddr(payload, addr.ip)
 			addr.nping.Add(1)
@@ -372,14 +393,14 @@ func (a *app) giveAddr(raddr netip.AddrPort) {
 	for i, ad := range ans {
 		ansstr[i] = ad.String()
 	}
-	payload := marshal(&pkt.Msg{
-		Op:    pkt.Op_ADDR,
+	payload := marshal(&protodave.Msg{
+		Op:    protodave.Op_ADDR,
 		Addrs: ansstr,
 	})
 	a.writeAddr(payload, raddr)
 }
 
-func (a *app) set(msg *pkt.Msg) {
+func (a *app) set(msg *protodave.Msg) {
 	a.data[hex.EncodeToString(msg.Key)] = &dat{
 		val:   msg.Val,
 		time:  msg.Time,
@@ -387,7 +408,7 @@ func (a *app) set(msg *pkt.Msg) {
 	}
 }
 
-func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
+func (a *app) forward(fanout int, msg *protodave.Msg, raddrPort netip.AddrPort) {
 	if len(msg.Addrs) >= FORWARD_DISTANCE {
 		return
 	}
@@ -399,7 +420,7 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 		}
 	}
 	route = append(route, raddrPort)
-	a.gossip(fanout, &pkt.Msg{
+	a.gossip(fanout, &protodave.Msg{
 		Addrs: append(msg.Addrs, raddrPort.String()),
 		Op:    msg.Op,
 		Val:   msg.Val,
@@ -409,7 +430,7 @@ func (a *app) forward(fanout int, msg *pkt.Msg, raddrPort netip.AddrPort) {
 	}, route)
 }
 
-func (a *app) gossip(fanout int, msg *pkt.Msg, route []netip.AddrPort) {
+func (a *app) gossip(fanout int, msg *protodave.Msg, route []netip.AddrPort) {
 	payload := marshal(msg)
 	cap := len(a.peers) - len(route)
 	if cap < 0 {
@@ -482,23 +503,22 @@ func in(m netip.AddrPort, n []netip.AddrPort) bool {
 	return false
 }
 
-func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
-	result := make(chan *pkt.Msg)
+func work(msg *protodave.Msg, difficulty int) <-chan *protodave.Msg {
+	result := make(chan *protodave.Msg)
 	go func() {
 		zeros := make([]byte, difficulty)
 		t := time.Now()
 		msg.Time = timeToBytes(t)
 		msg.Nonce = make([]byte, 32)
-		var n uint64
+		valSum := sha256.Sum256(msg.Val)
 		for {
-			n++
-			if n%10000 == 0 && time.Since(t) > time.Second {
+			if time.Since(t) > time.Second {
 				t = time.Now()
 				msg.Time = timeToBytes(t)
 			}
 			crand.Read(msg.Nonce)
 			h := sha256.New()
-			h.Write(msg.Val)
+			h.Write(valSum[:])
 			h.Write(msg.Time)
 			h.Write(msg.Nonce)
 			msg.Key = h.Sum(nil)
@@ -511,13 +531,14 @@ func work(msg *pkt.Msg, difficulty int) <-chan *pkt.Msg {
 	return result
 }
 
-func checkWork(msg *pkt.Msg) int {
+func checkWork(msg *protodave.Msg) int {
 	n := leadingZeros(msg.Key)
 	if n == 0 {
 		return n
 	}
+	valSum := sha256.Sum256(msg.Val)
 	h := sha256.New()
-	h.Write(msg.Val)
+	h.Write(valSum[:])
 	h.Write(msg.Time)
 	h.Write(msg.Nonce)
 	sum := h.Sum(nil)

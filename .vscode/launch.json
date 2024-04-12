@@ -9,8 +9,9 @@
             "type": "go",
             "request": "launch",
             "mode": "auto",
-            "program": "${workspaceFolder}",
-            "args": ["-h"]
+            "program": "/Users/joey/dave/daved",
+            "args": ["-p", "6103", "-b", ":6102"],
         }
-    ]
+    ],
+    "miDebuggerPath": "/Users/joey/go/bin/dlv"
 }

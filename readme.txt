@@ -1,1 +1,1 @@
-A DHT based on proof-of-work.
+dave DHT based on proof-of-work.

@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-option go_package = "./pkt";
+option go_package = "./davepb";
 
 message Msg {
   Op op = 1; // operation

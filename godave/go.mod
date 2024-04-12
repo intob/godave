@@ -1,4 +1,4 @@
-module github.com/intob/dave
+module github.com/intob/dave/godave
 
 go 1.22.1
 
