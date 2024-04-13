@@ -43,6 +43,7 @@ type peer struct {
 	seen      time.Time
 	nping     int
 	bootstrap bool
+	drop      int
 }
 
 type packet struct {
@@ -85,7 +86,7 @@ func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
 	packetRelay := listen(conn)
 	peers := make(map[netip.AddrPort]*peer)
 	for _, ip := range bootstrap {
-		peers[ip] = &peer{time.Time{}, 0, true}
+		peers[ip] = &peer{time.Time{}, 0, true, 0}
 	}
 	send := make(chan *davepb.Msg, 1)
 	return &Dave{send, dave(conn, peers, packetRelay, send)}, nil
@@ -143,22 +144,22 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				if ok {
 					p.seen = time.Now()
 					p.nping = 0
+					p.drop = 0
 				} else {
-					peers[pkt.ip] = &peer{time.Now(), 0, false}
+					peers[pkt.ip] = &peer{}
 				}
 				for _, maddrstr := range pkt.msg.Addrs {
 					maddr := parseAddr(maddrstr)
 					_, ok := peers[maddr]
 					if !ok {
-						peers[maddr] = &peer{time.Time{}, 0, false}
+						peers[maddr] = &peer{}
 					}
 				}
 				switch pkt.msg.Op {
 				case davepb.Op_GETADDR:
-					addrs := randomAddrs(peers, pkt.msg.Addrs, NADDR)
 					writeAddr(conn, marshal(&davepb.Msg{
 						Op:    davepb.Op_ADDR,
-						Addrs: addrs,
+						Addrs: randomAddrs(peers, []string{pkt.ip.String()}, NADDR),
 					}), pkt.ip)
 				case davepb.Op_SETDAT:
 					if len(pkt.msg.Addrs) < FWD_DIST && CheckWork(pkt.msg) >= WORK_MIN {
@@ -201,8 +202,11 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				ping(conn, q, qip)
 				for ip, p := range peers {
 					if !p.bootstrap && p.nping > DROP_AFTER {
-						delete(peers, ip)
-						fmt.Println("dropped", ip)
+						p.drop += 1
+						if p.drop > DROP_AFTER { // drop after some time, to prevent re-adding
+							fmt.Println("dropped", ip)
+							delete(peers, ip)
+						}
 					}
 				}
 			}
@@ -228,18 +232,18 @@ func randomAddrs(peers map[netip.AddrPort]*peer, exclude []string, limit int) []
 	if n > limit {
 		n = limit
 	}
-	mygs := make(map[netip.AddrPort]string, 0)
+	mygs := make(map[netip.AddrPort]string)
 	next := make([]string, 0)
-	for len(mygs) < n {
+	for len(next) < n {
 		r := mrand.Intn(len(peers) - 1)
 		j := 0
 		for ip := range peers {
+			_, already := mygs[ip]
 			ipstr := ip.String()
-			if j == r {
-				if !in(ipstr, exclude) {
-					mygs[ip] = ipstr
-					next = append(next, ipstr)
-				}
+			if j == r && !already && !in(ipstr, exclude) {
+				mygs[ip] = ipstr
+				next = append(next, ipstr)
+				break
 			}
 			j++
 		}
@@ -276,10 +280,12 @@ func listen(conn *net.UDPConn) <-chan packet {
 			if err != nil {
 				panic(err)
 			}
-			if len(msg.Addrs) == 0 {
-				msg.Addrs = []string{raddr.String()}
-			} else {
-				msg.Addrs = append(msg.Addrs, raddr.String())
+			if msg.Op != davepb.Op_ADDR {
+				if len(msg.Addrs) == 0 {
+					msg.Addrs = []string{raddr.String()}
+				} else {
+					msg.Addrs = append(msg.Addrs, raddr.String())
+				}
 			}
 			msgch <- packet{msg, raddr}
 		}
