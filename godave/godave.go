@@ -23,7 +23,7 @@ const (
 	FWD_DIST      = 7
 	NADDR         = 3
 	PING_PERIOD   = 127713920 * time.Nanosecond
-	DROP_AFTER    = 8
+	TOLERANCE     = 8
 	WORK_MIN      = 3
 	BOOTSTRAP_MSG = 8
 )
@@ -189,11 +189,11 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				payload := marshal(msend)
 				switch msend.Op {
 				case davepb.Op_SETDAT:
-					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) { // exclude bootstrap?
+					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
 						writeAddr(conn, payload, parseAddr(rad))
 					}
 				case davepb.Op_GETDAT:
-					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) { // exclude bootstrap?
+					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
 						writeAddr(conn, payload, parseAddr(rad))
 					}
 				}
@@ -201,10 +201,9 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				q, qip := random(peers)
 				ping(conn, q, qip)
 				for ip, p := range peers {
-					if !p.bootstrap && p.nping > DROP_AFTER {
+					if !p.bootstrap && p.nping > TOLERANCE {
 						p.drop += 1
-						if p.drop > DROP_AFTER { // drop after some time, to prevent re-adding
-							fmt.Println("dropped", ip)
+						if p.drop > TOLERANCE*2 {
 							delete(peers, ip)
 						}
 					}
@@ -237,10 +236,10 @@ func randomAddrs(peers map[netip.AddrPort]*peer, exclude []string, limit int) []
 	for len(next) < n {
 		r := mrand.Intn(len(peers) - 1)
 		j := 0
-		for ip := range peers {
+		for ip, p := range peers {
 			_, already := mygs[ip]
 			ipstr := ip.String()
-			if j == r && !already && !in(ipstr, exclude) {
+			if j == r && !already && !in(ipstr, exclude) && p.nping <= 1 {
 				mygs[ip] = ipstr
 				next = append(next, ipstr)
 				break

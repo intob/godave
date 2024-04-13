@@ -78,7 +78,7 @@ func main() {
 			fmt.Printf("GETDAT :: %x\n", m.Key)
 		case davepb.Op_DAT:
 			fmt.Printf("DAT :: %x :: %s\n", m.Key, string(m.Val))
-		default:
+		case davepb.Op_ADDR:
 			fmt.Printf("%v :: %+v\n", m.Op, m.Addrs)
 		}
 	}
