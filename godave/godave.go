@@ -17,16 +17,16 @@ import (
 )
 
 const (
-	PACKET_SIZE    = 2048
-	PORT_DEFAULT   = 1618
-	FANOUT_GETDAT  = 2
-	FANOUT_SETDAT  = 2
-	FWD_DIST       = 6
-	NADDR          = 3
-	PING_PERIOD    = time.Second
-	DROP_THRESHOLD = 8
-	WORK_MIN       = 3
-	BOOTSTRAP_MSG  = 8
+	PACKET_SIZE   = 2048
+	PORT_DEFAULT  = 1618
+	FANOUT_GETDAT = 2
+	FANOUT_SETDAT = 2
+	FWD_DIST      = 6
+	NADDR         = 3
+	PING_PERIOD   = time.Second
+	DROP_AFTER    = 8
+	WORK_MIN      = 3
+	BOOTSTRAP_MSG = 8
 )
 
 type Dave struct {
@@ -154,9 +154,7 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 					maddr := parseAddr(maddrstr)
 					_, ok := peers[maddrstr]
 					if !ok {
-						peers[maddrstr] = &peer{
-							ip: maddr,
-						}
+						peers[maddrstr] = &peer{maddr, time.Time{}, 0}
 					}
 				}
 				switch pkt.msg.Op {
@@ -208,16 +206,18 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 					panic(fmt.Sprintf("unsupported op %v", msend.Op))
 				}
 			case <-time.After(PING_PERIOD):
-				peer := quiet(peers)
-				if peer != nil {
-					payload := marshal(&davepb.Msg{
-						Op: davepb.Op_GETADDR,
-					})
-					writeAddr(conn, payload, peer.ip)
-					peer.nping += 1
+				q := quiet(peers)
+				if q != nil {
+					q.nping += 1
+					if time.Since(q.seen) > PING_PERIOD*DROP_AFTER/2 {
+						payload := marshal(&davepb.Msg{
+							Op: davepb.Op_GETADDR,
+						})
+						writeAddr(conn, payload, q.ip)
+					}
 				}
 				for key, p := range peers {
-					if p.nping > DROP_THRESHOLD {
+					if p.nping > DROP_AFTER {
 						delete(peers, key)
 						fmt.Println("dropped", key)
 					}
@@ -242,7 +242,7 @@ func randomAddrs(peers map[string]*peer, exclude []string, limit int) []string {
 		r := mrand.Intn(len(peers) - 1)
 		j := 0
 		for key, p := range peers {
-			if j == r && p.nping < DROP_THRESHOLD/2 {
+			if j == r && p.nping < DROP_AFTER {
 				if !in(key, exclude) {
 					mygs[key] = key
 					next = append(next, key)
