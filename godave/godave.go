@@ -18,12 +18,11 @@ import (
 
 const (
 	PACKET_SIZE   = 2048
-	PORT_DEFAULT  = 1618
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
-	FWD_DIST      = 6
+	FWD_DIST      = 7
 	NADDR         = 3
-	PING_PERIOD   = time.Second
+	PING_PERIOD   = 127713920 * time.Nanosecond
 	DROP_AFTER    = 8
 	WORK_MIN      = 3
 	BOOTSTRAP_MSG = 8
@@ -41,9 +40,9 @@ type Dat struct {
 }
 
 type peer struct {
-	ip    netip.AddrPort
-	seen  time.Time
-	nping int
+	seen      time.Time
+	nping     int
+	bootstrap bool
 }
 
 type packet struct {
@@ -51,56 +50,61 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func (d *Dave) Send(msg *davepb.Msg) {
-	d.send <- msg
+func (d *Dave) Send(msg *davepb.Msg) error {
+	switch msg.Op {
+	case davepb.Op_SETDAT:
+	case davepb.Op_GETDAT:
+		d.send <- msg
+	default:
+		return fmt.Errorf("sending %v is not supported", msg.Op)
+	}
+	return nil
 }
 
-func (d *Dave) Msg() <-chan *davepb.Msg {
+func (d *Dave) Msgch() <-chan *davepb.Msg {
 	return d.msgch
 }
 
-func NewDave(port int, bootstrap []netip.AddrPort) *Dave {
-	laddrstr := fmt.Sprintf(":%d", port)
-	laddr, err := net.ResolveUDPAddr("udp", laddrstr)
+func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
+	laddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[::1]:%d", port))
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
-	conn, err := net.ListenUDP("udp", laddr)
+	conn, err := net.ListenUDP("udp6", laddr)
 	if err != nil {
-		laddr, err = net.ResolveUDPAddr("udp", ":0")
+		laddr, err = net.ResolveUDPAddr("udp6", ":0")
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
-		conn, err = net.ListenUDP("udp", laddr)
+		conn, err = net.ListenUDP("udp6", laddr)
 		if err != nil {
-			panic(err)
+			return nil, err
 		}
 	}
-	fmt.Printf("%s\n", conn.LocalAddr())
+	fmt.Printf("listening %s\n", conn.LocalAddr())
 	packetRelay := listen(conn)
-	send := make(chan *davepb.Msg, 1)
-	payload := marshal(&davepb.Msg{Op: davepb.Op_GETADDR})
-	for _, b := range bootstrap {
-		writeAddr(conn, payload, b)
+	peers := make(map[netip.AddrPort]*peer)
+	for _, ip := range bootstrap {
+		peers[ip] = &peer{time.Time{}, 0, true}
 	}
-	return &Dave{send, dave(conn, packetRelay, send)}
+	send := make(chan *davepb.Msg, 1)
+	return &Dave{send, dave(conn, peers, packetRelay, send)}, nil
 }
 
-func Work(msg *davepb.Msg, difficulty int) (<-chan *davepb.Msg, error) {
-	payload := marshal(msg)
-	if len(payload) >= PACKET_SIZE {
+func Work(msg *davepb.Msg, work int) (<-chan *davepb.Msg, error) {
+	if len(marshal(msg)) >= PACKET_SIZE {
 		return nil, fmt.Errorf("msg exceeds packet size of %dB", PACKET_SIZE)
 	}
 	result := make(chan *davepb.Msg)
 	go func() {
-		zeros := make([]byte, difficulty)
-		t := time.Now()
-		msg.Time = timeToBytes(t)
+		zeros := make([]byte, work)
+		msg.Time = timeToBytes(time.Now())
 		msg.Nonce = make([]byte, 32)
 		valSum := sha256.Sum256(msg.Val)
+		h := sha256.New()
 		for {
 			crand.Read(msg.Nonce)
-			h := sha256.New()
+			h.Reset()
 			h.Write(valSum[:])
 			h.Write(msg.Time)
 			h.Write(msg.Nonce)
@@ -115,67 +119,57 @@ func Work(msg *davepb.Msg, difficulty int) (<-chan *davepb.Msg, error) {
 }
 
 func CheckWork(msg *davepb.Msg) int {
-	pl := getPrefixLen(msg.Key)
-	if pl == 0 {
-		return 0
-	}
 	valSum := sha256.Sum256(msg.Val)
 	h := sha256.New()
 	h.Write(valSum[:])
 	h.Write(msg.Time)
 	h.Write(msg.Nonce)
-	sum := h.Sum(nil)
-	if !bytes.Equal(sum, msg.Key) {
+	if !bytes.Equal(h.Sum(nil), msg.Key) {
 		return -1
 	}
-	t := bytesToTime(msg.Time)
-	if t.After(time.Now()) {
+	if bytesToTime(msg.Time).After(time.Now()) {
 		return -2
 	}
-	return pl
+	return getPrefixLen(msg.Key)
 }
 
-func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-chan *davepb.Msg {
+func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-chan *davepb.Msg {
 	msgch := make(chan *davepb.Msg, 1)
 	go func() {
-		peers := make(map[string]*peer)
 		for {
 			select {
 			case pkt := <-pktsch:
-				ipstr := pkt.ip.String()
-				p, ok := peers[ipstr]
-				if !ok {
-					peers[ipstr] = &peer{parseAddr(ipstr), time.Now(), 0}
-					p = peers[ipstr]
+				p, ok := peers[pkt.ip]
+				if ok {
+					p.seen = time.Now()
+					p.nping = 0
+				} else {
+					peers[pkt.ip] = &peer{time.Now(), 0, false}
 				}
-				p.seen = time.Now()
-				p.nping = 0
 				for _, maddrstr := range pkt.msg.Addrs {
 					maddr := parseAddr(maddrstr)
-					_, ok := peers[maddrstr]
+					_, ok := peers[maddr]
 					if !ok {
-						peers[maddrstr] = &peer{maddr, time.Time{}, 0}
+						peers[maddr] = &peer{time.Time{}, 0, false}
 					}
 				}
 				switch pkt.msg.Op {
 				case davepb.Op_GETADDR:
-					payload := marshal(&davepb.Msg{
+					addrs := randomAddrs(peers, pkt.msg.Addrs, NADDR)
+					writeAddr(conn, marshal(&davepb.Msg{
 						Op:    davepb.Op_ADDR,
-						Addrs: randomAddrs(peers, pkt.msg.Addrs, NADDR),
-					})
-					writeAddr(conn, payload, pkt.ip)
+						Addrs: addrs,
+					}), pkt.ip)
 				case davepb.Op_SETDAT:
 					if len(pkt.msg.Addrs) < FWD_DIST && CheckWork(pkt.msg) >= WORK_MIN {
-						payload := marshal(pkt.msg)
-						for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
-							writeAddr(conn, payload, parseAddr(rad))
+						for _, rad := range randomAddrs(peers, pkt.msg.Addrs, FANOUT_SETDAT) {
+							writeAddr(conn, marshal(pkt.msg), parseAddr(rad))
 						}
 					}
 				case davepb.Op_GETDAT:
 					if len(pkt.msg.Addrs) < FWD_DIST {
-						payload := marshal(pkt.msg)
-						for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
-							writeAddr(conn, payload, parseAddr(rad))
+						for _, rad := range randomAddrs(peers, pkt.msg.Addrs, FANOUT_GETDAT) {
+							writeAddr(conn, marshal(pkt.msg), parseAddr(rad))
 						}
 					}
 				case davepb.Op_DAT:
@@ -194,32 +188,21 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 				payload := marshal(msend)
 				switch msend.Op {
 				case davepb.Op_SETDAT:
-					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
+					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) { // exclude bootstrap?
 						writeAddr(conn, payload, parseAddr(rad))
 					}
 				case davepb.Op_GETDAT:
-					payload := marshal(msend)
-					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
+					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) { // exclude bootstrap?
 						writeAddr(conn, payload, parseAddr(rad))
 					}
-				default:
-					panic(fmt.Sprintf("unsupported op %v", msend.Op))
 				}
 			case <-time.After(PING_PERIOD):
-				q := quiet(peers)
-				if q != nil {
-					q.nping += 1
-					if time.Since(q.seen) > PING_PERIOD*DROP_AFTER/2 {
-						payload := marshal(&davepb.Msg{
-							Op: davepb.Op_GETADDR,
-						})
-						writeAddr(conn, payload, q.ip)
-					}
-				}
-				for key, p := range peers {
-					if p.nping > DROP_AFTER {
-						delete(peers, key)
-						fmt.Println("dropped", key)
+				q, qip := random(peers)
+				ping(conn, q, qip)
+				for ip, p := range peers {
+					if !p.bootstrap && p.nping > DROP_AFTER {
+						delete(peers, ip)
+						fmt.Println("dropped", ip)
 					}
 				}
 			}
@@ -228,7 +211,16 @@ func dave(conn *net.UDPConn, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-
 	return msgch
 }
 
-func randomAddrs(peers map[string]*peer, exclude []string, limit int) []string {
+func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
+	if q != nil {
+		q.nping += 1
+		writeAddr(conn, marshal(&davepb.Msg{
+			Op: davepb.Op_GETADDR,
+		}), qip)
+	}
+}
+
+func randomAddrs(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
 	n := len(peers) - len(exclude)
 	if n <= 0 {
 		return []string{}
@@ -236,16 +228,17 @@ func randomAddrs(peers map[string]*peer, exclude []string, limit int) []string {
 	if n > limit {
 		n = limit
 	}
-	mygs := make(map[string]string, 0)
+	mygs := make(map[netip.AddrPort]string, 0)
 	next := make([]string, 0)
 	for len(mygs) < n {
 		r := mrand.Intn(len(peers) - 1)
 		j := 0
-		for key, p := range peers {
-			if j == r && p.nping < DROP_AFTER {
-				if !in(key, exclude) {
-					mygs[key] = key
-					next = append(next, key)
+		for ip := range peers {
+			ipstr := ip.String()
+			if j == r {
+				if !in(ipstr, exclude) {
+					mygs[ip] = ipstr
+					next = append(next, ipstr)
 				}
 			}
 			j++
@@ -254,20 +247,22 @@ func randomAddrs(peers map[string]*peer, exclude []string, limit int) []string {
 	return next
 }
 
-func quiet(peers map[string]*peer) *peer {
-	var quiet *peer
-	for _, r := range peers {
-		if quiet == nil {
-			quiet = r
-		} else if r.seen.Before(quiet.seen) {
-			quiet = r
-		}
+func random(peers map[netip.AddrPort]*peer) (*peer, netip.AddrPort) {
+	var r, j int
+	if len(peers) > 1 {
+		r = mrand.Intn(len(peers) - 1)
 	}
-	return quiet
+	for ip, p := range peers {
+		if r == j {
+			return p, ip
+		}
+		j++
+	}
+	return nil, netip.AddrPort{}
 }
 
 func listen(conn *net.UDPConn) <-chan packet {
-	msgch := make(chan packet, 10)
+	msgch := make(chan packet, 1)
 	go func() {
 		defer conn.Close()
 		for {

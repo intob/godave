@@ -11,14 +11,14 @@ import (
 )
 
 func main() {
-	portFlag := flag.Int("p", godave.PORT_DEFAULT, "listen port")
+	portFlag := flag.Int("p", 0, "listen port")
 	peerFlag := flag.String("b", "", "bootstrap peer")
 	flag.Parse()
 	bootstrap := make([]netip.AddrPort, 0)
 	peerstr := *peerFlag
 	if peerstr != "" {
 		if strings.HasPrefix(peerstr, ":") {
-			peerstr = "127.0.0.1" + peerstr
+			peerstr = "[::1]" + peerstr
 		}
 		addr, err := netip.ParseAddrPort(peerstr)
 		if err != nil {
@@ -26,10 +26,14 @@ func main() {
 		}
 		bootstrap = append(bootstrap, addr)
 	}
-	d := godave.NewDave(*portFlag, bootstrap)
+	fmt.Println(bootstrap)
+	d, err := godave.NewDave(*portFlag, bootstrap)
+	if err != nil {
+		panic(err)
+	}
 	var n int
 	fmt.Printf("bootstrap")
-	for range d.Msg() {
+	for range d.Msgch() {
 		n++
 		fmt.Printf(".\033[0K")
 		if n >= godave.BOOTSTRAP_MSG {
@@ -62,46 +66,20 @@ func main() {
 				fmt.Println("GETDAT failed: correct usage is getdat <key>")
 				return
 			}
-
 		default:
 			panic("command not recognized")
 		}
 	}
-	for m := range d.Msg() {
+	for m := range d.Msgch() {
 		switch m.Op {
-		case davepb.Op_DAT:
-			fmt.Printf("DAT :: %s\n", string(m.Val))
 		case davepb.Op_SETDAT:
 			fmt.Printf("SETDAT :: %x\n", m.Key)
 		case davepb.Op_GETDAT:
 			fmt.Printf("GETDAT :: %x\n", m.Key)
+		case davepb.Op_DAT:
+			fmt.Printf("DAT :: %x :: %s\n", m.Key, string(m.Val))
 		default:
 			fmt.Printf("%v :: %+v\n", m.Op, m.Addrs)
 		}
 	}
 }
-
-/*
-func readHosts(fname string) ([]string, error) {
-	f, err := os.Open(fname)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	hosts := make([]string, 0)
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		l := s.Text()
-		if l != "" && !strings.HasPrefix(l, "#") {
-			l = strings.ReplaceAll(l, "\t", " ")
-			fields := strings.Split(l, " ")
-			if len(fields) == 0 {
-				continue
-			}
-			addr := fmt.Sprintf("%s:%d", fields[0], PORT_DEFAULT)
-			hosts = append(hosts, addr)
-		}
-	}
-	return hosts, nil
-}
-*/
