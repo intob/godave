@@ -23,7 +23,7 @@ const (
 	FWD_DIST      = 7
 	NADDR         = 3
 	PING_PERIOD   = 127713920 * time.Nanosecond
-	TOLERANCE     = 8
+	TOLERANCE     = 2
 	WORK_MIN      = 3
 	BOOTSTRAP_MSG = 8
 )
@@ -73,14 +73,7 @@ func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
 	}
 	conn, err := net.ListenUDP("udp6", laddr)
 	if err != nil {
-		laddr, err = net.ResolveUDPAddr("udp6", ":0")
-		if err != nil {
-			return nil, err
-		}
-		conn, err = net.ListenUDP("udp6", laddr)
-		if err != nil {
-			return nil, err
-		}
+		return nil, err
 	}
 	fmt.Printf("listening %s\n", conn.LocalAddr())
 	packetRelay := listen(conn)
@@ -134,12 +127,13 @@ func CheckWork(msg *davepb.Msg) int {
 	return getPrefixLen(msg.Key)
 }
 
-func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packet, sendch <-chan *davepb.Msg) <-chan *davepb.Msg {
+func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
+	pktch <-chan packet, sendch <-chan *davepb.Msg) <-chan *davepb.Msg {
 	msgch := make(chan *davepb.Msg, 1)
 	go func() {
 		for {
 			select {
-			case pkt := <-pktsch:
+			case pkt := <-pktch:
 				p, ok := peers[pkt.ip]
 				if ok {
 					p.seen = time.Now()
@@ -148,14 +142,15 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				} else {
 					peers[pkt.ip] = &peer{}
 				}
-				for _, maddrstr := range pkt.msg.Addrs {
-					maddr := parseAddr(maddrstr)
-					_, ok := peers[maddr]
-					if !ok {
-						peers[maddr] = &peer{}
-					}
-				}
 				switch pkt.msg.Op {
+				case davepb.Op_ADDR:
+					for _, maddrstr := range pkt.msg.Addrs {
+						maddr := parseAddr(maddrstr)
+						_, ok := peers[maddr]
+						if !ok {
+							peers[maddr] = &peer{}
+						}
+					}
 				case davepb.Op_GETADDR:
 					writeAddr(conn, marshal(&davepb.Msg{
 						Op:    davepb.Op_ADDR,
@@ -203,7 +198,9 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer, pktsch <-chan packe
 				for ip, p := range peers {
 					if !p.bootstrap && p.nping > TOLERANCE {
 						p.drop += 1
-						if p.drop > TOLERANCE*2 {
+						p.nping = 0
+						if p.drop > 3*TOLERANCE {
+							fmt.Println("DROPPED", ip)
 							delete(peers, ip)
 						}
 					}
@@ -224,30 +221,29 @@ func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 }
 
 func randomAddrs(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
-	n := len(peers) - len(exclude)
-	if n <= 0 {
-		return []string{}
-	}
-	if n > limit {
-		n = limit
-	}
-	mygs := make(map[netip.AddrPort]string)
-	next := make([]string, 0)
-	for len(next) < n {
-		r := mrand.Intn(len(peers) - 1)
-		j := 0
-		for ip, p := range peers {
-			_, already := mygs[ip]
-			ipstr := ip.String()
-			if j == r && !already && !in(ipstr, exclude) && p.nping <= 1 {
-				mygs[ip] = ipstr
-				next = append(next, ipstr)
-				break
-			}
-			j++
+	candidates := make([]string, 0)
+	for ip, p := range peers {
+		if !in(ip.String(), exclude) && p.drop <= 1 && p.nping <= 1 {
+			candidates = append(candidates, ip.String())
 		}
 	}
-	return next
+	if len(candidates) == 0 {
+		return []string{}
+	}
+	if len(candidates) == 1 {
+		return []string{candidates[0]}
+	}
+	mygs := make(map[string]struct{})
+	ans := make([]string, 0)
+	for len(ans) < len(candidates) && len(ans) < limit {
+		r := mrand.Intn(len(candidates) - 1)
+		c := candidates[r]
+		_, already := mygs[c]
+		if !already {
+			ans = append(ans, c)
+		}
+	}
+	return ans
 }
 
 func random(peers map[netip.AddrPort]*peer) (*peer, netip.AddrPort) {
