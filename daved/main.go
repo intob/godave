@@ -16,7 +16,8 @@ import (
 func main() {
 	flagport := flag.Int("p", 0, "listen port")
 	flagpeer := flag.String("b", "", "bootstrap peer")
-	hosts := flag.String("h", "", "hosts file")
+	flaghosts := flag.String("h", "", "hosts file")
+	flagprev := flag.String("prev", "", "prev work")
 	flag.Parse()
 	bootstrap := make([]netip.AddrPort, 0)
 	peerstr := *flagpeer
@@ -30,8 +31,8 @@ func main() {
 		}
 		bootstrap = append(bootstrap, addr)
 	}
-	if *hosts != "" {
-		bh, err := readHosts(*hosts)
+	if *flaghosts != "" {
+		bh, err := readHosts(*flaghosts)
 		if err != nil {
 			panic(err)
 		}
@@ -41,27 +42,38 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	var n int
-	fmt.Printf("%v\nbootstrap", bootstrap)
-	for range d.Recv {
-		n++
-		fmt.Printf(".\033[0K")
-		if n >= godave.BOOTSTRAP_MSG {
-			fmt.Print("\n\033[0K")
-			break
+	go func() {
+		var n int
+		fmt.Printf("%v\nbootstrap\n", bootstrap)
+		for range d.Recv {
+			n++
+			fmt.Printf(".\033[0K")
+			if n >= godave.BOOTSTRAP_MSG {
+				fmt.Print("\n\033[0K")
+				break
+			}
 		}
-	}
+	}()
 	if flag.NArg() > 0 {
 		action := flag.Arg(0)
 		switch strings.ToUpper(action) {
 		case davepb.Op_SETDAT.String():
 			if flag.NArg() < 2 {
 				fmt.Println("SETDAT failed: correct usage is setdat <value>")
-				return
+				os.Exit(1)
 			}
 			fmt.Println("setdat working...")
+			var prev []byte
+			if *flagprev != "" {
+				prev, err = hex.DecodeString(*flagprev)
+				if err != nil {
+					fmt.Println("SETDAT failed: failed to decode prev hex")
+					os.Exit(1)
+				}
+			}
 			work, err := godave.Work(&davepb.Msg{
-				Val: []byte(flag.Arg(1)),
+				Val:  []byte(flag.Arg(1)),
+				Prev: prev,
 			}, godave.WORK_MIN)
 			if err != nil {
 				panic(err)
@@ -89,6 +101,8 @@ func main() {
 	}
 	for m := range d.Recv {
 		switch m.Op {
+		case davepb.Op_ADDR:
+			fmt.Printf("ADDR :: %v\n", m.Addrs)
 		case davepb.Op_SETDAT:
 			fmt.Printf("SETDAT :: %x\n", m.Work)
 		case davepb.Op_GETDAT:

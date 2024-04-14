@@ -1,14 +1,14 @@
 syntax = "proto3";
-
 option go_package = "./davepb";
 
 message Msg {
-  Op op = 1; // operation
+  Op op = 1;
   repeated string addrs = 2; // set of addr:port
   bytes val = 3; // anything
-  bytes time = 4; // big-endian unix milli
+  bytes time = 4; // 15B? big-endian unix milli
   bytes nonce = 5; // 32B random
   bytes work = 6; // 32B sha256
+  bytes prev = 7; // 32B sha256
 }
 
 enum Op {
@@ -18,4 +18,3 @@ enum Op {
   GETADDR = 3;
   ADDR = 4;
 }
-
