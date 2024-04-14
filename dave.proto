@@ -5,10 +5,10 @@ option go_package = "./davepb";
 message Msg {
   Op op = 1; // operation
   repeated string addrs = 2; // set of addr:port
-  optional bytes val = 3; // anything
-  optional bytes time = 4; // big-endian unix milli
-  optional bytes nonce = 5; // 32B random
-  optional bytes key = 6; // 32B sha256
+  bytes val = 3; // anything
+  bytes time = 4; // big-endian unix milli
+  bytes nonce = 5; // 32B random
+  bytes work = 6; // 32B sha256
 }
 
 enum Op {

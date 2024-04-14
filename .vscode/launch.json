@@ -10,7 +10,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "/Users/joey/dave/daved",
-            "args": ["-p", "6103", "-b", ":6102"],
+            "args": ["-b", ":1992", "setdat", "oh_my_wow"],
         }
     ],
     "miDebuggerPath": "/Users/joey/go/bin/dlv"
