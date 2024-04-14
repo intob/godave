@@ -38,6 +38,7 @@ type Dave struct {
 type Dat struct {
 	Prev  []byte
 	Val   []byte
+	Tag   []byte
 	Time  []byte
 	Nonce []byte
 }
@@ -79,16 +80,18 @@ func Work(msg *davepb.Msg, work int) (<-chan *davepb.Msg, error) {
 	result := make(chan *davepb.Msg)
 	go func() {
 		zeros := make([]byte, work)
-		msg.Time = timeToBytes(time.Now())
 		msg.Nonce = make([]byte, 32)
-		valSum := sha256.Sum256(msg.Val)
+		msg.Time = timeToBytes(time.Now())
 		h := sha256.New()
+		h.Write(msg.Prev)
+		h.Write(msg.Val)
+		h.Write(msg.Tag)
+		h.Write(msg.Time)
+		load := h.Sum(nil)
 		for {
 			crand.Read(msg.Nonce)
 			h.Reset()
-			h.Write(msg.Prev)
-			h.Write(valSum[:])
-			h.Write(msg.Time)
+			h.Write(load)
 			h.Write(msg.Nonce)
 			msg.Work = h.Sum(nil)
 			if bytes.HasPrefix(msg.Work, zeros) {
@@ -101,11 +104,14 @@ func Work(msg *davepb.Msg, work int) (<-chan *davepb.Msg, error) {
 }
 
 func CheckWork(msg *davepb.Msg) int {
-	valSum := sha256.Sum256(msg.Val)
 	h := sha256.New()
 	h.Write(msg.Prev)
-	h.Write(valSum[:])
+	h.Write(msg.Val)
+	h.Write(msg.Tag)
 	h.Write(msg.Time)
+	load := h.Sum(nil)
+	h.Reset()
+	h.Write(load)
 	h.Write(msg.Nonce)
 	if !bytes.Equal(h.Sum(nil), msg.Work) {
 		return -1
@@ -160,18 +166,20 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					}), pkt.ip)
 				case davepb.Op_SETDAT:
 					if CheckWork(m) >= WORK_MIN {
-						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Time, m.Nonce}
+						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Time, m.Nonce}
 						if len(m.Addrs) < FWD_DIST {
 							for _, rad := range rndAddr(peers, m.Addrs, FANOUT_SETDAT) {
 								wraddr(conn, marshal(m), parseAddr(rad))
 							}
 						}
+					} else {
+						fmt.Printf("want %d, got %d\n", WORK_MIN, CheckWork(m))
 					}
 				case davepb.Op_GETDAT:
 					d, ok := data[hex.EncodeToString(m.Work)]
 					if ok {
 						for _, addr := range m.Addrs {
-							wraddr(conn, marshal(&davepb.Msg{Op: davepb.Op_DAT, Val: d.Val, Time: d.Time,
+							wraddr(conn, marshal(&davepb.Msg{Op: davepb.Op_DAT, Val: d.Val, Tag: d.Tag, Time: d.Time,
 								Nonce: d.Nonce, Work: m.Work, Prev: d.Prev}), parseAddr(addr))
 						}
 					} else if len(m.Addrs) < FWD_DIST {
