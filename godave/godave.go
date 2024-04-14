@@ -125,12 +125,10 @@ func dave(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 				case davepb.Op_SETDAT:
 					for _, rad := range randomAddrs(peers, nil, FANOUT_SETDAT) {
 						writeAddr(conn, marshal(msend), parseAddr(rad))
-						fmt.Println("sent SET to", rad)
 					}
 				case davepb.Op_GETDAT:
 					for _, rad := range randomAddrs(peers, nil, FANOUT_GETDAT) {
 						writeAddr(conn, marshal(msend), parseAddr(rad))
-						fmt.Println("sent GET to", rad)
 					}
 				}
 			case pkt := <-pkts:

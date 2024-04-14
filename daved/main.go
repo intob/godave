@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"net/netip"
@@ -71,7 +72,16 @@ func main() {
 		case davepb.Op_GETDAT.String():
 			if flag.NArg() < 2 {
 				fmt.Println("GETDAT failed: correct usage is getdat <work>")
-				return
+				os.Exit(1)
+			}
+			work, err := hex.DecodeString(flag.Arg(1))
+			if err != nil {
+				fmt.Println("GETDAT failed: failed to decode work hex")
+				os.Exit(1)
+			}
+			d.Send <- &davepb.Msg{
+				Op:   davepb.Op_GETDAT,
+				Work: work,
 			}
 		default:
 			panic("command not recognized")
