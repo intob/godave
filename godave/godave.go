@@ -288,11 +288,9 @@ func listen(conn *net.UDPConn) <-chan packet {
 	return msgch
 }
 
-func writeAddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
+func writeAddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) error {
 	_, err := conn.WriteToUDPAddrPort(payload, addr)
-	if err != nil {
-		panic(err)
-	}
+	return err
 }
 
 func parseAddr(addr string) netip.AddrPort {

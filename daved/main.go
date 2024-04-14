@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 
 	"github.com/intob/dave/godave"
@@ -11,11 +13,12 @@ import (
 )
 
 func main() {
-	portFlag := flag.Int("p", 0, "listen port")
-	peerFlag := flag.String("b", "", "bootstrap peer")
+	flagport := flag.Int("p", 0, "listen port")
+	flagpeer := flag.String("b", "", "bootstrap peer")
+	hosts := flag.String("h", "", "hosts file")
 	flag.Parse()
 	bootstrap := make([]netip.AddrPort, 0)
-	peerstr := *peerFlag
+	peerstr := *flagpeer
 	if peerstr != "" {
 		if strings.HasPrefix(peerstr, ":") {
 			peerstr = "[::1]" + peerstr
@@ -26,13 +29,19 @@ func main() {
 		}
 		bootstrap = append(bootstrap, addr)
 	}
-	fmt.Println(bootstrap)
-	d, err := godave.NewDave(*portFlag, bootstrap)
+	if *hosts != "" {
+		bh, err := readHosts(*hosts)
+		if err != nil {
+			panic(err)
+		}
+		bootstrap = append(bootstrap, bh...)
+	}
+	d, err := godave.NewDave(*flagport, bootstrap)
 	if err != nil {
 		panic(err)
 	}
 	var n int
-	fmt.Printf("bootstrap")
+	fmt.Printf("%v\nbootstrap", bootstrap)
 	for range d.Msgch() {
 		n++
 		fmt.Printf(".\033[0K")
@@ -82,4 +91,31 @@ func main() {
 			fmt.Printf("%v :: %+v\n", m.Op, m.Addrs)
 		}
 	}
+}
+
+func readHosts(fname string) ([]netip.AddrPort, error) {
+	ans := make([]netip.AddrPort, 0)
+	f, err := os.Open(fname)
+	if err != nil {
+		return ans, err
+	}
+	defer f.Close()
+	s := bufio.NewScanner(f)
+	for s.Scan() {
+		l := s.Text()
+		if l != "" && !strings.HasPrefix(l, "#") {
+			l = strings.ReplaceAll(l, "\t", " ")
+			fields := strings.Split(l, " ")
+			if len(fields) == 0 {
+				continue
+			}
+			ap, err := netip.ParseAddrPort(fields[0])
+			if err == nil {
+				ans = append(ans, ap)
+			} else {
+				fmt.Println(err)
+			}
+		}
+	}
+	return ans, nil
 }

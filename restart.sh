@@ -1,5 +1,5 @@
 git pull
-go build
+cd daved && go build
 sudo cp -f dave.service.conf /etc/systemd/system/dave.service
 sudo systemctl daemon-reload
 sudo systemctl enable dave.service
