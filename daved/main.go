@@ -19,11 +19,11 @@ import (
 const BOOTSTRAP_MSG = 8
 
 func main() {
-	flagport := flag.Int("p", 0, "listen port")
+	flagport := flag.Int("port", 0, "listen port")
 	flagpeer := flag.String("b", "", "bootstrap peer")
 	flaghosts := flag.String("h", "", "hosts file")
-	flagprev := flag.String("prev", "", "prev work")
-	flagtag := flag.String("tag", "", "tag")
+	flagprev := flag.String("p", "", "prev work")
+	flagtag := flag.String("t", "", "tag")
 	flag.Parse()
 	bootstrap := make([]netip.AddrPort, 0)
 	peerstr := *flagpeer
@@ -109,7 +109,7 @@ func main() {
 			Prev: prev,
 			Val:  []byte(flag.Arg(1)),
 			Tag:  []byte(*flagtag),
-		}, godave.WORK_MIN)
+		}, godave.DEFAULT_WORK_MIN_STORE)
 		if err != nil {
 			panic(err)
 		}
@@ -189,7 +189,7 @@ func setFile(d *godave.Dave, fname, tag string) {
 			Prev: head,
 			Val:  buf[:n],
 			Tag:  []byte(tag),
-		}, godave.WORK_MIN)
+		}, godave.DEFAULT_WORK_MIN_STORE)
 		if err != nil {
 			panic(err)
 		}
@@ -224,7 +224,7 @@ func getFile(d *godave.Dave, headstr string) <-chan []byte {
 		var i int
 		for m := range d.Recv {
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				if godave.CheckWork(m) < godave.WORK_MIN {
+				if godave.CheckWork(m) < godave.DEFAULT_WORK_MIN_STORE {
 					exit(1, "invalid work")
 				}
 				out <- m.Val

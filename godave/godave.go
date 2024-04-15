@@ -18,16 +18,17 @@ import (
 )
 
 const (
-	PACKET_SIZE   = 1500
-	VAL_SIZE      = 1280
-	PING_PERIOD   = 127713920 * time.Nanosecond
-	FANOUT_GETDAT = 2
-	FANOUT_SETDAT = 2
-	DISTANCE      = 7
-	NPEER         = 3
-	TOLERANCE     = 2
-	DROP          = 4
-	WORK_MIN      = 2
+	PERIOD                 = 127713920 * time.Nanosecond // Heartbeat
+	PACKET_SIZE            = 1500                        // Size of buffer
+	VAL_SIZE               = 1280                        // Maximum size of
+	NPEER                  = 3                           // Number of peers to give
+	TOLERANCE              = 2                           // Threshold of peer.nping to increment peer.drop
+	DROP                   = 4                           // Tolerance multiplier
+	DISTANCE               = 7                           // Number of forwards per packet
+	FANOUT_GETDAT          = 2                           // Number of peers to forward GETDATs
+	FANOUT_SETDAT          = 2                           // Number of peers to forward SETDATs
+	WORK_MIN_FANOUT        = 2                           // Looks good for now
+	DEFAULT_WORK_MIN_STORE = 3                           // Looks good for now
 )
 
 type Dave struct {
@@ -177,22 +178,20 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 						Peers: rndAddr(peers, []string{pkt.ip.String()}, NPEER),
 					}), pkt.ip)
 				case dave.Op_SETDAT:
-					if CheckWork(m) >= WORK_MIN {
+					if CheckWork(m) >= DEFAULT_WORK_MIN_STORE {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Time, m.Nonce}
-						if len(m.Peers) < DISTANCE {
-							for _, rad := range rndAddr(peers, m.Peers, FANOUT_SETDAT) {
-								wraddr(conn, marshal(m), parseAddr(rad))
-							}
+					}
+					if CheckWork(m) >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
+						for _, rad := range rndAddr(peers, m.Peers, FANOUT_SETDAT) {
+							wraddr(conn, marshal(m), parseAddr(rad))
 						}
-					} else {
-						fmt.Printf("want %d, got %d\n", WORK_MIN, CheckWork(m))
 					}
 				case dave.Op_GETDAT:
 					d, ok := data[hex.EncodeToString(m.Work)]
 					if ok {
 						for _, addr := range m.Peers {
-							wraddr(conn, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val, Tag: d.Tag, Time: d.Time,
-								Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
+							wraddr(conn, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
+								Tag: d.Tag, Time: d.Time, Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
 						}
 					} else if len(m.Peers) < DISTANCE {
 						for _, rad := range rndAddr(peers, m.Peers, FANOUT_GETDAT) {
@@ -201,7 +200,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					}
 				}
 				recv <- m
-			case <-time.After(PING_PERIOD):
+			case <-time.After(PERIOD):
 				q, qip := rndPeer(peers)
 				ping(conn, q, qip)
 				for ip, p := range peers {
@@ -248,7 +247,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 }
 
 func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
-	if q != nil {
+	if q != nil && time.Since(q.seen) > TOLERANCE*PERIOD*DROP {
 		q.nping += 1
 		wraddr(conn, marshal(&dave.Msg{
 			Op: dave.Op_GETPEER,
