@@ -6,7 +6,7 @@
 
 Peer-to-peer store on proof-of-work and gossip over UDP.
 
-Copyright 2024 Joey Innes
+Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
