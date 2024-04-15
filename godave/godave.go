@@ -4,7 +4,6 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	mrand "math/rand"
@@ -40,7 +39,6 @@ type Dat struct {
 	Prev  []byte
 	Val   []byte
 	Tag   []byte
-	Time  []byte
 	Nonce []byte
 }
 
@@ -85,12 +83,10 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 	go func() {
 		zeros := make([]byte, work)
 		msg.Nonce = make([]byte, 32)
-		msg.Time = timeToBytes(time.Now())
 		h := sha256.New()
 		h.Write(msg.Prev)
 		h.Write(msg.Val)
 		h.Write(msg.Tag)
-		h.Write(msg.Time)
 		load := h.Sum(nil)
 		for {
 			crand.Read(msg.Nonce)
@@ -114,17 +110,10 @@ func CheckWork(msg *dave.Msg) int {
 	if len(msg.Prev) != 0 && len(msg.Prev) != 32 {
 		return -3
 	}
-	if len(msg.Time) != 0 && len(msg.Time) != 8 {
-		return -4
-	}
-	if bytesToTime(msg.Time).After(time.Now()) {
-		return -5
-	}
 	h := sha256.New()
 	h.Write(msg.Prev)
 	h.Write(msg.Val)
 	h.Write(msg.Tag)
-	h.Write(msg.Time)
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
@@ -179,7 +168,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					}), pkt.ip)
 				case dave.Op_SETDAT:
 					if CheckWork(m) >= DEFAULT_WORK_MIN_STORE {
-						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Time, m.Nonce}
+						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 					}
 					if CheckWork(m) >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
 						for _, rad := range rndAddr(peers, m.Peers, FANOUT_SETDAT) {
@@ -191,7 +180,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					if ok {
 						for _, addr := range m.Peers {
 							wraddr(conn, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
-								Tag: d.Tag, Time: d.Time, Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
+								Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
 						}
 					} else if len(m.Peers) < DISTANCE {
 						for _, rad := range rndAddr(peers, m.Peers, FANOUT_GETDAT) {
@@ -331,19 +320,4 @@ func nzero(key []byte) int {
 		}
 	}
 	return len(key)
-}
-
-func timeToBytes(t time.Time) []byte {
-	milli := t.UnixNano() / 1000000
-	bytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(milli))
-	return bytes
-}
-
-func bytesToTime(b []byte) time.Time {
-	if len(b) != 8 {
-		return time.Time{}
-	}
-	milli := int64(binary.BigEndian.Uint64(b))
-	return time.Unix(0, milli*1000000)
 }
