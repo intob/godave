@@ -21,7 +21,7 @@ const (
 	PACKET_SIZE   = 1500
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
-	FWD_DIST      = 7
+	DISTANCE      = 7
 	NADDR         = 3
 	PING_PERIOD   = 127713920 * time.Nanosecond
 	TOLERANCE     = 2
@@ -179,7 +179,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 				case dave.Op_SETDAT:
 					if CheckWork(m) >= WORK_MIN {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Time, m.Nonce}
-						if len(m.Addrs) < FWD_DIST {
+						if len(m.Addrs) < DISTANCE {
 							for _, rad := range rndAddr(peers, m.Addrs, FANOUT_SETDAT) {
 								wraddr(conn, marshal(m), parseAddr(rad))
 							}
@@ -194,7 +194,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 							wraddr(conn, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val, Tag: d.Tag, Time: d.Time,
 								Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
 						}
-					} else if len(m.Addrs) < FWD_DIST {
+					} else if len(m.Addrs) < DISTANCE {
 						for _, rad := range rndAddr(peers, m.Addrs, FANOUT_GETDAT) {
 							wraddr(conn, marshal(m), parseAddr(rad))
 						}

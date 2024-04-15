@@ -96,12 +96,13 @@ func main() {
 			}()
 			for m := range d.Recv {
 				if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-					fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
 					chunks = append(chunks, m.Val)
+					if m.Prev == nil {
+						break
+					}
 					head = m.Prev
 					i++
-					break
-					// FINISH THIS
+					fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
 				}
 			}
 		}
