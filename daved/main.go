@@ -67,43 +67,24 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
-		/*f, err := os.Create(flag.Arg(1))
-		if err != nil {
-			fmt.Println("failed: create", flag.Arg(1), err)
-		}*/
-		dats := make([][]byte, 0)
-		head, err := hex.DecodeString(flag.Arg(1))
-		if err != nil {
-			fmt.Println("failed: failed to decode hex")
-		}
-		var i int
-		d.Send <- &dave.Msg{
-			Op:   dave.Op_GETDAT,
-			Work: head,
-		}
-		for m := range d.Recv {
-			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				dats = append(dats, m.Val)
-				head = m.Prev
-				i++
-				fmt.Printf("GOT DAT %d HEAD::%x\n", i, head)
-				if head != nil {
-					fmt.Println("sending...")
-					d.Send <- &dave.Msg{
-						Op:   dave.Op_GETDAT,
-						Work: head,
-					}
-					fmt.Println("sent!")
-				} else {
-					break
-				}
+		dats := getFile(d, flag.Arg(1))
+		result := make([]byte, 0)
+		var f *os.File
+		if flag.NArg() > 2 {
+			f, err = os.Create(flag.Arg(2))
+			if err != nil {
+				fmt.Println("failed: create", flag.Arg(1), err)
 			}
+			defer f.Close()
 		}
-		out := make([]byte, 0, len(dats)*godave.VAL_SIZE)
-		for i := len(dats) - 1; i >= 0; i-- {
-			out = append(out, dats[i]...)
+		for d := range dats {
+			result = append(d, result...)
 		}
-		fmt.Printf("got %d dats:\n%v\n", len(dats), string(out))
+		if f != nil {
+			f.Write(result)
+		} else {
+			fmt.Println(string(result))
+		}
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
@@ -214,6 +195,49 @@ func main() {
 			printMsg(m)
 		}
 	}
+}
+
+func getFile(d *godave.Dave, headstr string) <-chan []byte {
+	out := make(chan []byte)
+	go func() {
+		head, err := hex.DecodeString(headstr)
+		if err != nil {
+			fmt.Println("failed: failed to decode hex")
+		}
+		d.Send <- &dave.Msg{
+			Op:   dave.Op_GETDAT,
+			Work: head,
+		}
+		var i int
+		for m := range d.Recv {
+			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
+				if godave.CheckWork(m) < godave.WORK_MIN {
+					exit(1, "invalid work")
+				}
+				out <- m.Val
+				head = m.Prev
+				i++
+				fmt.Printf("GOT DAT %d HEAD::%x\n", i, head)
+				if head == nil {
+					close(out)
+					return
+				}
+			send:
+				for {
+					select {
+					case d.Send <- &dave.Msg{
+						Op:   dave.Op_GETDAT,
+						Work: head,
+					}:
+						break send
+					case <-d.Recv:
+					}
+				}
+
+			}
+		}
+	}()
+	return out
 }
 
 func readHosts(fname string) ([]netip.AddrPort, error) {
