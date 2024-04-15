@@ -69,7 +69,7 @@ type packet struct {
 }
 
 func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
-	laddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[::1]:%d", port))
+	laddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[::]:%d", port))
 	if err != nil {
 		return nil, err
 	}
