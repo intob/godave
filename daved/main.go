@@ -63,9 +63,9 @@ func main() {
 		action = flag.Arg(0)
 	}
 	switch strings.ToUpper(action) {
-	case "GETIMG":
+	case "GETFILE":
 		if flag.NArg() < 2 {
-			exit(1, "failed: correct usage is getimg <HEAD> /path/to/file")
+			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
 		/*f, err := os.Create(flag.Arg(1))
 		if err != nil {
@@ -86,7 +86,7 @@ func main() {
 				chunks = append(chunks, m.Val)
 				head = m.Prev
 				i++
-				fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
+				fmt.Printf("GOT CHUNK %d HEAD::%x\n", i, head)
 				if head != nil {
 					fmt.Println("sending...")
 					d.Send <- &dave.Msg{
@@ -106,9 +106,9 @@ func main() {
 		}
 		fmt.Printf("got %d chunks:\n%v\n", len(chunks), string(out))
 
-	case "SETIMG":
+	case "SETFILE":
 		if flag.NArg() < 2 {
-			exit(1, "failed: correct usage is setimg /path/to/file")
+			exit(1, "failed: correct usage is setfile /path/to/file")
 		}
 		f, err := os.Open(flag.Arg(1))
 		if err != nil {
