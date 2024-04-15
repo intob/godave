@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/netip"
 	"os"
 	"strings"
@@ -19,35 +20,44 @@ import (
 const BOOTSTRAP_MSG = 8
 
 func main() {
-	flagport := flag.Int("port", 0, "listen port")
-	flagpeer := flag.String("b", "", "bootstrap peer")
-	flaghosts := flag.String("h", "", "hosts file")
-	flagprev := flag.String("p", "", "prev work")
-	flagtag := flag.String("t", "", "tag")
+	network := flag.String("network", "udp", "udp|udp6|udp4")
+	work := flag.Int("w", 3, "minimum work to store DAT")
+	lap := flag.String("l", "[::]:0", "listen address:port")
+	bootstrap_peer := flag.String("b", "", "bootstrap peer")
+	bootstrap_hosts := flag.String("h", "", "hosts file")
+	prevhex := flag.String("p", "", "prev work")
+	tag := flag.String("t", "", "tag")
 	flag.Parse()
+
 	bootstrap := make([]netip.AddrPort, 0)
-	peerstr := *flagpeer
-	if peerstr != "" {
-		if strings.HasPrefix(peerstr, ":") {
-			peerstr = "[::1]" + peerstr
+	bpeer := *bootstrap_peer
+	if bpeer != "" {
+		if strings.HasPrefix(bpeer, ":") {
+			bpeer = "[::1]" + bpeer
 		}
-		addr, err := netip.ParseAddrPort(peerstr)
+		addr, err := netip.ParseAddrPort(bpeer)
 		if err != nil {
-			panic(err)
+			exit(1, "failed to parse -p=%q: %v", bpeer, err)
 		}
 		bootstrap = append(bootstrap, addr)
 	}
-	if *flaghosts != "" {
-		bh, err := readHosts(*flaghosts)
+	if *bootstrap_hosts != "" {
+		bh, err := readHosts(*bootstrap_hosts)
 		if err != nil {
-			panic(err)
+			exit(1, "failed to read file %s: %v", *bootstrap_hosts, err)
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
-	d, err := godave.NewDave(*flagport, bootstrap)
+
+	udpaddr, err := net.ResolveUDPAddr(*network, *lap)
 	if err != nil {
-		panic(err)
+		exit(1, "failed to resolve UDP address: %v", err)
 	}
+	d, err := godave.NewDave(*work, udpaddr, bootstrap)
+	if err != nil {
+		exit(1, "failed to make dave: %v", err)
+	}
+
 	var n int
 	fmt.Printf("%v\nbootstrap\n", bootstrap)
 	for range d.Recv {
@@ -58,6 +68,7 @@ func main() {
 			break
 		}
 	}
+
 	var action string
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
@@ -67,7 +78,7 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
-		dats := getFile(d, flag.Arg(1))
+		dats := getFile(d, *work, flag.Arg(1))
 		result := make([]byte, 0)
 		var f *os.File
 		if flag.NArg() > 2 {
@@ -90,7 +101,7 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is setfile /path/to/file")
 		}
-		setFile(d, flag.Arg(1), *flagtag)
+		setFile(d, *work, flag.Arg(1), *tag)
 
 	case "SETDAT":
 		if flag.NArg() < 2 {
@@ -98,8 +109,8 @@ func main() {
 		}
 		fmt.Println("setdat working...")
 		var prev []byte
-		if *flagprev != "" {
-			prev, err = hex.DecodeString(*flagprev)
+		if *prevhex != "" {
+			prev, err = hex.DecodeString(*prevhex)
 			if err != nil {
 				exit(1, "failed: failed to decode hex")
 			}
@@ -108,8 +119,8 @@ func main() {
 			Op:   dave.Op_SETDAT,
 			Prev: prev,
 			Val:  []byte(flag.Arg(1)),
-			Tag:  []byte(*flagtag),
-		}, godave.DEFAULT_WORK_MIN_STORE)
+			Tag:  []byte(*tag),
+		}, *work)
 		if err != nil {
 			panic(err)
 		}
@@ -168,7 +179,7 @@ func getDat(d *godave.Dave, workhex string) {
 	<-done
 }
 
-func setFile(d *godave.Dave, fname, tag string) {
+func setFile(d *godave.Dave, work int, fname, tag string) {
 	f, err := os.Open(fname)
 	if err != nil {
 		exit(1, "failed: open %s: %s", fname, err)
@@ -189,7 +200,7 @@ func setFile(d *godave.Dave, fname, tag string) {
 			Prev: head,
 			Val:  buf[:n],
 			Tag:  []byte(tag),
-		}, godave.DEFAULT_WORK_MIN_STORE)
+		}, work)
 		if err != nil {
 			panic(err)
 		}
@@ -210,7 +221,7 @@ func setFile(d *godave.Dave, fname, tag string) {
 	fmt.Printf("HEAD %x\n", head)
 }
 
-func getFile(d *godave.Dave, headstr string) <-chan []byte {
+func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
 	out := make(chan []byte)
 	go func() {
 		head, err := hex.DecodeString(headstr)
@@ -224,8 +235,9 @@ func getFile(d *godave.Dave, headstr string) <-chan []byte {
 		var i int
 		for m := range d.Recv {
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				if godave.CheckWork(m) < godave.DEFAULT_WORK_MIN_STORE {
-					exit(1, "invalid work")
+				check := godave.CheckWork(m)
+				if check < work {
+					exit(1, "invalid work: %v, require: %v", check, work)
 				}
 				out <- m.Val
 				head = m.Prev

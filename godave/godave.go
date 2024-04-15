@@ -31,17 +31,16 @@ import (
 )
 
 const (
-	PERIOD                 = 127713920 * time.Nanosecond // Heartbeat
-	PACKET_SIZE            = 1500                        // Size of buffer
-	VAL_SIZE               = 1280                        // Size limit of Dat.Val
-	NPEER                  = 3                           // Number of peers to give
-	TOLERANCE              = 2                           // Threshold of peer.nping to increment peer.drop
-	DROP                   = 4                           // Tolerance multiplier
-	DISTANCE               = 7                           // Number of forwards per packet
-	FANOUT_GETDAT          = 2                           // Number of peers to forward GETDATs
-	FANOUT_SETDAT          = 2                           // Number of peers to forward SETDATs
-	WORK_MIN_FANOUT        = 2                           // Looks good for now
-	DEFAULT_WORK_MIN_STORE = 3                           // Looks good for now
+	PERIOD          = 127713920 * time.Nanosecond // Heartbeat
+	PACKET_SIZE     = 1500                        // Size of buffer
+	VAL_SIZE        = 1280                        // Size limit of Dat.Val
+	NPEER           = 3                           // Number of peers to give
+	TOLERANCE       = 2                           // Threshold of peer.nping to increment peer.drop
+	DROP            = 4                           // Tolerance multiplier
+	DISTANCE        = 7                           // Number of forwards per packet
+	FANOUT_GETDAT   = 2                           // Number of peers to forward GETDATs
+	FANOUT_SETDAT   = 2                           // Number of peers to forward SETDATs
+	WORK_MIN_FANOUT = 2                           // Looks good for now
 )
 
 type Dave struct {
@@ -68,12 +67,8 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
-	laddr, err := net.ResolveUDPAddr("udp6", fmt.Sprintf("[::]:%d", port))
-	if err != nil {
-		return nil, err
-	}
-	conn, err := net.ListenUDP("udp6", laddr)
+func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
+	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +78,7 @@ func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
 		peers[ip] = &peer{time.Time{}, 0, true, 0}
 	}
 	send := make(chan *dave.Msg, 1)
-	return &Dave{send, d(conn, peers, lstn(conn), send)}, nil
+	return &Dave{send, d(conn, peers, lstn(conn), send, work)}, nil
 }
 
 func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
@@ -139,7 +134,7 @@ func CheckWork(msg *dave.Msg) int {
 }
 
 func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
-	pkts <-chan packet, send <-chan *dave.Msg) <-chan *dave.Msg {
+	pkts <-chan packet, send <-chan *dave.Msg, work int) <-chan *dave.Msg {
 	recv := make(chan *dave.Msg, 1)
 	go func() {
 		data := make(map[string]*Dat)
@@ -181,7 +176,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 						Peers: rndAddr(peers, []string{pkt.ip.String()}, NPEER),
 					}), pkt.ip)
 				case dave.Op_SETDAT:
-					if CheckWork(m) >= DEFAULT_WORK_MIN_STORE {
+					if CheckWork(m) >= work {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 					}
 					if CheckWork(m) >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
