@@ -13,7 +13,7 @@ Minimal distributed binary store on UDP gossip & proof-of-work.
 1.5 DAT
 
 
-2. Message Wire Format
+2.  Message Wire Format
 Each message is serialized into binary using protobuf. See dave.proto for the protobuf spec.
 
 2.1 How to Transpile Protobuf Spec for Go
