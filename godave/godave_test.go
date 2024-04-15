@@ -3,17 +3,17 @@ package godave
 import (
 	"testing"
 
-	"github.com/intob/dave/godave/davepb"
+	"github.com/intob/dave/godave/dave"
 )
 
 func TestCheckWorkEmpty(t *testing.T) {
 	expect := -1
-	c := CheckWork(&davepb.Msg{})
+	c := CheckWork(&dave.Msg{})
 	if c != expect {
 		t.Fatalf("Expected %v, CheckWork returned %v", expect, c)
 	}
-	c = CheckWork(&davepb.Msg{
-		Op:  davepb.Op_SETDAT,
+	c = CheckWork(&dave.Msg{
+		Op:  dave.Op_SETDAT,
 		Val: []byte("test"),
 	})
 	if c != expect {
@@ -23,8 +23,8 @@ func TestCheckWorkEmpty(t *testing.T) {
 
 func TestWork(t *testing.T) {
 	work := 2
-	m := &davepb.Msg{
-		Op:  davepb.Op_SETDAT,
+	m := &dave.Msg{
+		Op:  dave.Op_SETDAT,
 		Val: []byte("test"),
 	}
 	w, err := Work(m, work)

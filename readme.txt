@@ -5,6 +5,9 @@ Distributed binary store based on proof-of-work.
 1. Wire format
 Each message is serialized into binary.
 The message format is defined in the protobuf spec, `dave.proto`.
+1.1 Transpile Protobuf Spec
+#!/bin/bash
+protoc --go_out=. dave.proto
 
 2. GET_ADDR, ADDR
 Each node executes a minimal gossip protocol that keeps the network together.

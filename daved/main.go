@@ -2,15 +2,22 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"io"
 	"net/netip"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/intob/dave/godave"
-	"github.com/intob/dave/godave/davepb"
+	"github.com/intob/dave/godave/dave"
+)
+
+const (
+	ERR_TIMEOUT = 1
 )
 
 func main() {
@@ -55,65 +62,155 @@ func main() {
 			}
 		}
 	}()
-	go func() {
-		if flag.NArg() > 0 {
-			action := flag.Arg(0)
-			switch strings.ToUpper(action) {
-			case davepb.Op_SETDAT.String():
-				if flag.NArg() < 2 {
-					fmt.Println("SETDAT failed: correct usage is setdat <value>")
-					os.Exit(1)
+	var action string
+	if flag.NArg() > 0 {
+		action = flag.Arg(0)
+	}
+	switch strings.ToUpper(action) {
+	case "GETIMG":
+		if flag.NArg() < 2 {
+			exit(1, "failed: correct usage is getimg <HEAD> /path/to/file")
+		}
+		/*f, err := os.Create(flag.Arg(1))
+		if err != nil {
+			fmt.Println("failed: create", flag.Arg(1), err)
+		}*/
+		chunks := make([][]byte, 0)
+		head, err := hex.DecodeString(flag.Arg(1))
+		if err != nil {
+			fmt.Println("failed: failed to decode hex")
+		}
+		var i int
+		for {
+			if head == nil {
+				break
+			}
+			go func() {
+				go func() {
+					<-d.Recv
+				}()
+				d.Send <- &dave.Msg{
+					Op:   dave.Op_GETDAT,
+					Work: head,
 				}
-				fmt.Println("setdat working...")
-				var prev []byte
-				if *flagprev != "" {
-					prev, err = hex.DecodeString(*flagprev)
-					if err != nil {
-						fmt.Println("SETDAT failed: failed to decode prev hex")
-						os.Exit(1)
-					}
+			}()
+			for m := range d.Recv {
+				if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
+					fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
+					chunks = append(chunks, m.Val)
+					head = m.Prev
+					i++
+					break
+					// FINISH THIS
 				}
-				work, err := godave.Work(&davepb.Msg{
-					Prev: prev,
-					Val:  []byte(flag.Arg(1)),
-					Tag:  []byte(*flagtag),
-				}, godave.WORK_MIN)
-				if err != nil {
-					panic(err)
-				}
-				msg := <-work
-				d.Send <- msg
-				fmt.Printf("SETDAT done :: %s\n%x\n", msg.Tag, msg.Work)
-				return
-			case davepb.Op_GETDAT.String():
-				if flag.NArg() < 2 {
-					fmt.Println("GETDAT failed: correct usage is getdat <work>")
-					os.Exit(1)
-				}
-				work, err := hex.DecodeString(flag.Arg(1))
-				if err != nil {
-					fmt.Println("GETDAT failed: failed to decode work hex")
-					os.Exit(1)
-				}
-				d.Send <- &davepb.Msg{
-					Op:   davepb.Op_GETDAT,
-					Work: work,
-				}
-			default:
-				panic("command not recognized")
 			}
 		}
-	}()
-	for m := range d.Recv {
-		switch m.Op {
-		case davepb.Op_ADDR:
-			fmt.Printf("ADDR :: %v\n", m.Addrs)
-		case davepb.Op_SETDAT:
-			fmt.Printf("SETDAT :: %s :: %x\n", m.Tag, m.Work)
-		case davepb.Op_GETDAT:
-			fmt.Printf("GETDAT :: %x\n", m.Work)
-		case davepb.Op_DAT:
-			fmt.Printf("DAT :: %s :: %x :: %s\n", m.Tag, m.Work, string(m.Val))
+		fmt.Printf("got %d chunks: %v\n", len(chunks), chunks)
+	case "SETIMG":
+		if flag.NArg() < 2 {
+			exit(1, "failed: correct usage is setimg /path/to/file")
+		}
+		f, err := os.Open(flag.Arg(1))
+		if err != nil {
+			exit(1, "failed: open %s: %s", flag.Arg(1), err)
+		}
+		defer f.Close()
+		go func() {
+			for m := range d.Recv {
+				printMsg(m)
+			}
+		}()
+		prev := make([]byte, 0, 32)
+		var i int
+		for {
+			buf := make([]byte, 1280)
+			n, err := f.Read(buf)
+			if err != nil {
+				if err == io.EOF {
+					break
+				}
+			}
+			work, err := godave.Work(&dave.Msg{
+				Op:   dave.Op_SETDAT,
+				Prev: prev,
+				Val:  buf[:n],
+				Tag:  []byte(*flagtag),
+			}, godave.WORK_MIN)
+			if err != nil {
+				panic(err)
+			}
+			msg := <-work
+			d.Send <- msg
+			prev = msg.Work
+			i++
+			fmt.Printf("chunk %d done :: %s\n%x\n", i, msg.Tag, msg.Work)
+		}
+		fmt.Println("done")
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	case dave.Op_SETDAT.String():
+		go func() {
+			for m := range d.Recv {
+				printMsg(m)
+			}
+		}()
+		if flag.NArg() < 2 {
+			exit(1, "failed: correct usage is setdat <VAL>")
+		}
+		fmt.Println("setdat working...")
+		var prev []byte
+		if *flagprev != "" {
+			prev, err = hex.DecodeString(*flagprev)
+			if err != nil {
+				exit(1, "failed: failed to decode hex")
+			}
+		}
+		work, err := godave.Work(&dave.Msg{
+			Op:   dave.Op_SETDAT,
+			Prev: prev,
+			Val:  []byte(flag.Arg(1)),
+			Tag:  []byte(*flagtag),
+		}, godave.WORK_MIN)
+		if err != nil {
+			panic(err)
+		}
+		msg := <-work
+		d.Send <- msg
+		fmt.Printf("SETDAT done :: %s\n%x\n", msg.Tag, msg.Work)
+		time.Sleep(500 * time.Millisecond)
+	case dave.Op_GETDAT.String():
+		if flag.NArg() < 2 {
+			exit(1, "failed: correct usage is getdat <WORK>")
+		}
+		work, err := hex.DecodeString(flag.Arg(1))
+		if err != nil {
+			exit(1, "failed: failed to decode hex")
+		}
+		done := make(chan struct{})
+		go func() {
+			t := time.After(time.Second)
+			for {
+				select {
+				case m := <-d.Recv:
+					if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
+						printMsg(m)
+						done <- struct{}{}
+						return
+					}
+				case <-t:
+					done <- struct{}{}
+					return
+				}
+			}
+		}()
+		d.Send <- &dave.Msg{
+			Op:   dave.Op_GETDAT,
+			Work: work,
+		}
+		<-done
+	default:
+		for m := range d.Recv {
+			printMsg(m)
 		}
 	}
 }
@@ -143,4 +240,22 @@ func readHosts(fname string) ([]netip.AddrPort, error) {
 		}
 	}
 	return ans, nil
+}
+
+func printMsg(m *dave.Msg) {
+	switch m.Op {
+	case dave.Op_ADDR:
+		fmt.Printf("ADDR ADDRS::%v\n", m.Addrs)
+	case dave.Op_SETDAT:
+		fmt.Printf("SETDAT TAG::%s PREV::%x WORK::%x\n", m.Prev, m.Tag, m.Work)
+	case dave.Op_GETDAT:
+		fmt.Printf("GETDAT WORK::%x\n", m.Work)
+	case dave.Op_DAT:
+		fmt.Printf("DAT TAG::%s PREV::%x  WORK::%x VAL::%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
+	}
+}
+
+func exit(code int, msg string, args ...any) {
+	fmt.Printf(msg, args...)
+	os.Exit(code)
 }

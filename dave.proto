@@ -1,5 +1,5 @@
 syntax = "proto3";
-option go_package = "./davepb";
+option go_package = "./godave/dave";
 
 enum Op {
   GETADDR = 0;  // Addr gossip pt.1
