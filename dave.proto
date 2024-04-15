@@ -2,8 +2,8 @@ syntax = "proto3";
 option go_package = "./godave/dave";
 
 enum Op {
-  GETADDR = 0;  // Addr gossip pt.1
-  ADDR = 1;     // Addr gossip pt.2
+  GETPEER = 0;  // Addr gossip pt.1
+  PEER = 1;     // Addr gossip pt.2
   SETDAT = 2;   // Write to the network
   GETDAT = 3;   // Read from the network
   DAT = 4;      // Something stored in the network
@@ -11,7 +11,7 @@ enum Op {
 
 message Msg {
   Op op = 1;
-  repeated string addrs = 2;  // Set of addr:port
+  repeated string peers = 2;  // Set of addr:port
   bytes val = 3;              // Anything
   bytes time = 4;             // 8B big-endian unix milliseconds
   bytes nonce = 5;            // 32B random

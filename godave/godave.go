@@ -19,15 +19,14 @@ import (
 
 const (
 	PACKET_SIZE   = 1500
+	PING_PERIOD   = 127713920 * time.Nanosecond
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	DISTANCE      = 7
-	NADDR         = 3
-	PING_PERIOD   = 127713920 * time.Nanosecond
+	NPEER         = 3
 	TOLERANCE     = 2
 	DROP          = 4
 	WORK_MIN      = 3
-	BOOTSTRAP_MSG = 8
 )
 
 type Dave struct {
@@ -163,24 +162,24 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 				}
 				m := pkt.msg
 				switch m.Op {
-				case dave.Op_ADDR:
-					for _, maddrstr := range m.Addrs {
-						maddr := parseAddr(maddrstr)
-						_, ok := peers[maddr]
+				case dave.Op_PEER:
+					for _, addrstr := range m.Peers {
+						addr := parseAddr(addrstr)
+						_, ok := peers[addr]
 						if !ok {
-							peers[maddr] = &peer{}
+							peers[addr] = &peer{}
 						}
 					}
-				case dave.Op_GETADDR:
+				case dave.Op_GETPEER:
 					wraddr(conn, marshal(&dave.Msg{
-						Op:    dave.Op_ADDR,
-						Addrs: rndAddr(peers, []string{pkt.ip.String()}, NADDR),
+						Op:    dave.Op_PEER,
+						Peers: rndAddr(peers, []string{pkt.ip.String()}, NPEER),
 					}), pkt.ip)
 				case dave.Op_SETDAT:
 					if CheckWork(m) >= WORK_MIN {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Time, m.Nonce}
-						if len(m.Addrs) < DISTANCE {
-							for _, rad := range rndAddr(peers, m.Addrs, FANOUT_SETDAT) {
+						if len(m.Peers) < DISTANCE {
+							for _, rad := range rndAddr(peers, m.Peers, FANOUT_SETDAT) {
 								wraddr(conn, marshal(m), parseAddr(rad))
 							}
 						}
@@ -190,12 +189,12 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 				case dave.Op_GETDAT:
 					d, ok := data[hex.EncodeToString(m.Work)]
 					if ok {
-						for _, addr := range m.Addrs {
+						for _, addr := range m.Peers {
 							wraddr(conn, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val, Tag: d.Tag, Time: d.Time,
 								Nonce: d.Nonce, Work: m.Work}), parseAddr(addr))
 						}
-					} else if len(m.Addrs) < DISTANCE {
-						for _, rad := range rndAddr(peers, m.Addrs, FANOUT_GETDAT) {
+					} else if len(m.Peers) < DISTANCE {
+						for _, rad := range rndAddr(peers, m.Peers, FANOUT_GETDAT) {
 							wraddr(conn, marshal(m), parseAddr(rad))
 						}
 					}
@@ -235,10 +234,10 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				panic(err)
 			}
 			if msg.Op == dave.Op_SETDAT || msg.Op == dave.Op_GETDAT {
-				if len(msg.Addrs) == 0 {
-					msg.Addrs = []string{raddr.String()}
+				if len(msg.Peers) == 0 {
+					msg.Peers = []string{raddr.String()}
 				} else {
-					msg.Addrs = append(msg.Addrs, raddr.String())
+					msg.Peers = append(msg.Peers, raddr.String())
 				}
 			}
 			pkts <- packet{msg, raddr}
@@ -251,7 +250,7 @@ func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 	if q != nil {
 		q.nping += 1
 		wraddr(conn, marshal(&dave.Msg{
-			Op: dave.Op_GETADDR,
+			Op: dave.Op_GETPEER,
 		}), qip)
 	}
 }

@@ -16,9 +16,7 @@ import (
 	"github.com/intob/dave/godave/dave"
 )
 
-const (
-	ERR_TIMEOUT = 1
-)
+const BOOTSTRAP_MSG = 8
 
 func main() {
 	flagport := flag.Int("p", 0, "listen port")
@@ -56,7 +54,7 @@ func main() {
 		for range d.Recv {
 			n++
 			fmt.Printf(".\033[0K")
-			if n >= godave.BOOTSTRAP_MSG {
+			if n >= BOOTSTRAP_MSG {
 				fmt.Print("\n\033[0K")
 				break
 			}
@@ -244,15 +242,19 @@ func readHosts(fname string) ([]netip.AddrPort, error) {
 }
 
 func printMsg(m *dave.Msg) {
+	if m.Op == dave.Op_GETPEER {
+		return
+	}
+	fmt.Printf("%s ", m.Op)
 	switch m.Op {
-	case dave.Op_ADDR:
-		fmt.Printf("ADDR ADDRS::%v\n", m.Addrs)
-	case dave.Op_SETDAT:
-		fmt.Printf("SETDAT TAG::%s PREV::%x WORK::%x\n", m.Prev, m.Tag, m.Work)
+	case dave.Op_PEER:
+		fmt.Printf("%v\n", m.Peers)
 	case dave.Op_GETDAT:
-		fmt.Printf("GETDAT WORK::%x\n", m.Work)
+		fmt.Printf("WORK::%x\n", m.Work)
+	case dave.Op_SETDAT:
+		fmt.Printf("TAG::%s PREV::%x WORK::%x\n", m.Tag, m.Prev, m.Work)
 	case dave.Op_DAT:
-		fmt.Printf("DAT TAG::%s PREV::%x  WORK::%x VAL::%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
+		fmt.Printf("TAG::%s PREV::%x WORK::%x VAL::%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
 	}
 }
 
