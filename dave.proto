@@ -2,18 +2,18 @@ syntax = "proto3";
 option go_package = "./davepb";
 
 enum Op {
-  SETDAT = 0;   // Write to the network
-  GETDAT = 1;   // Read from the network
-  DAT = 2;      // Something stored in the network
-  GETADDR = 3;  // Addr gossip pt.1
-  ADDR = 4;     // Addr gossip pt.2
+  GETADDR = 0;  // Addr gossip pt.1
+  ADDR = 1;     // Addr gossip pt.2
+  SETDAT = 2;   // Write to the network
+  GETDAT = 3;   // Read from the network
+  DAT = 4;      // Something stored in the network
 }
 
 message Msg {
   Op op = 1;
   repeated string addrs = 2;  // Set of addr:port
   bytes val = 3;              // Anything
-  bytes time = 4;             // 15B? big-endian unix milli
+  bytes time = 4;             // 8B big-endian unix milliseconds
   bytes nonce = 5;            // 32B random
   bytes work = 6;             // 32B sha256
   bytes prev = 7;             // 32B sha256

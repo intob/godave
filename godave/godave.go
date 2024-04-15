@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	PACKET_SIZE   = 2048
+	PACKET_SIZE   = 1500
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	FWD_DIST      = 7
@@ -77,6 +77,9 @@ func Work(msg *davepb.Msg, work int) (<-chan *davepb.Msg, error) {
 	if len(marshal(msg)) >= PACKET_SIZE {
 		return nil, fmt.Errorf("msg exceeds packet size of %dB", PACKET_SIZE)
 	}
+	if CheckWork(msg) < -1 {
+		return nil, fmt.Errorf("msg is invalid")
+	}
 	result := make(chan *davepb.Msg)
 	go func() {
 		zeros := make([]byte, work)
@@ -104,6 +107,18 @@ func Work(msg *davepb.Msg, work int) (<-chan *davepb.Msg, error) {
 }
 
 func CheckWork(msg *davepb.Msg) int {
+	if msg.Nonce != nil && len(msg.Nonce) != 32 {
+		return -2
+	}
+	if msg.Prev != nil && len(msg.Prev) != 32 {
+		return -3
+	}
+	if msg.Time != nil && len(msg.Time) != 8 {
+		return -4
+	}
+	if bytesToTime(msg.Time).After(time.Now()) {
+		return -5
+	}
 	h := sha256.New()
 	h.Write(msg.Prev)
 	h.Write(msg.Val)
@@ -115,9 +130,6 @@ func CheckWork(msg *davepb.Msg) int {
 	h.Write(msg.Nonce)
 	if !bytes.Equal(h.Sum(nil), msg.Work) {
 		return -1
-	}
-	if bytesToTime(msg.Time).After(time.Now()) {
-		return -2
 	}
 	return nzero(msg.Work)
 }
@@ -222,7 +234,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			if err != nil {
 				panic(err)
 			}
-			if msg.Op != davepb.Op_ADDR {
+			if msg.Op == davepb.Op_SETDAT || msg.Op == davepb.Op_GETDAT {
 				if len(msg.Addrs) == 0 {
 					msg.Addrs = []string{raddr.String()}
 				} else {
@@ -329,7 +341,10 @@ func timeToBytes(t time.Time) []byte {
 	return bytes
 }
 
-func bytesToTime(bytes []byte) time.Time {
-	milli := int64(binary.BigEndian.Uint64(bytes))
+func bytesToTime(b []byte) time.Time {
+	if len(b) != 8 {
+		return time.Time{}
+	}
+	milli := int64(binary.BigEndian.Uint64(b))
 	return time.Unix(0, milli*1000000)
 }
