@@ -26,7 +26,7 @@ const (
 	NPEER         = 3
 	TOLERANCE     = 2
 	DROP          = 4
-	WORK_MIN      = 3
+	WORK_MIN      = 2
 )
 
 type Dave struct {
@@ -68,7 +68,7 @@ func NewDave(port int, bootstrap []netip.AddrPort) (*Dave, error) {
 	for _, ip := range bootstrap {
 		peers[ip] = &peer{time.Time{}, 0, true, 0}
 	}
-	send := make(chan *dave.Msg)
+	send := make(chan *dave.Msg, 1)
 	return &Dave{send, d(conn, peers, lstn(conn), send)}, nil
 }
 

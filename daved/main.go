@@ -48,18 +48,16 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	go func() {
-		var n int
-		fmt.Printf("%v\nbootstrap\n", bootstrap)
-		for range d.Recv {
-			n++
-			fmt.Printf(".\033[0K")
-			if n >= BOOTSTRAP_MSG {
-				fmt.Print("\n\033[0K")
-				break
-			}
+	var n int
+	fmt.Printf("%v\nbootstrap\n", bootstrap)
+	for range d.Recv {
+		n++
+		fmt.Printf(".\033[0K")
+		if n >= BOOTSTRAP_MSG {
+			fmt.Print("\n\033[0K")
+			break
 		}
-	}()
+	}
 	var action string
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
@@ -79,32 +77,31 @@ func main() {
 			fmt.Println("failed: failed to decode hex")
 		}
 		var i int
-		for {
-			if head == nil {
-				break
-			}
-			go func() {
-				go func() {
-					<-d.Recv
-				}()
-				d.Send <- &dave.Msg{
-					Op:   dave.Op_GETDAT,
-					Work: head,
-				}
-			}()
-			for m := range d.Recv {
-				if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-					chunks = append(chunks, m.Val)
-					if m.Prev == nil {
-						break
+		d.Send <- &dave.Msg{
+			Op:   dave.Op_GETDAT,
+			Work: head,
+		}
+		for m := range d.Recv {
+			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
+				chunks = append(chunks, m.Val)
+				head = m.Prev
+				i++
+				fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
+				if head != nil {
+					fmt.Println("sending...")
+					d.Send <- &dave.Msg{
+						Op:   dave.Op_GETDAT,
+						Work: head,
 					}
-					head = m.Prev
-					i++
-					fmt.Printf("chunk %d: work::%x, prev::%x\n", i, m.Work, m.Prev)
+					fmt.Println("sent!")
+				} else {
+					break
 				}
+
 			}
 		}
 		fmt.Printf("got %d chunks: %v\n", len(chunks), chunks)
+
 	case "SETIMG":
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is setimg /path/to/file")
@@ -142,7 +139,7 @@ func main() {
 			d.Send <- msg
 			prev = msg.Work
 			i++
-			fmt.Printf("chunk %d done :: %s\n%x\n", i, msg.Tag, msg.Work)
+			fmt.Printf("CHUNK %d SENT -> %x\n", i, msg.Work)
 		}
 		fmt.Println("done")
 		time.Sleep(100 * time.Millisecond)
@@ -175,7 +172,8 @@ func main() {
 		}
 		msg := <-work
 		d.Send <- msg
-		fmt.Printf("SETDAT done :: %s\n%x\n", msg.Tag, msg.Work)
+		fmt.Print("-> ")
+		printMsg(msg)
 		time.Sleep(500 * time.Millisecond)
 	case dave.Op_GETDAT.String():
 		if flag.NArg() < 2 {
