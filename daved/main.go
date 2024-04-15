@@ -71,7 +71,7 @@ func main() {
 		if err != nil {
 			fmt.Println("failed: create", flag.Arg(1), err)
 		}*/
-		chunks := make([][]byte, 0)
+		dats := make([][]byte, 0)
 		head, err := hex.DecodeString(flag.Arg(1))
 		if err != nil {
 			fmt.Println("failed: failed to decode hex")
@@ -83,10 +83,10 @@ func main() {
 		}
 		for m := range d.Recv {
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				chunks = append(chunks, m.Val)
+				dats = append(dats, m.Val)
 				head = m.Prev
 				i++
-				fmt.Printf("GOT CHUNK %d HEAD::%x\n", i, head)
+				fmt.Printf("GOT DAT %d HEAD::%x\n", i, head)
 				if head != nil {
 					fmt.Println("sending...")
 					d.Send <- &dave.Msg{
@@ -97,14 +97,13 @@ func main() {
 				} else {
 					break
 				}
-
 			}
 		}
-		out := make([]byte, 0, len(chunks)*godave.VAL_SIZE)
-		for i := len(chunks) - 1; i > 0; i-- {
-			out = append(out, chunks[i]...)
+		out := make([]byte, 0, len(dats)*godave.VAL_SIZE)
+		for i := len(dats) - 1; i >= 0; i-- {
+			out = append(out, dats[i]...)
 		}
-		fmt.Printf("got %d chunks:\n%v\n", len(chunks), string(out))
+		fmt.Printf("got %d dats:\n%v\n", len(dats), string(out))
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
@@ -115,12 +114,7 @@ func main() {
 			exit(1, "failed: open %s: %s", flag.Arg(1), err)
 		}
 		defer f.Close()
-		go func() {
-			for m := range d.Recv {
-				printMsg(m)
-			}
-		}()
-		prev := make([]byte, 0, 32)
+		var head []byte
 		var i int
 		for {
 			buf := make([]byte, godave.VAL_SIZE)
@@ -132,7 +126,7 @@ func main() {
 			}
 			work, err := godave.Work(&dave.Msg{
 				Op:   dave.Op_SETDAT,
-				Prev: prev,
+				Prev: head,
 				Val:  buf[:n],
 				Tag:  []byte(*flagtag),
 			}, godave.WORK_MIN)
@@ -140,14 +134,20 @@ func main() {
 				panic(err)
 			}
 			msg := <-work
-			d.Send <- msg
-			prev = msg.Work
+		send:
+			for {
+				select {
+				case d.Send <- msg:
+					break send
+				case <-d.Recv:
+				}
+			}
+			head = msg.Work
 			i++
-			fmt.Printf("CHUNK %d SENT -> %x\n", i, msg.Work)
+			fmt.Printf("DAT %d SENT -> %x\n", i, head)
+			fmt.Println(string(msg.Val))
 		}
-		fmt.Println("done")
-		time.Sleep(100 * time.Millisecond)
-		os.Exit(0)
+		fmt.Printf("HEAD %x\n", head)
 	case dave.Op_SETDAT.String():
 		go func() {
 			for m := range d.Recv {
