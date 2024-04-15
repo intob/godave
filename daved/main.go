@@ -100,7 +100,11 @@ func main() {
 
 			}
 		}
-		fmt.Printf("got %d chunks: %v\n", len(chunks), chunks)
+		out := make([]byte, 0, len(chunks)*godave.VAL_SIZE)
+		for i := len(chunks) - 1; i > 0; i-- {
+			out = append(out, chunks[i]...)
+		}
+		fmt.Printf("got %d chunks:\n%v\n", len(chunks), string(out))
 
 	case "SETIMG":
 		if flag.NArg() < 2 {
@@ -119,7 +123,7 @@ func main() {
 		prev := make([]byte, 0, 32)
 		var i int
 		for {
-			buf := make([]byte, 1280)
+			buf := make([]byte, godave.VAL_SIZE)
 			n, err := f.Read(buf)
 			if err != nil {
 				if err == io.EOF {

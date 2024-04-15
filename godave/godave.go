@@ -19,6 +19,7 @@ import (
 
 const (
 	PACKET_SIZE   = 1500
+	VAL_SIZE      = 1280
 	PING_PERIOD   = 127713920 * time.Nanosecond
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
