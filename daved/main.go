@@ -242,7 +242,7 @@ func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
 				out <- m.Val
 				head = m.Prev
 				i++
-				fmt.Printf("GOT DAT %d HEAD::%x\n", i, head)
+				fmt.Printf("GOT DAT %d PREV::%x\n", i, head)
 				if head == nil {
 					close(out)
 					return
