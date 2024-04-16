@@ -25,8 +25,8 @@ WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 1.      Constants
 PERIOD              127713920ns     Good for now.
 LEN_PACKET          1500            Typical MTU.
-LEN_VAL             1280            Gives margin for peer descriptors.
-NPEER               3               Be mindful of Eclipse attack.
+LEN_VAL             1024            Gives margin for peer descriptors.
+NPEER               3               Limit to prevent Eclipse attack.
 TOLERANCE           2               Low tolerance reduces message loss.
 DROP                5               Second tolerance stage to drop peers. Dropped peers are re-added if too low.
 DISTANCE            7               Threshold to not forward packet.

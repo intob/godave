@@ -33,7 +33,7 @@ import (
 const (
 	PERIOD          = 127713920 * time.Nanosecond
 	LEN_PACKET      = 1500
-	LEN_VAL         = 1280
+	LEN_VAL         = 1024
 	NPEER           = 3
 	TOLERANCE       = 2
 	DROP            = 5
