@@ -81,24 +81,7 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
-		dats := getFile(d, *work, flag.Arg(1))
-		result := make([]byte, 0)
-		var f *os.File
-		if flag.NArg() > 2 {
-			f, err = os.Create(flag.Arg(2))
-			if err != nil {
-				fmt.Println("failed: create", flag.Arg(2), err)
-			}
-			defer f.Close()
-		}
-		for d := range dats {
-			result = append(d, result...)
-		}
-		if f != nil {
-			f.Write(result)
-		} else {
-			fmt.Println(string(result))
-		}
+		getFile(d, *work, flag.Arg(1))
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
@@ -110,35 +93,7 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: setdat <VAL>")
 		}
-		fmt.Println("setdat working...")
-		var prev []byte
-		if *prevhex != "" {
-			prev, err = hex.DecodeString(*prevhex)
-			if err != nil {
-				exit(1, "failed to decode -p <PREV>")
-			}
-		}
-		work, err := godave.Work(&dave.Msg{
-			Op:   dave.Op_SETDAT,
-			Prev: prev,
-			Val:  []byte(flag.Arg(1)),
-			Tag:  []byte(*tag),
-		}, *work)
-		if err != nil {
-			panic(err)
-		}
-		msg := <-work
-	send:
-		for {
-			select {
-			case d.Send <- msg:
-				break send
-			case <-d.Recv:
-			}
-		}
-		fmt.Print("-> ")
-		printMsg(msg)
-		time.Sleep(500 * time.Millisecond)
+		setDat(d, *work, *prevhex, *tag)
 
 	case "GETDAT":
 		if flag.NArg() < 2 {
@@ -151,6 +106,38 @@ func main() {
 			printMsg(m)
 		}
 	}
+}
+
+func setDat(d *godave.Dave, work int, prevhex, tag string) {
+	var prev []byte
+	if prevhex != "" {
+		var err error
+		prev, err = hex.DecodeString(prevhex)
+		if err != nil {
+			exit(1, "failed to decode -p <PREV>")
+		}
+	}
+	wch, err := godave.Work(&dave.Msg{
+		Op:   dave.Op_SETDAT,
+		Prev: prev,
+		Val:  []byte(flag.Arg(1)),
+		Tag:  []byte(tag),
+	}, work)
+	if err != nil {
+		panic(err)
+	}
+	msg := <-wch
+send:
+	for {
+		select {
+		case d.Send <- msg:
+			break send
+		case <-d.Recv:
+		}
+	}
+	fmt.Print("-> ")
+	printMsg(msg)
+	time.Sleep(500 * time.Millisecond)
 }
 
 func getDat(d *godave.Dave, workhex string) {
@@ -213,16 +200,12 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 			panic(err)
 		}
 		msg := <-wch
-		var sent bool
 	send:
 		for {
 			select {
 			case d.Send <- msg:
-				sent = true
+				break send
 			case <-d.Recv:
-				if sent {
-					break send
-				}
 			}
 		}
 		head = msg.Work
@@ -233,7 +216,28 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 	fmt.Printf("HEAD %x\n", head)
 }
 
-func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
+func getFile(d *godave.Dave, work int, headhex string) {
+	dats := getFileDats(d, work, headhex)
+	result := make([]byte, 0)
+	var f *os.File
+	if flag.NArg() > 2 {
+		f, err := os.Create(flag.Arg(2))
+		if err != nil {
+			fmt.Println("failed: create", flag.Arg(2), err)
+		}
+		defer f.Close()
+	}
+	for d := range dats {
+		result = append(d, result...)
+	}
+	if f != nil {
+		f.Write(result)
+	} else {
+		fmt.Println(string(result))
+	}
+}
+
+func getFileDats(d *godave.Dave, work int, headstr string) <-chan []byte {
 	out := make(chan []byte)
 	go func() {
 		head, err := hex.DecodeString(headstr)
@@ -243,10 +247,7 @@ func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
 	sendhead:
 		for {
 			select {
-			case d.Send <- &dave.Msg{
-				Op:   dave.Op_GETDAT,
-				Work: head,
-			}:
+			case d.Send <- &dave.Msg{Op: dave.Op_GETDAT, Work: head}:
 				break sendhead
 			case <-d.Recv:
 			}
@@ -270,10 +271,7 @@ func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
 			send:
 				for {
 					select {
-					case d.Send <- &dave.Msg{
-						Op:   dave.Op_GETDAT,
-						Work: head,
-					}:
+					case d.Send <- &dave.Msg{Op: dave.Op_GETDAT, Work: head}:
 						break send
 					case <-d.Recv:
 					}

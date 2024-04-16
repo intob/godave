@@ -37,7 +37,7 @@ const (
 	NPEER           = 3
 	TOLERANCE       = 2
 	DROP            = 5
-	DISTANCE        = 7
+	DISTANCE        = 6
 	FANOUT_GETDAT   = 2
 	FANOUT_SETDAT   = 2
 	WORK_MIN_FANOUT = 2
@@ -77,7 +77,7 @@ func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, e
 	for _, ip := range bootstrap {
 		peers[ip] = &peer{time.Time{}, 0, true, 0}
 	}
-	send := make(chan *dave.Msg)
+	send := make(chan *dave.Msg, 1)
 	return &Dave{send, d(conn, peers, lstn(conn), send, work)}, nil
 }
 
@@ -148,10 +148,12 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 				case dave.Op_SETDAT:
 					for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT) {
 						wraddr(conn, marshal(msend), parseAddr(rad))
+						fmt.Println("sent to", rad)
 					}
 				case dave.Op_GETDAT:
 					for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT) {
 						wraddr(conn, marshal(msend), parseAddr(rad))
+						fmt.Println("sent to", rad)
 					}
 				}
 			case pkt := <-pkts:
@@ -256,10 +258,11 @@ func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 	}
 }
 
+// buggy as shit
 func rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
 	candidates := make([]string, 0)
 	for ip, p := range peers {
-		if !in(ip.String(), exclude) && p.drop <= 1 && p.nping <= 1 {
+		if !p.bootstrap && p.drop <= 1 && p.nping <= 1 && !in(ip.String(), exclude) {
 			candidates = append(candidates, ip.String())
 		}
 	}
