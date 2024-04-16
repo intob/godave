@@ -22,33 +22,46 @@ limitations under the License.
 
 WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
-1.      Operation Codes
+1.      Constants
+PERIOD          127713920ns         Good for now.
+LEN_PACKET      1500                Typical MTU.
+LEN_VAL         1280                Gives margin for peer descriptors.
+NPEER           3                   Be mindful of Eclipse attack.
+TOLERANCE       2                   Low tolerance reduces message loss.
+DROP            5                   Second tolerance stage to drop peers. Dropped peers are re-added if too low.
+DISTANCE        7                   Threshold to not forward packet.
+FANOUT_GETDAT   2                   2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
+FANOUT_SETDAT   2                   2 is good. Prefer increasing DISTANCE to add redundancy.
+WORK_MIN_FANOUT 2                   Prevent DAT spam.
 
-1. 1.   GETPEER
-1. 2.   PEER
-1. 3.   SETDAT
-1. 4.   GETDAT
-1. 5.   DAT
+2.      Operation Codes
+            DESCRIPTIION
+GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
+PEER        Packet containing NPEER peer descriptors.
+SETDAT      Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT_SETDAT random peers, after appending source address:port to Peers.
+GETDAT      Packet requesting DAT, remote should send DAT to all peer descriptors contained in packet.
+DAT, without forwarding, else if len(Peers) < DISTANCE, forward to FANOUT_GETDAT random peers.
 
 
-2.      Message Wire Format
+3.      Message Wire Format
 A message is serialized into binary using protobuf. See dave.proto for the protobuf spec.
 
-2. 1.   Fields
-NAME        DESCRIPTION                             BYTE_LEN
-Op          Operation code                          1
-Val         Data                                    <= VAL_SIZE
-Tag         Arbitrary data                          <= 32
-Nonce       Random                                  0 | 32
-Prev        Work of previous DAT                    0 | 32
-Work        SHA256(SHA256(Prev, Val, Tag), Nonce)   0 | 32
+3. 1.   Fields
+            DESCRIPTION                                 BYTE_LEN
+Op          Operation code.                             1
+Peers       List of peer descriptors who forwarded.     UNKNOWN
+Prev        Work of previous DAT.                       0 | 32
+Work        SHA256(SHA256(Prev, Val, Tag), Nonce).      0 | 32
+Nonce       Salt to compute work.                       0 | 32
+Val         The data                                    <= LEN_VAL
+Tag         Arbitrary metaadata.                        <= 32
 
-2. 2.   Transpiling Protobuf Spec for Go
+3. 2.   Transpiling Protobuf Spec for Go
 #!/bin/bash
 protoc --go_out=. dave.proto
 
 
-3.      Peer Discovery & Liveness
+4.      Peer Discovery & Liveness
 The protocol ensures a cohesive network by combining ping and peer discovery into a single pair of messages (GETPEER & PEER).
 A node replies to a GETPEER message with a PEER message with up to NPEER random address:port strings, where each address:port is a responsive peer (ping and drop counters are zero).
 When a GETPEER message is sent, the ping counter (peer.nping) is incremented.
@@ -58,37 +71,37 @@ If the drop counter reaches DROP*TOLERANCE, the peer is deleted from the peer ta
 This 2-stage mechanism ensures that dropped peers are not immediately re-added, because unresponsive peers are not advertised.
 
 
-4.      DAT
+5.      DAT
 DAT is a construct representing a small value, some metadata (time & tag), and the proof of work. The proof-of-work allows the network to prioritise storage of keys backed by more work.
 The proof of work also makes it easier to protect the network from protocol deviation.
 
 
-5.      Message Propagation
+6.      Message Propagation
 The network propagates SETDAT and GETDAT messages.
 Each node appends the address:port of the message sender to the message address list.
 For the SETDAT operation, the message is forwarded to up to FANOUT_SETDAT (2) random addresses, excluding those in the message address list.
 For the GETDAT operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE addresses, the message is forwarded to up to FANOUT_GETDAT (2) random peers, excluding those in the message address list.
 For the GETDAT operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all addresses in the message address list.
 
-6.      Feedback from CLAUDE 3 OPUS
+7.      Feedback from CLAUDE 3 OPUS
 Here's some feedback on the efficiency of your gossip protocol implementation:
 
-6. 1.   Message size and frequency
+7. 1.   Message size and frequency
 - You have set a constant PACKET_SIZE of 1500 bytes, which is a reasonable maximum size for UDP packets to avoid fragmentation.
 - The VAL_SIZE constant of 1280 bytes limits the size of the actual message payload.
 - The PING_PERIOD constant determines the frequency of pinging peers. Make sure this interval is not too short to avoid excessive network traffic, but not too long to detect failed peers in a timely manner.
 
-6. 2.   Peer selection and communication
+7. 2.   Peer selection and communication
 - The rndAddr function selects a random subset of peers to gossip with, filtering out peers that have recently dropped or failed to respond. This helps focus communication on responsive peers.
 - The FANOUT_GETDAT and FANOUT_SETDAT constants control the number of peers to gossip with for each type of message. Tune these values based on your network size and desired dissemination speed vs redundancy trade-off.
 - The NPEER constant determines how many peer addresses are shared when a node requests more peers. Ensure this value is sufficient to maintain good connectivity in the overlay network.
 
-6. 3.   Work function and validation
+7. 3.   Work function and validation
 - The Work function performs proof-of-work by finding a nonce that results in a hash with a certain number of leading zero bytes. This helps prevent spam and DoS attacks.
 - The CheckWork function validates the proof-of-work. Make sure the WORK_MIN constant is set high enough to deter attacks but not so high that it causes excessive CPU usage for honest nodes.
 - Consider using a more memory-hard proof-of-work scheme (e.g. Equihash) to further reduce the advantage of specialized hardware.
 
-6. 4.   Other suggestions
+7. 4.   Other suggestions
 - Use a separate goroutine for handling received messages to avoid blocking the main loop.
 - Consider using a priority queue or a separate channel for high-priority messages.
 - Implement an exponential backoff mechanism when retrying failed message sends.
@@ -98,7 +111,7 @@ Here's some feedback on the efficiency of your gossip protocol implementation:
 
 Overall, your implementation looks solid and incorporates important optimizations like random peer selection, proof-of-work, and peer responsiveness tracking. With some tuning of the constants and additional defense mechanisms, it can serve as an efficient gossip protocol for a decentralized network[1][2][3].
 
-6. 5.   Citations
+7. 5.   Citations
 [1] https://en.wikipedia.org/wiki/Gossip_protocol
 [2] https://www.linkedin.com/advice/1/how-do-you-tune-parameters-optimize-performance
 [3] https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/2007PromiseAndLimitations.pdf
@@ -119,7 +132,7 @@ Overall, your implementation looks solid and incorporates important optimization
 [18] https://acropolis.aueb.gr/~spyros/www/papers/Gossip-based%20Peer%20Sampling.pdf
 [19] https://github.com/ethereum/portal-network-specs/blob/master/transaction-gossip.md
 
-7.      In Development
+8.      In Development
 I'm currently writing a HTTP gatetway, daveg, to serve as a proof of concept, and to quickly find and address usability issues.
 
 Once daveg is ready, we can build our first web dApp.

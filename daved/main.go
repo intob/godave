@@ -196,7 +196,7 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 	var head []byte
 	var i int
 	for {
-		buf := make([]byte, godave.VAL_SIZE)
+		buf := make([]byte, godave.LEN_VAL)
 		n, err := f.Read(buf)
 		if err != nil {
 			if err == io.EOF {

@@ -31,16 +31,16 @@ import (
 )
 
 const (
-	PERIOD          = 127713920 * time.Nanosecond // Heartbeat
-	PACKET_SIZE     = 1500                        // Size of buffer
-	VAL_SIZE        = 1280                        // Size limit of Dat.Val
-	NPEER           = 3                           // Number of peers to give
-	TOLERANCE       = 2                           // Threshold of peer.nping to increment peer.drop
-	DROP            = 4                           // Tolerance multiplier
-	DISTANCE        = 7                           // Number of forwards per packet
-	FANOUT_GETDAT   = 2                           // Number of peers to forward GETDATs
-	FANOUT_SETDAT   = 2                           // Number of peers to forward SETDATs
-	WORK_MIN_FANOUT = 2                           // Looks good for now
+	PERIOD          = 127713920 * time.Nanosecond
+	LEN_PACKET      = 1500
+	LEN_VAL         = 1280
+	NPEER           = 3
+	TOLERANCE       = 2
+	DROP            = 5
+	DISTANCE        = 7
+	FANOUT_GETDAT   = 2
+	FANOUT_SETDAT   = 2
+	WORK_MIN_FANOUT = 2
 )
 
 type Dave struct {
@@ -82,9 +82,6 @@ func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, e
 }
 
 func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
-	if len(marshal(msg)) >= PACKET_SIZE {
-		return nil, fmt.Errorf("msg exceeds packet size of %dB", PACKET_SIZE)
-	}
 	if CheckWork(msg) < -1 {
 		return nil, fmt.Errorf("msg is invalid")
 	}
@@ -113,11 +110,17 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 }
 
 func CheckWork(msg *dave.Msg) int {
-	if len(msg.Nonce) != 0 && len(msg.Nonce) != 32 {
+	if len(msg.Prev) != 0 && len(msg.Prev) != 32 {
 		return -2
 	}
-	if len(msg.Prev) != 0 && len(msg.Prev) != 32 {
+	if len(msg.Val) != 0 && len(msg.Val) > LEN_VAL {
 		return -3
+	}
+	if len(msg.Tag) > 32 {
+		return -4
+	}
+	if len(msg.Nonce) != 0 && len(msg.Nonce) != 32 {
+		return -5
 	}
 	h := sha256.New()
 	h.Write(msg.Prev)
@@ -221,7 +224,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 	go func() {
 		defer conn.Close()
 		for {
-			buf := make([]byte, PACKET_SIZE)
+			buf := make([]byte, LEN_PACKET)
 			n, raddr, err := conn.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				panic(err)
@@ -245,7 +248,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 }
 
 func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
-	if q != nil && time.Since(q.seen) > TOLERANCE*PERIOD {
+	if q != nil && time.Since(q.seen) > PERIOD {
 		q.nping += 1
 		wraddr(conn, marshal(&dave.Msg{
 			Op: dave.Op_GETPEER,
