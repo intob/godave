@@ -213,12 +213,16 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 			panic(err)
 		}
 		msg := <-wch
+		var sent bool
 	send:
 		for {
 			select {
 			case d.Send <- msg:
-				break send
+				sent = true
 			case <-d.Recv:
+				if sent {
+					break send
+				}
 			}
 		}
 		head = msg.Work
