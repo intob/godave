@@ -230,9 +230,8 @@ func getFile(d *godave.Dave, work int, headhex string) {
 	for d := range dats {
 		result = append(d, result...)
 	}
-	if f != nil {
-		f.Write(result)
-	} else {
+	_, err := f.Write(result)
+	if err != nil {
 		fmt.Println(string(result))
 	}
 }

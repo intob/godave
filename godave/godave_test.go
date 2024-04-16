@@ -1,7 +1,6 @@
 package godave
 
 import (
-	"math/rand"
 	mrand "math/rand"
 	"net/netip"
 	"testing"
@@ -100,6 +99,6 @@ func buggy_rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) 
 }
 
 func test_randomAddrPort() netip.AddrPort {
-	ip := netip.AddrFrom4([4]byte{byte(rand.Intn(256)), byte(rand.Intn(256)), byte(rand.Intn(256)), byte(rand.Intn(256))})
+	ip := netip.AddrFrom4([4]byte{byte(mrand.Intn(256)), byte(mrand.Intn(256)), byte(mrand.Intn(256)), byte(mrand.Intn(256))})
 	return netip.AddrPortFrom(netip.Addr(ip), uint16(mrand.Intn(65535-1024)+1024))
 }
