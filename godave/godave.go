@@ -40,6 +40,7 @@ const (
 	DISTANCE        = 6
 	FANOUT_GETDAT   = 2
 	FANOUT_SETDAT   = 2
+	SEND_FACTOR     = 2
 	WORK_MIN_FANOUT = 2
 )
 
@@ -146,12 +147,12 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 			case msend := <-send:
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT) {
+					for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT*SEND_FACTOR) {
 						wraddr(conn, marshal(msend), parseAddr(rad))
 						fmt.Println("sent to", rad)
 					}
 				case dave.Op_GETDAT:
-					for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT) {
+					for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT*SEND_FACTOR) {
 						wraddr(conn, marshal(msend), parseAddr(rad))
 						fmt.Println("sent to", rad)
 					}
@@ -164,6 +165,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					p.drop = 0
 				} else {
 					peers[pkt.ip] = &peer{}
+					fmt.Println("added", pkt.ip)
 				}
 				m := pkt.msg
 				switch m.Op {
