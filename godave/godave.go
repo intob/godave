@@ -31,13 +31,13 @@ import (
 )
 
 const (
-	PERIOD          = 127713920 * time.Nanosecond
+	PERIOD          = 333333 * time.Microsecond
 	LEN_PACKET      = 1500
 	LEN_VAL         = 1024
-	NPEER           = 3
+	NPEER           = 2
 	TOLERANCE       = 1
 	DROP            = 5
-	DISTANCE        = 6
+	DISTANCE        = 5
 	FANOUT_GETDAT   = 2
 	FANOUT_SETDAT   = 2
 	SEND_FACTOR     = 2
@@ -255,7 +255,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 }
 
 func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
-	if q != nil && time.Since(q.seen) > PERIOD*TOLERANCE {
+	if q != nil && time.Since(q.seen) > PERIOD {
 		q.nping += 1
 		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), qip)
 	}
