@@ -250,7 +250,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 }
 
 func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
-	if q != nil && time.Since(q.seen) > PERIOD {
+	if q != nil && time.Since(q.seen) > PERIOD*TOLERANCE {
 		q.nping += 1
 		wraddr(conn, marshal(&dave.Msg{
 			Op: dave.Op_GETPEER,
