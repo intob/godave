@@ -23,19 +23,18 @@ limitations under the License.
 WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
 1.      Constants
-PERIOD          127713920ns         Good for now.
-LEN_PACKET      1500                Typical MTU.
-LEN_VAL         1280                Gives margin for peer descriptors.
-NPEER           3                   Be mindful of Eclipse attack.
-TOLERANCE       2                   Low tolerance reduces message loss.
-DROP            5                   Second tolerance stage to drop peers. Dropped peers are re-added if too low.
-DISTANCE        7                   Threshold to not forward packet.
-FANOUT_GETDAT   2                   2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
-FANOUT_SETDAT   2                   2 is good. Prefer increasing DISTANCE to add redundancy.
-WORK_MIN_FANOUT 2                   Prevent DAT spam.
+PERIOD              127713920ns     Good for now.
+LEN_PACKET          1500            Typical MTU.
+LEN_VAL             1280            Gives margin for peer descriptors.
+NPEER               3               Be mindful of Eclipse attack.
+TOLERANCE           2               Low tolerance reduces message loss.
+DROP                5               Second tolerance stage to drop peers. Dropped peers are re-added if too low.
+DISTANCE            7               Threshold to not forward packet.
+FANOUT_GETDAT       2               2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
+FANOUT_SETDAT       2               2 is good. Prefer increasing DISTANCE to add redundancy.
+WORK_MIN_FANOUT     2               Prevent DAT spam.
 
 2.      Operation Codes
-            DESCRIPTIION
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
 SETDAT      Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT_SETDAT random peers, after appending source address:port to Peers.
