@@ -117,12 +117,7 @@ func setDat(d *godave.Dave, work int, prevhex, tag string) {
 			exit(1, "failed to decode -p <PREV>")
 		}
 	}
-	wch, err := godave.Work(&dave.Msg{
-		Op:   dave.Op_SETDAT,
-		Prev: prev,
-		Val:  []byte(flag.Arg(1)),
-		Tag:  []byte(tag),
-	}, work)
+	wch, err := godave.Work(&dave.Msg{Op: dave.Op_SETDAT, Prev: prev, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
 	if err != nil {
 		panic(err)
 	}
@@ -130,9 +125,9 @@ func setDat(d *godave.Dave, work int, prevhex, tag string) {
 send:
 	for {
 		select {
+		case <-d.Recv:
 		case d.Send <- msg:
 			break send
-		case <-d.Recv:
 		}
 	}
 	fmt.Print("-> ")
@@ -150,10 +145,8 @@ func getDat(d *godave.Dave, workhex string) {
 		t := time.After(TIMEOUT_GETDAT)
 		for {
 			select {
-			case d.Send <- &dave.Msg{
-				Op:   dave.Op_GETDAT,
-				Work: work,
-			}:
+			case <-d.Recv:
+			case d.Send <- &dave.Msg{Op: dave.Op_GETDAT, Work: work}:
 				for {
 					select {
 					case m := <-d.Recv:
@@ -167,7 +160,6 @@ func getDat(d *godave.Dave, workhex string) {
 						return
 					}
 				}
-			case <-d.Recv:
 			}
 		}
 	}()
@@ -190,12 +182,7 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 				break
 			}
 		}
-		wch, err := godave.Work(&dave.Msg{
-			Op:   dave.Op_SETDAT,
-			Prev: head,
-			Val:  buf[:n],
-			Tag:  []byte(tag),
-		}, work)
+		wch, err := godave.Work(&dave.Msg{Op: dave.Op_SETDAT, Prev: head, Val: buf[:n], Tag: []byte(tag)}, work)
 		if err != nil {
 			panic(err)
 		}
@@ -203,9 +190,9 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 	send:
 		for {
 			select {
+			case <-d.Recv:
 			case d.Send <- msg:
 				break send
-			case <-d.Recv:
 			}
 		}
 		head = msg.Work
@@ -262,7 +249,7 @@ func getFileDats(d *godave.Dave, work int, headstr string) <-chan []byte {
 				out <- m.Val
 				head = m.Prev
 				i++
-				fmt.Printf("GOT DAT %d PREV::%x\n", i, head)
+				fmt.Printf("GOT DAT %d PREV=%x\n", i, head)
 				if head == nil {
 					close(out)
 					return
@@ -318,11 +305,11 @@ func printMsg(m *dave.Msg) {
 	case dave.Op_PEER:
 		fmt.Printf("%v\n", m.Peers)
 	case dave.Op_GETDAT:
-		fmt.Printf("WORK::%x\n", m.Work)
+		fmt.Printf("WORK=%x\n", m.Work)
 	case dave.Op_SETDAT:
-		fmt.Printf("TAG::%s PREV::%x WORK::%x\n", m.Tag, m.Prev, m.Work)
+		fmt.Printf("TAG=%s PREV=%x WORK=%x\n", m.Tag, m.Prev, m.Work)
 	case dave.Op_DAT:
-		fmt.Printf("TAG::%s PREV::%x WORK::%x VAL::%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
+		fmt.Printf("TAG=%s PREV=%x WORK=%x VAL=%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
 	}
 }
 
