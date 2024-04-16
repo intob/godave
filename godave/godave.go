@@ -77,7 +77,7 @@ func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, e
 	for _, ip := range bootstrap {
 		peers[ip] = &peer{time.Time{}, 0, true, 0}
 	}
-	send := make(chan *dave.Msg, 1)
+	send := make(chan *dave.Msg)
 	return &Dave{send, d(conn, peers, lstn(conn), send, work)}, nil
 }
 

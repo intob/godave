@@ -17,7 +17,10 @@ import (
 	"github.com/intob/dave/godave/dave"
 )
 
-const BOOTSTRAP_MSG = 8
+const (
+	BOOTSTRAP_MSG  = 8
+	TIMEOUT_GETDAT = time.Second
+)
 
 func main() {
 	network := flag.String("network", "udp", "<udp|udp6|udp4>")
@@ -157,25 +160,30 @@ func getDat(d *godave.Dave, workhex string) {
 	}
 	done := make(chan struct{})
 	go func() {
-		t := time.After(time.Second)
+		t := time.After(TIMEOUT_GETDAT)
 		for {
 			select {
-			case m := <-d.Recv:
-				if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
-					printMsg(m)
-					done <- struct{}{}
-					return
+			case d.Send <- &dave.Msg{
+				Op:   dave.Op_GETDAT,
+				Work: work,
+			}:
+				for {
+					select {
+					case m := <-d.Recv:
+						if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
+							printMsg(m)
+							done <- struct{}{}
+							return
+						}
+					case <-t:
+						done <- struct{}{}
+						return
+					}
 				}
-			case <-t:
-				done <- struct{}{}
-				return
+			case <-d.Recv:
 			}
 		}
 	}()
-	d.Send <- &dave.Msg{
-		Op:   dave.Op_GETDAT,
-		Work: work,
-	}
 	<-done
 }
 
@@ -195,7 +203,7 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 				break
 			}
 		}
-		work, err := godave.Work(&dave.Msg{
+		wch, err := godave.Work(&dave.Msg{
 			Op:   dave.Op_SETDAT,
 			Prev: head,
 			Val:  buf[:n],
@@ -204,7 +212,7 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 		if err != nil {
 			panic(err)
 		}
-		msg := <-work
+		msg := <-wch
 	send:
 		for {
 			select {
@@ -228,10 +236,18 @@ func getFile(d *godave.Dave, work int, headstr string) <-chan []byte {
 		if err != nil {
 			fmt.Println("failed: failed to decode hex")
 		}
-		d.Send <- &dave.Msg{
-			Op:   dave.Op_GETDAT,
-			Work: head,
+	sendhead:
+		for {
+			select {
+			case d.Send <- &dave.Msg{
+				Op:   dave.Op_GETDAT,
+				Work: head,
+			}:
+				break sendhead
+			case <-d.Recv:
+			}
 		}
+
 		var i int
 		for m := range d.Recv {
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
