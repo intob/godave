@@ -20,31 +20,31 @@ import (
 const BOOTSTRAP_MSG = 8
 
 func main() {
-	network := flag.String("network", "udp", "udp|udp6|udp4")
-	work := flag.Int("w", 3, "minimum work to store DAT")
-	lap := flag.String("l", "[::]:0", "listen address:port")
-	bootstrap_peer := flag.String("b", "", "bootstrap peer")
-	bootstrap_hosts := flag.String("h", "", "hosts file")
-	prevhex := flag.String("p", "", "prev work")
-	tag := flag.String("t", "", "tag")
+	network := flag.String("network", "udp", "<udp|udp6|udp4>")
+	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
+	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
+	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
+	work := flag.Int("w", 3, "<WORK> minimum work to store DAT")
+	prevhex := flag.String("p", "", "<PREV> prev work")
+	tag := flag.String("t", "", "<TAG> arbitrary data")
 	flag.Parse()
 
 	bootstrap := make([]netip.AddrPort, 0)
-	bpeer := *bootstrap_peer
-	if bpeer != "" {
-		if strings.HasPrefix(bpeer, ":") {
-			bpeer = "[::1]" + bpeer
+	bap := *bapref
+	if bap != "" {
+		if strings.HasPrefix(bap, ":") {
+			bap = "[::1]" + bap
 		}
-		addr, err := netip.ParseAddrPort(bpeer)
+		addr, err := netip.ParseAddrPort(bap)
 		if err != nil {
-			exit(1, "failed to parse -p=%q: %v", bpeer, err)
+			exit(1, "failed to parse -p=%q: %v", bap, err)
 		}
 		bootstrap = append(bootstrap, addr)
 	}
-	if *bootstrap_hosts != "" {
-		bh, err := readHosts(*bootstrap_hosts)
+	if *bfile != "" {
+		bh, err := readHosts(*bfile)
 		if err != nil {
-			exit(1, "failed to read file %s: %v", *bootstrap_hosts, err)
+			exit(1, "failed to read file %s: %v", *bfile, err)
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
@@ -99,20 +99,20 @@ func main() {
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
-			exit(1, "failed: correct usage is setfile /path/to/file")
+			exit(1, "missing argument: setfile /path/to/file")
 		}
 		setFile(d, *work, flag.Arg(1), *tag)
 
 	case "SETDAT":
 		if flag.NArg() < 2 {
-			exit(1, "failed: correct usage is setdat <VAL>")
+			exit(1, "missing argument: setdat <VAL>")
 		}
 		fmt.Println("setdat working...")
 		var prev []byte
 		if *prevhex != "" {
 			prev, err = hex.DecodeString(*prevhex)
 			if err != nil {
-				exit(1, "failed: failed to decode hex")
+				exit(1, "failed to decode -p <PREV>")
 			}
 		}
 		work, err := godave.Work(&dave.Msg{
