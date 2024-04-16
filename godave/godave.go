@@ -176,15 +176,16 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 						}
 					}
 				case dave.Op_GETPEER:
-					wraddr(conn, marshal(&dave.Msg{
-						Op:    dave.Op_PEER,
-						Peers: rndAddr(peers, []string{pkt.ip.String()}, NPEER),
-					}), pkt.ip)
+					peers := rndAddr(peers, []string{pkt.ip.String()}, NPEER)
+					wraddr(conn, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: peers}), pkt.ip)
 				case dave.Op_SETDAT:
-					if CheckWork(m) >= work {
+					check := CheckWork(m)
+					if check >= work {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
+					} else {
+						panic(fmt.Sprintf("work invalid: %d", check))
 					}
-					if CheckWork(m) >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
+					if check >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
 						for _, rad := range rndAddr(peers, m.Peers, FANOUT_SETDAT) {
 							wraddr(conn, marshal(m), parseAddr(rad))
 						}
@@ -252,16 +253,15 @@ func lstn(conn *net.UDPConn) <-chan packet {
 func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 	if q != nil && time.Since(q.seen) > PERIOD*TOLERANCE {
 		q.nping += 1
-		wraddr(conn, marshal(&dave.Msg{
-			Op: dave.Op_GETPEER,
-		}), qip)
+		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), qip)
 	}
 }
 
 // buggy as shit
 func rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
-	candidates := make([]string, 0)
+	candidates := make([]string, 0, len(peers)-len(exclude))
 	for ip, p := range peers {
+		// don't overload bootstrap peers
 		if !p.bootstrap && p.drop <= 1 && p.nping <= 1 && !in(ip.String(), exclude) {
 			candidates = append(candidates, ip.String())
 		}
