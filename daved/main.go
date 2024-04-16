@@ -195,6 +195,14 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 				break send
 			}
 		}
+	wait:
+		for {
+			select {
+			case <-d.Recv:
+			case d.Send <- nil:
+				break wait
+			}
+		}
 		head = msg.Work
 		i++
 		fmt.Printf("DAT %d SENT -> %x\n", i, head)
@@ -257,9 +265,17 @@ func getFileDats(d *godave.Dave, work int, headstr string) <-chan []byte {
 			send:
 				for {
 					select {
+					case <-d.Recv:
 					case d.Send <- &dave.Msg{Op: dave.Op_GETDAT, Work: head}:
 						break send
+					}
+				}
+			wait:
+				for {
+					select {
 					case <-d.Recv:
+					case d.Send <- nil:
+						break wait
 					}
 				}
 

@@ -145,16 +145,18 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 		for {
 			select {
 			case msend := <-send:
-				switch msend.Op {
-				case dave.Op_SETDAT:
-					for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT*SEND_FACTOR) {
-						wraddr(conn, marshal(msend), parseAddr(rad))
-						fmt.Println("sent to", rad)
-					}
-				case dave.Op_GETDAT:
-					for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT*SEND_FACTOR) {
-						wraddr(conn, marshal(msend), parseAddr(rad))
-						fmt.Println("sent to", rad)
+				if msend != nil {
+					switch msend.Op {
+					case dave.Op_SETDAT:
+						for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT*SEND_FACTOR) {
+							wraddr(conn, marshal(msend), parseAddr(rad))
+							fmt.Println("sent to", rad)
+						}
+					case dave.Op_GETDAT:
+						for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT*SEND_FACTOR) {
+							wraddr(conn, marshal(msend), parseAddr(rad))
+							fmt.Println("sent to", rad)
+						}
 					}
 				}
 			case pkt := <-pkts:
