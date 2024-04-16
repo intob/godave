@@ -35,7 +35,7 @@ const (
 	LEN_PACKET      = 1500
 	LEN_VAL         = 1024
 	NPEER           = 3
-	TOLERANCE       = 2
+	TOLERANCE       = 1
 	DROP            = 5
 	DISTANCE        = 6
 	FANOUT_GETDAT   = 2
@@ -266,7 +266,7 @@ func rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []stri
 	candidates := make([]string, 0, len(peers)-len(exclude))
 	for ip, p := range peers {
 		// don't overload bootstrap peers
-		if !p.bootstrap && p.drop <= 1 && p.nping <= 1 && !in(ip.String(), exclude) {
+		if !p.bootstrap && p.drop == 0 && p.nping <= TOLERANCE && !in(ip.String(), exclude) {
 			candidates = append(candidates, ip.String())
 		}
 	}
