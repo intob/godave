@@ -150,12 +150,10 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					case dave.Op_SETDAT:
 						for _, rad := range rndAddr(peers, nil, FANOUT_SETDAT*SEND_FACTOR) {
 							wraddr(conn, marshal(msend), parseAddr(rad))
-							fmt.Println("sent to", rad)
 						}
 					case dave.Op_GETDAT:
 						for _, rad := range rndAddr(peers, nil, FANOUT_GETDAT*SEND_FACTOR) {
 							wraddr(conn, marshal(msend), parseAddr(rad))
-							fmt.Println("sent to", rad)
 						}
 					}
 				}
@@ -167,7 +165,7 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 					p.drop = 0
 				} else {
 					peers[pkt.ip] = &peer{}
-					fmt.Println("added", pkt.ip)
+					fmt.Println("ADDED", pkt.ip)
 				}
 				m := pkt.msg
 				switch m.Op {
@@ -268,11 +266,9 @@ func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 	}
 }
 
-// buggy as shit
 func rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
 	candidates := make([]string, 0, len(peers)-len(exclude))
-	for ip, p := range peers {
-		// don't overload bootstrap peers
+	for ip, p := range peers { // don't overload bootstraps
 		if !p.bootstrap && p.drop == 0 && p.nping <= TOLERANCE && !in(ip.String(), exclude) {
 			candidates = append(candidates, ip.String())
 		}
