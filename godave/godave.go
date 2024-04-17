@@ -35,7 +35,7 @@ import (
 const (
 	PERIOD         = 333333 * time.Microsecond
 	LEN_PACKET     = 1500
-	LEN_VAL        = 1234
+	LEN_VAL        = 1200
 	NPEER          = 2
 	TOLERANCE      = 1
 	DROP           = 5

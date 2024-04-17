@@ -229,21 +229,21 @@ func getFileDats(d *godave.Dave, minwork int, headstr string, timeout time.Durat
 		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 		var i int
 		for m := range d.Recv {
-			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				check := godave.CheckWork(m)
-				if check < minwork {
-					exit(1, "invalid work: require: %v, got %d", minwork, check)
-				}
+			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) && godave.CheckWork(m) >= minwork {
 				out <- m.Val
-				head = m.Prev
 				i++
-				fmt.Printf("GOT DAT %d PREV: %x\n", i, head)
-				if head == nil {
+				fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
+				if m.Prev == nil {
 					close(out)
 					return
 				}
+				head = m.Prev
 				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 				send(d, nil, time.Second)
+			} else {
+				if godave.CheckWork(m) < minwork {
+					fmt.Println("invalid work:", m)
+				}
 			}
 		}
 	}()
