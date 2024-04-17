@@ -33,17 +33,17 @@ import (
 )
 
 const (
-	PERIOD          = 333333 * time.Microsecond
-	LEN_PACKET      = 1500
-	LEN_VAL         = 1250
-	NPEER           = 2
-	TOLERANCE       = 1
-	DROP            = 5
-	DISTANCE        = 6
-	FANOUT_GETDAT   = 2
-	FANOUT_SETDAT   = 2
-	SEND_FACTOR     = 2
-	WORK_MIN_FANOUT = 2
+	PERIOD         = 333333 * time.Microsecond
+	LEN_PACKET     = 1500
+	LEN_VAL        = 1250
+	NPEER          = 2
+	TOLERANCE      = 1
+	DROP           = 5
+	DISTANCE       = 6
+	FANOUT_GETDAT  = 2
+	FANOUT_SETDAT  = 2
+	SEND_FACTOR    = 2
+	MINWORK_FANOUT = 2
 )
 
 type Dave struct {
@@ -142,7 +142,7 @@ func CheckWork(msg *dave.Msg) int {
 }
 
 func d(conn *net.UDPConn, peers map[string]*known,
-	pkts <-chan packet, send <-chan *dave.Msg, work int) <-chan *dave.Msg {
+	pkts <-chan packet, send <-chan *dave.Msg, minwork int) <-chan *dave.Msg {
 	recv := make(chan *dave.Msg, 1)
 	go func() {
 		data := make(map[string]*Dat)
@@ -188,12 +188,12 @@ func d(conn *net.UDPConn, peers map[string]*known,
 					wraddr(conn, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rndPeers(peers, []*dave.Peer{pktpeer}, NPEER)}), pkt.ip)
 				case dave.Op_SETDAT:
 					check := CheckWork(m)
-					if check >= work {
+					if check >= minwork {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 					} else {
-						panic(fmt.Sprintf("work invalid: %d", check))
+						fmt.Printf("work invalid: require %d, got %d\n", minwork, check)
 					}
-					if check >= WORK_MIN_FANOUT && len(m.Peers) < DISTANCE {
+					if check >= MINWORK_FANOUT && len(m.Peers) < DISTANCE {
 						for _, rp := range rndPeers(peers, m.Peers, FANOUT_SETDAT) {
 							wraddr(conn, marshal(m), parsePeer(rp))
 						}
@@ -211,10 +211,10 @@ func d(conn *net.UDPConn, peers map[string]*known,
 						}
 					}
 				case dave.Op_DAT:
-					if CheckWork(m) >= work {
+					if CheckWork(m) >= minwork {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 					} else {
-						panic(fmt.Sprintf("work invalid: %d", CheckWork(m)))
+						fmt.Printf("work invalid: require %d, got %d\n", minwork, CheckWork(m))
 					}
 				}
 				recv <- m

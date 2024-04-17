@@ -208,7 +208,7 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 		fmt.Printf("DAT %d SENT -> %x\n", i, head)
 		fmt.Println(string(msg.Val))
 	}
-	fmt.Printf("HEAD %x\n", head)
+	fmt.Printf("HEAD %x\n%s/%x\n", head, "http://localhost:8080", head)
 }
 
 func getFile(d *godave.Dave, work int, headhex string) {

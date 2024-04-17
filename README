@@ -33,7 +33,7 @@ DISTANCE            6               Higher value increases probability that all 
 FANOUT_GETDAT       2               2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
 FANOUT_SETDAT       2               2 is good. Prefer increasing DISTANCE to add redundancy.
 SEND_FACTOR         2               Initial sender multiplies FANOUT by SEND_FACTOR to increase redundancy.
-WORK_MIN_FANOUT     2               Prevent DAT spam.
+MINWORK_FANOUT      2               Prevent DAT spam.
 
 2.      Operation Codes
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
