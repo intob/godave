@@ -313,19 +313,17 @@ func readHosts(fname string) ([]netip.AddrPort, error) {
 }
 
 func printMsg(m *dave.Msg) {
-	if m.Op == dave.Op_GETPEER {
+	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return
 	}
 	fmt.Printf("%s ", m.Op)
 	switch m.Op {
-	case dave.Op_PEER:
-		fmt.Printf("%v\n", m.Peers)
 	case dave.Op_GETDAT:
-		fmt.Printf("WORK=%x\n", m.Work)
+		fmt.Printf("%x\n", m.Work)
 	case dave.Op_SETDAT:
-		fmt.Printf("TAG=%s PREV=%x WORK=%x\n", m.Tag, m.Prev, m.Work)
+		fmt.Printf("PREV: %x\nWORK: %x\nTAG: %s\n", m.Prev, m.Work, m.Tag)
 	case dave.Op_DAT:
-		fmt.Printf("TAG=%s PREV=%x WORK=%x VAL=%s\n", m.Tag, m.Prev, m.Work, string(m.Val))
+		fmt.Printf("PREV: %x\nWORK: %x\nVAL: %s\nTAG: %s\n", m.Prev, m.Work, string(m.Val), m.Tag)
 	}
 }
 
