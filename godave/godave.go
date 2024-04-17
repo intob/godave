@@ -35,7 +35,7 @@ import (
 const (
 	PERIOD         = 333333 * time.Microsecond
 	LEN_PACKET     = 1500
-	LEN_VAL        = 1250
+	LEN_VAL        = 1200
 	NPEER          = 2
 	TOLERANCE      = 1
 	DROP           = 5
@@ -71,7 +71,7 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
+func NewDave(minwork int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
 	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
@@ -83,7 +83,7 @@ func NewDave(work int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, e
 		peers[peerId(p)] = &known{p, time.Time{}, 0, true, 0}
 	}
 	send := make(chan *dave.Msg)
-	return &Dave{send, d(conn, peers, lstn(conn), send, work)}, nil
+	return &Dave{send, d(conn, peers, lstn(conn), send, minwork)}, nil
 }
 
 func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
@@ -185,7 +185,8 @@ func d(conn *net.UDPConn, peers map[string]*known,
 						}
 					}
 				case dave.Op_GETPEER:
-					wraddr(conn, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rndPeers(peers, []*dave.Peer{pktpeer}, NPEER)}), pkt.ip)
+					randpeers := rndPeers(peers, []*dave.Peer{pktpeer}, NPEER)
+					wraddr(conn, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: randpeers}), pkt.ip)
 				case dave.Op_SETDAT:
 					check := CheckWork(m)
 					if check >= minwork {
@@ -211,10 +212,11 @@ func d(conn *net.UDPConn, peers map[string]*known,
 						}
 					}
 				case dave.Op_DAT:
-					if CheckWork(m) >= minwork {
+					check := CheckWork(m)
+					if check >= minwork {
 						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 					} else {
-						fmt.Printf("work invalid: require %d, got %d\n", minwork, CheckWork(m))
+						fmt.Printf("work invalid: require %d, got %d\n", minwork, check)
 					}
 				}
 				recv <- m

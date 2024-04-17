@@ -27,7 +27,7 @@ func main() {
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
-	work := flag.Int("w", 3, "<WORK> minimum work to store DAT")
+	minwork := flag.Int("w", 3, "<MINWORK> minimum work to store DAT")
 	prevhex := flag.String("p", "", "<PREV> prev work")
 	tag := flag.String("t", "", "<TAG> arbitrary data")
 	flag.Parse()
@@ -56,7 +56,7 @@ func main() {
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
-	d, err := godave.NewDave(*work, udpaddr, bootstrap)
+	d, err := godave.NewDave(*minwork, udpaddr, bootstrap)
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
@@ -81,19 +81,19 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
-		getFile(d, *work, flag.Arg(1))
+		getFile(d, *minwork, flag.Arg(1))
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: setfile /path/to/file")
 		}
-		setFile(d, *work, flag.Arg(1), *tag)
+		setFile(d, *minwork, flag.Arg(1), *tag)
 
 	case "SETDAT":
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: setdat <VAL>")
 		}
-		setDat(d, *work, *prevhex, *tag)
+		setDat(d, *minwork, *prevhex, *tag)
 
 	case "GETDAT":
 		if flag.NArg() < 2 {
@@ -231,7 +231,7 @@ func getFile(d *godave.Dave, work int, headhex string) {
 	}
 }
 
-func getFileDats(d *godave.Dave, work int, headstr string) <-chan []byte {
+func getFileDats(d *godave.Dave, minwork int, headstr string) <-chan []byte {
 	out := make(chan []byte)
 	go func() {
 		head, err := hex.DecodeString(headstr)
@@ -251,13 +251,13 @@ func getFileDats(d *godave.Dave, work int, headstr string) <-chan []byte {
 		for m := range d.Recv {
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
 				check := godave.CheckWork(m)
-				if check < work {
-					exit(1, "invalid work: %v, require: %v", check, work)
+				if check < minwork {
+					exit(1, "invalid work: require: %v, got %d", minwork, check)
 				}
 				out <- m.Val
 				head = m.Prev
 				i++
-				fmt.Printf("GOT DAT %d PREV=%x\n", i, head)
+				fmt.Printf("GOT DAT %d PREV: %x\n", i, head)
 				if head == nil {
 					close(out)
 					return
