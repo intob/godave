@@ -54,7 +54,7 @@ func TestBuggyRndAddr(t *testing.T) {
 		i++
 	}
 	// test exclusion
-	rndAddrs := buggy_rndAddr(peers, exclude, 10000)
+	rndAddrs := rndAddr(peers, exclude, 10000)
 	for _, r := range rndAddrs {
 		if in(r, exclude) {
 			t.Fatalf("addr %q is excluded, but included in output:\n%+v\nExcluding:\n%+v\n", r, rndAddrs, exclude)
@@ -69,33 +69,6 @@ func TestBuggyRndAddr(t *testing.T) {
 		}
 		m[ap] = struct{}{}
 	}
-}
-
-// buggy as shit
-func buggy_rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
-	candidates := make([]string, 0, len(peers)-len(exclude))
-	for ip, p := range peers {
-		// don't overload bootstrap peers
-		if !p.bootstrap && p.drop <= 1 && p.nping <= 1 && !in(ip.String(), exclude) {
-			candidates = append(candidates, ip.String())
-		}
-	}
-	if len(candidates) == 0 {
-		return []string{}
-	}
-	if len(candidates) == 1 {
-		return []string{candidates[0]}
-	}
-	mygs := make(map[string]struct{})
-	ans := make([]string, 0)
-	for len(ans) < len(candidates) && len(ans) < limit {
-		r := mrand.Intn(len(candidates) - 1)
-		_, already := mygs[candidates[r]]
-		if !already {
-			ans = append(ans, candidates[r])
-		}
-	}
-	return ans
 }
 
 func test_randomAddrPort() netip.AddrPort {
