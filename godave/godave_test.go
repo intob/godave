@@ -41,20 +41,20 @@ func TestWork(t *testing.T) {
 
 func TestBuggyRndAddr(t *testing.T) {
 	peers := make(map[netip.AddrPort]*peer)
-	for i := 0; i < 10000; i++ {
+	for i := 0; i < 100000; i++ {
 		peers[test_randomAddrPort()] = &peer{}
 	}
 	exclude := make([]string, 0)
 	var i int
 	for ap := range peers {
 		exclude = append(exclude, ap.String())
-		if i > 10000 {
+		if i > 100000 {
 			break
 		}
 		i++
 	}
 	// test exclusion
-	rndAddrs := rndAddr(peers, exclude, 10000)
+	rndAddrs := rndAddr(peers, exclude, 100000)
 	for _, r := range rndAddrs {
 		if in(r, exclude) {
 			t.Fatalf("addr %q is excluded, but included in output:\n%+v\nExcluding:\n%+v\n", r, rndAddrs, exclude)

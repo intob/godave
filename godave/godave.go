@@ -267,26 +267,27 @@ func ping(conn *net.UDPConn, q *peer, qip netip.AddrPort) {
 }
 
 func rndAddr(peers map[netip.AddrPort]*peer, exclude []string, limit int) []string {
-	candidates := make([]string, 0, len(peers)-len(exclude))
-	for ip, p := range peers { // don't overload bootstraps
-		if !p.bootstrap && p.drop == 0 && p.nping <= TOLERANCE && !in(ip.String(), exclude) {
-			candidates = append(candidates, ip.String())
+	excludeMap := make(map[string]struct{}, len(exclude))
+	for _, ip := range exclude {
+		excludeMap[ip] = struct{}{}
+	}
+	candidates := make([]string, 0, len(peers))
+	for ip, p := range peers {
+		if !p.bootstrap && p.drop == 0 && p.nping <= TOLERANCE {
+			ipStr := ip.String()
+			if _, ok := excludeMap[ipStr]; !ok {
+				candidates = append(candidates, ipStr)
+			}
 		}
 	}
-	if len(candidates) == 0 {
-		return []string{}
+	if len(candidates) <= limit {
+		return candidates
 	}
-	if len(candidates) == 1 {
-		return []string{candidates[0]}
-	}
-	mygs := make(map[string]struct{})
-	ans := make([]string, 0)
-	for len(ans) < len(candidates) && len(ans) < limit {
-		r := mrand.Intn(len(candidates) - 1)
-		_, already := mygs[candidates[r]]
-		if !already {
-			ans = append(ans, candidates[r])
-		}
+	ans := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		r := i + mrand.Intn(len(candidates)-i)
+		ans[i] = candidates[r]
+		candidates[r] = candidates[i]
 	}
 	return ans
 }
