@@ -29,7 +29,7 @@ LEN_VAL             1240            Gives margin for peer descriptors.
 NPEER               3               Limit to prevent Eclipse attack.
 TOLERANCE           2               Low tolerance reduces message loss.
 DROP                5               Second tolerance stage to drop peers. Dropped peers are re-added if too low.
-DISTANCE            7               Threshold to not forward packet.
+DISTANCE            6               Higher value increases probability that all nodes receive packet.
 FANOUT_GETDAT       2               2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
 FANOUT_SETDAT       2               2 is good. Prefer increasing DISTANCE to add redundancy.
 SEND_FACTOR         2               Initial sender multiplies FANOUT by SEND_FACTOR to increase redundancy.
@@ -81,7 +81,7 @@ The network propagates SETDAT and GETDAT messages.
 Each node appends the address:port of the message sender to the message address list.
 For the SETDAT operation, the message is forwarded to up to FANOUT_SETDAT (2) random addresses, excluding those in the message address list.
 For the GETDAT operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE addresses, the message is forwarded to up to FANOUT_GETDAT (2) random peers, excluding those in the message address list.
-For the GETDAT operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all addresses in the message address list.
+For the GETDAT operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all addresses in the message address list. Each peer can then validate the work & store the DAT.
 
 7.      Resources
 [1] https://en.wikipedia.org/wiki/Gossip_protocol

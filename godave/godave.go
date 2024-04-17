@@ -37,7 +37,7 @@ const (
 	NPEER           = 2
 	TOLERANCE       = 1
 	DROP            = 5
-	DISTANCE        = 5
+	DISTANCE        = 6
 	FANOUT_GETDAT   = 2
 	FANOUT_SETDAT   = 2
 	SEND_FACTOR     = 2
@@ -205,6 +205,13 @@ func d(conn *net.UDPConn, peers map[netip.AddrPort]*peer,
 						for _, rad := range rndAddr(peers, m.Peers, FANOUT_GETDAT) {
 							wraddr(conn, marshal(m), parseAddr(rad))
 						}
+					}
+				case dave.Op_DAT:
+					check := CheckWork(m)
+					if check >= work {
+						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
+					} else {
+						panic(fmt.Sprintf("work invalid: %d", check))
 					}
 				}
 				recv <- m
