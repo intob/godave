@@ -35,7 +35,7 @@ import (
 const (
 	PERIOD         = 333333 * time.Microsecond
 	LEN_PACKET     = 1500
-	LEN_VAL        = 1200
+	LEN_VAL        = 1234
 	NPEER          = 2
 	TOLERANCE      = 1
 	DROP           = 5
@@ -143,7 +143,7 @@ func CheckWork(msg *dave.Msg) int {
 
 func d(conn *net.UDPConn, peers map[string]*known,
 	pkts <-chan packet, send <-chan *dave.Msg, minwork int) <-chan *dave.Msg {
-	recv := make(chan *dave.Msg, 1)
+	recv := make(chan *dave.Msg, 32)
 	go func() {
 		data := make(map[string]*Dat)
 		for {
