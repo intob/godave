@@ -28,7 +28,7 @@ func main() {
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
-	minwork := flag.Int("w", 3, "<MINWORK> minimum work to store DAT")
+	work := flag.Int("w", 3, "<WORK> ammount of work to do")
 	prevhex := flag.String("p", "", "<PREV> prev work")
 	tag := flag.String("t", "", "<TAG> arbitrary data")
 	flag.Parse()
@@ -57,7 +57,7 @@ func main() {
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
-	d, err := godave.NewDave(*minwork, udpaddr, bootstrap)
+	d, err := godave.NewDave(udpaddr, bootstrap)
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
@@ -79,25 +79,25 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD>")
 		}
-		testFile(d, *minwork, flag.Arg(1))
+		testFile(d, flag.Arg(1))
 
 	case "GETFILE":
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getfile <HEAD> /output/to/file")
 		}
-		getFile(d, *minwork, flag.Arg(1), flag.Arg(2))
+		getFile(d, flag.Arg(1), flag.Arg(2))
 
 	case "SETFILE":
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: setfile /path/to/file")
 		}
-		setFile(d, *minwork, flag.Arg(1), *tag)
+		setFile(d, *work, flag.Arg(1), *tag)
 
 	case "SETDAT":
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: setdat <VAL>")
 		}
-		setDat(d, *minwork, *prevhex, *tag)
+		setDat(d, *work, *prevhex, *tag)
 
 	case "GETDAT":
 		if flag.NArg() < 2 {
@@ -186,14 +186,14 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 	fmt.Printf("HEAD %x\n%s/%x\n", head, "http://localhost:8080", head)
 }
 
-func testFile(d *godave.Dave, work int, headhex string) {
-	dats := getFileDats(d, work, headhex, TIMEOUT_GETDAT)
+func testFile(d *godave.Dave, headhex string) {
+	dats := getFileDats(d, headhex, TIMEOUT_GETDAT)
 	for range dats {
 	}
 }
 
-func getFile(d *godave.Dave, work int, headhex, fname string) {
-	dats := getFileDats(d, work, headhex, TIMEOUT_GETDAT)
+func getFile(d *godave.Dave, headhex, fname string) {
+	dats := getFileDats(d, headhex, TIMEOUT_GETDAT)
 	result := make([]byte, 0)
 	var f *os.File
 	if fname != "" {
@@ -216,7 +216,7 @@ func getFile(d *godave.Dave, work int, headhex, fname string) {
 	}
 }
 
-func getFileDats(d *godave.Dave, minwork int, headstr string, timeout time.Duration) <-chan []byte {
+func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan []byte {
 	out := make(chan []byte)
 	go func() {
 		head, err := hex.DecodeString(headstr)
@@ -226,21 +226,24 @@ func getFileDats(d *godave.Dave, minwork int, headstr string, timeout time.Durat
 		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 		var i int
 		for m := range d.Recv {
-			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
-				if godave.CheckWork(m) >= minwork {
-					out <- m.Val
-					i++
-					fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
-					if m.Prev == nil {
-						close(out)
-						return
-					}
-					head = m.Prev
-					send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
-				} else {
-					fmt.Printf("invalid work: got %d, want %d\n", godave.CheckWork(m), minwork)
-				}
+			if m.Op != dave.Op_DAT || !bytes.Equal(m.Work, head) {
+				continue
 			}
+			check := godave.CheckWork(m)
+			if check < godave.MINWORK {
+				fmt.Printf("invalid work: require %d, has %d, trying again...\n", godave.MINWORK, check)
+				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+				continue
+			}
+			out <- m.Val
+			i++
+			fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
+			if m.Prev == nil {
+				close(out)
+				return
+			}
+			head = m.Prev
+			send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 		}
 	}()
 	return out

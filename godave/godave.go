@@ -33,17 +33,16 @@ import (
 )
 
 const (
-	PERIOD         = 333333 * time.Microsecond
-	LEN_PACKET     = 1500
-	LEN_VAL        = 1200
-	NPEER          = 2
-	TOLERANCE      = 2
-	DROP           = 6
-	DISTANCE       = 6
-	FANOUT_GETDAT  = 2
-	FANOUT_SETDAT  = 2
-	SEND_FACTOR    = 2
-	MINWORK_FANOUT = 2
+	PERIOD        = 333333 * time.Microsecond
+	LEN_PACKET    = 1500
+	LEN_VAL       = 1200
+	NPEER         = 2
+	TOLERANCE     = 2
+	DROP          = 8
+	DISTANCE      = 6
+	FANOUT_GETDAT = 2
+	FANOUT_SETDAT = 2
+	MINWORK       = 2
 )
 
 type Dave struct {
@@ -71,7 +70,7 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func NewDave(minwork int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
+func NewDave(laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
 	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
@@ -83,21 +82,16 @@ func NewDave(minwork int, laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave
 		peers[peerId(p)] = &known{p, time.Time{}, 0, true, 0}
 	}
 	send := make(chan *dave.Msg)
-	return &Dave{send, d(conn, peers, lstn(conn), send, minwork)}, nil
+	return &Dave{send, d(conn, peers, lstn(conn), send)}, nil
 }
 
 func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
-	if CheckWork(msg) < -1 {
-		return nil, fmt.Errorf("msg is invalid")
-	}
 	result := make(chan *dave.Msg)
 	go func() {
 		zeros := make([]byte, work)
 		msg.Nonce = make([]byte, 32)
 		h := sha256.New()
-		if msg.Prev != nil {
-			h.Write(msg.Prev)
-		}
+		h.Write(msg.Prev)
 		h.Write(msg.Val)
 		h.Write(msg.Tag)
 		load := h.Sum(nil)
@@ -117,22 +111,8 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 }
 
 func CheckWork(msg *dave.Msg) int {
-	if len(msg.Prev) != 0 && len(msg.Prev) != 32 {
-		return -2
-	}
-	if len(msg.Val) != 0 && len(msg.Val) > LEN_VAL {
-		return -3
-	}
-	if len(msg.Tag) > 32 {
-		return -4
-	}
-	if len(msg.Nonce) != 0 && len(msg.Nonce) != 32 {
-		return -5
-	}
 	h := sha256.New()
-	if msg.Prev != nil {
-		h.Write(msg.Prev)
-	}
+	h.Write(msg.Prev)
 	h.Write(msg.Val)
 	h.Write(msg.Tag)
 	load := h.Sum(nil)
@@ -146,26 +126,27 @@ func CheckWork(msg *dave.Msg) int {
 }
 
 func d(conn *net.UDPConn, peers map[string]*known,
-	pkts <-chan packet, send <-chan *dave.Msg, minwork int) <-chan *dave.Msg {
+	pkts <-chan packet, send <-chan *dave.Msg) <-chan *dave.Msg {
 	recv := make(chan *dave.Msg, 10)
 	go func() {
 		data := make(map[string]*Dat)
 		for {
 			select {
-			case msend := <-send:
+			case msend := <-send: // SEND PACKET
 				if msend != nil {
 					switch msend.Op {
 					case dave.Op_SETDAT:
-						for _, rp := range rndPeers(peers, nil, FANOUT_SETDAT*SEND_FACTOR) {
+						for _, rp := range rndPeers(peers, nil, FANOUT_SETDAT) {
 							wraddr(conn, marshal(msend), parsePeer(rp))
 						}
 					case dave.Op_GETDAT:
-						for _, rp := range rndPeers(peers, nil, FANOUT_GETDAT*SEND_FACTOR) {
+						for _, rp := range rndPeers(peers, nil, FANOUT_GETDAT) {
 							wraddr(conn, marshal(msend), parsePeer(rp))
 						}
 					}
 				}
-			case pkt := <-pkts:
+			case pkt := <-pkts: // HANDLE INCOMING PACKET
+				recv <- pkt.msg
 				pktpeer := peerFrom(pkt.ip)
 				pktpid := peerId(pktpeer)
 				kp, ok := peers[pktpid]
@@ -179,7 +160,7 @@ func d(conn *net.UDPConn, peers map[string]*known,
 				}
 				m := pkt.msg
 				switch m.Op {
-				case dave.Op_PEER:
+				case dave.Op_PEER: // STORE PEERS
 					for _, p := range m.Peers {
 						pid := peerId(p)
 						_, ok := peers[pid]
@@ -188,22 +169,26 @@ func d(conn *net.UDPConn, peers map[string]*known,
 							fmt.Println("<-pkts added gossip", pid)
 						}
 					}
-				case dave.Op_GETPEER:
+				case dave.Op_GETPEER: // GIVE PEERS
 					randpeers := rndPeers(peers, []*dave.Peer{pktpeer}, NPEER)
 					wraddr(conn, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: randpeers}), pkt.ip)
 				case dave.Op_SETDAT:
 					check := CheckWork(m)
-					if check >= minwork {
-						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
-					} else {
-						fmt.Printf("work invalid: require %d, got %d\n", minwork, check)
+					if check < MINWORK {
+						fmt.Printf("dropped SETDAT: require %d, has %d\n", MINWORK, check)
+						continue
 					}
-					if check >= MINWORK_FANOUT && len(m.Peers) < DISTANCE {
+					data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
+					if len(m.Peers) < DISTANCE {
 						for _, rp := range rndPeers(peers, m.Peers, FANOUT_SETDAT) {
 							wraddr(conn, marshal(m), parsePeer(rp))
 						}
 					}
-				case dave.Op_GETDAT:
+				case dave.Op_GETDAT: // RETURN DAT OR FORWARD
+					if nzero(m.Work) < MINWORK {
+						fmt.Printf("dropped GETDAT: require %d, has %d\n", MINWORK, nzero(m.Work))
+						continue
+					}
 					d, ok := data[hex.EncodeToString(m.Work)]
 					if ok {
 						for _, mp := range m.Peers {
@@ -215,15 +200,14 @@ func d(conn *net.UDPConn, peers map[string]*known,
 							wraddr(conn, marshal(m), parsePeer(rp))
 						}
 					}
-				case dave.Op_DAT:
+				case dave.Op_DAT: // STORE INCOMING
 					check := CheckWork(m)
-					if check >= minwork {
-						data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
-					} else {
-						fmt.Printf("work invalid: require %d, got %d\n", minwork, check)
+					if check < MINWORK {
+						fmt.Printf("dropped DAT: require %d, has %d\n", MINWORK, check)
+						continue
 					}
+					data[hex.EncodeToString(m.Work)] = &Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 				}
-				recv <- m
 			case <-time.After(PERIOD):
 				ping(conn, rndPeer(peers))
 				for pid, p := range peers {
@@ -249,11 +233,7 @@ func peerId(p *dave.Peer) string {
 func lstn(conn *net.UDPConn) <-chan packet {
 	pkts := make(chan packet, 10)
 	go func() {
-		msgPool := sync.Pool{
-			New: func() interface{} {
-				return &dave.Msg{}
-			},
-		}
+		msgPool := sync.Pool{New: func() interface{} { return &dave.Msg{} }}
 		defer conn.Close()
 		for {
 			buf := make([]byte, LEN_PACKET)
@@ -334,7 +314,7 @@ func rndPeer(peers map[string]*known) *known {
 
 func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) error {
 	_, err := conn.WriteToUDPAddrPort(payload, addr)
-	time.Sleep(time.Microsecond * 50)
+	time.Sleep(time.Microsecond * 250) // For now, because we're losing packets
 	return err
 }
 
