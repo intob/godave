@@ -210,7 +210,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			}
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
-				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*3 { // multiply by 2 to give margin
+				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE { // multiply by 2 to give margin
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
