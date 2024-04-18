@@ -61,9 +61,10 @@ type known struct {
 	peer      *dave.Peer
 	added     time.Time
 	seen      time.Time
-	nping     int
+	ping      int
 	bootstrap bool
 	drop      int
+	msg       int
 }
 
 type packet struct {
@@ -80,7 +81,7 @@ func NewDave(laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
 	peers := make(map[string]*known)
 	for _, ap := range bootstrap {
 		p := peerFrom(ap)
-		peers[peerId(p)] = &known{p, time.Now(), time.Time{}, 0, true, 0}
+		peers[peerId(p)] = &known{peer: p, added: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.Msg)
 	recv := make(chan *dave.Msg, 1)
@@ -157,8 +158,9 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			k, ok := ks[pktpid]
 			if ok {
 				k.seen = time.Now()
-				k.nping = 0
+				k.ping = 0
 				k.drop = max(k.drop-1, 0)
+				k.msg++
 			} else {
 				ks[pktpid] = &known{peer: pktpeer, added: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
@@ -175,7 +177,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP*TOLERANCE })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP*TOLERANCE && k.msg > 8 })
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
@@ -219,9 +221,9 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				ping(c, r)
 			}
 			for kid, k := range ks {
-				if k.nping > TOLERANCE {
+				if k.ping > TOLERANCE {
 					k.drop += 1
-					k.nping = 0
+					k.ping = 0
 					if k.drop > DROP {
 						delete(ks, kid)
 						fmt.Println("dropped", kid)
@@ -267,7 +269,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 
 func ping(conn *net.UDPConn, k *known) {
 	wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
-	k.nping += 1
+	k.ping += 1
 }
 
 func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, match func(*known) bool) []*dave.Peer {
