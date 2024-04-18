@@ -170,7 +170,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return true })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return time.Since(k.seen) < PERIOD*TOLERANCE })
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
@@ -210,12 +210,13 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			}
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
-				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE {
+				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*2 { // multiply by 2 to give margin
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
 					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
 				}
+				// TODO: HOW DO WE WAIT BEFORE ACTUALLY DROPPING, TO PREVENT RE-ADDING FROM GOSSIP?
 			}
 		}
 	}
@@ -276,20 +277,6 @@ func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, mat
 		ans[i] = candidates[r]
 	}
 	return ans
-}
-
-func rndKnown(peers map[string]*known) *known {
-	var r, j int
-	if len(peers) > 1 {
-		r = mrand.Intn(len(peers) - 1)
-	}
-	for _, k := range peers {
-		if r == j {
-			return k
-		}
-		j++
-	}
-	return nil
 }
 
 func parsePeer(peer *dave.Peer) netip.AddrPort {
