@@ -26,11 +26,11 @@ enum Op {
 message Msg {
   Op op = 1;
   repeated Pd pds = 2;
-  bytes prev = 3;
-  bytes work = 4;
-  bytes nonce = 5;
-  bytes val = 6;
-  bytes tag = 7;
+  bytes time = 3;
+  bytes val = 4;
+  bytes tag = 5;
+  bytes nonce = 6;
+  bytes work = 7;
 }
 
 message Pd {

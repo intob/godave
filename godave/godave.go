@@ -18,6 +18,7 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	mrand "math/rand"
@@ -51,7 +52,7 @@ type Dave struct {
 }
 
 type Dat struct {
-	Prev  []byte
+	Time  []byte
 	Val   []byte
 	Tag   []byte
 	Nonce []byte
@@ -94,8 +95,9 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 	go func() {
 		zeros := make([]byte, work)
 		msg.Nonce = make([]byte, 32)
+		msg.Time = timeToBytes(time.Now())
 		h := sha256.New()
-		h.Write(msg.Prev)
+		h.Write(msg.Time)
 		h.Write(msg.Val)
 		h.Write(msg.Tag)
 		load := h.Sum(nil)
@@ -114,9 +116,12 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 	return result, nil
 }
 
-func CheckWork(msg *dave.Msg) int {
+func CheckMsg(msg *dave.Msg) int {
+	if bytesToTime(msg.Time).After(time.Now()) {
+		return -2
+	}
 	h := sha256.New()
-	h.Write(msg.Prev)
+	h.Write(msg.Time)
 	h.Write(msg.Val)
 	h.Write(msg.Tag)
 	load := h.Sum(nil)
@@ -180,12 +185,12 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 				randpds := rndPds(ks, []*dave.Pd{pd}, NPEER, seenRecently)
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SETDAT:
-				check := CheckWork(m)
+				check := CheckMsg(m)
 				if check < MINWORK {
 					fmt.Printf("dropped SETDAT: require %d, has %d\n", MINWORK, check)
 					continue
 				}
-				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
+				data[hex.EncodeToString(m.Work)] = Dat{m.Time, m.Val, m.Tag, m.Nonce}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range rndPds(ks, m.Pds, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
@@ -199,7 +204,7 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 				d, ok := data[hex.EncodeToString(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
+						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Time: d.Time, Val: d.Val,
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
@@ -208,12 +213,12 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 					}
 				}
 			case dave.Op_DAT: // STORE INCOMING
-				check := CheckWork(m)
+				check := CheckMsg(m)
 				if check < MINWORK {
 					fmt.Printf("dropped DAT: require %d, has %d\n", MINWORK, check)
 					continue
 				}
-				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
+				data[hex.EncodeToString(m.Work)] = Dat{m.Time, m.Val, m.Tag, m.Nonce}
 			}
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
@@ -321,4 +326,19 @@ func nzero(key []byte) int {
 		}
 	}
 	return len(key)
+}
+
+func timeToBytes(t time.Time) []byte {
+	milli := t.UnixNano() / 1000000
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(milli))
+	return bytes
+}
+
+func bytesToTime(b []byte) time.Time {
+	if len(b) != 8 {
+		return time.Time{}
+	}
+	milli := int64(binary.BigEndian.Uint64(b))
+	return time.Unix(0, milli*1000000)
 }
