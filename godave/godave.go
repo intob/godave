@@ -215,7 +215,8 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 			}
-		case <-time.After(PERIOD):
+		case <-time.After(time.Second):
+			fmt.Println("PING")
 			for kid, k := range ks {
 				if k.ping > TOLERANCE {
 					k.drop++
