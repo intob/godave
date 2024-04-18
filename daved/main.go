@@ -193,13 +193,13 @@ func setFile(d *godave.Dave, work int, fname, tag string) {
 }
 
 func testFile(d *godave.Dave, headhex string) {
-	dats := getFileDats(d, headhex, TIMEOUT_GETDAT)
+	dats := getFileDats(d, headhex, 20*time.Second)
 	for range dats {
 	}
 }
 
 func getFile(d *godave.Dave, headhex, fname string) {
-	dats := getFileDats(d, headhex, TIMEOUT_GETDAT)
+	dats := getFileDats(d, headhex, 20*time.Second)
 	result := make([]byte, 0)
 	var f *os.File
 	if fname != "" {
@@ -229,7 +229,7 @@ func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan [
 		if err != nil {
 			fmt.Println("failed to decode hex")
 		}
-		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, time.Second)
 		t := time.After(timeout)
 		var i, try int
 		for {
@@ -240,7 +240,7 @@ func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan [
 					close(out)
 					return
 				}
-				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, time.Second)
 				t = time.After(timeout)
 			case m := <-d.Recv:
 				if m.Op != dave.Op_DAT || !bytes.Equal(m.Work, head) {
@@ -249,7 +249,7 @@ func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan [
 				check := godave.CheckWork(m)
 				if check < godave.MINWORK {
 					fmt.Printf("invalid work: require %d, has %d, trying again...\n", godave.MINWORK, check)
-					send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+					send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, time.Second)
 					continue
 				}
 				out <- m.Val
@@ -260,7 +260,7 @@ func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan [
 					return
 				}
 				head = m.Prev
-				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, time.Second)
 			}
 		}
 	}()
