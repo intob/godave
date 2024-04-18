@@ -268,6 +268,9 @@ func lstn(conn *net.UDPConn) <-chan packet {
 }
 
 func ping(conn *net.UDPConn, k *known) {
+	if k.bootstrap {
+		return
+	}
 	wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
 	k.ping++
 }
