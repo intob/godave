@@ -37,7 +37,7 @@ const (
 	LEN_PACKET    = 1500
 	LEN_VAL       = 1200
 	NPEER         = 2
-	TOLERANCE     = 3
+	TOLERANCE     = 5
 	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
