@@ -225,7 +225,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			}
 		case <-time.After(PERIOD):
 			r := rndKnown(ks)
-			if r != nil && r.bootstrap {
+			if r != nil {
 				ping(c, r)
 			}
 			for kid, k := range ks {
