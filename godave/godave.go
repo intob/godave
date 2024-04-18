@@ -226,13 +226,10 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
-					ping(c, k)
+					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
+					k.ping++
 				}
 			}
-			/*r := rndKnown(ks)
-			if r != nil {
-				ping(c, r)
-			}*/
 		}
 	}
 }
@@ -268,14 +265,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		}
 	}()
 	return pkts
-}
-
-func ping(conn *net.UDPConn, k *known) {
-	if k.bootstrap {
-		return
-	}
-	wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
-	k.ping++
 }
 
 func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, match func(*known) bool) []*dave.Peer {
