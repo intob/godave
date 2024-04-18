@@ -24,6 +24,7 @@ import (
 	"net"
 	"net/netip"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,22 +69,22 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func NewDave(laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
+func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
 	conn, err := net.ListenUDP("udp", laddr)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("listening %s\n", conn.LocalAddr())
-	peers := make(map[string]*known)
-	for _, ap := range bootstrap {
-		p := peerFrom(ap)
-		peers[peerId(p)] = &known{peer: p, added: time.Now(), seen: time.Now(), bootstrap: true}
+	boot := make(map[string]*known)
+	for _, bap := range baps {
+		bp := peerFrom(bap)
+		boot[peerId(bp)] = &known{peer: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.Msg)
 	recv := make(chan *dave.Msg, 1)
-	go d(conn, peers, lstn(conn), send, recv)
-	for _, ap := range bootstrap {
-		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), ap)
+	go d(conn, boot, lstn(conn), send, recv)
+	for _, bap := range baps {
+		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv}, nil
 }
@@ -128,6 +129,10 @@ func CheckWork(msg *dave.Msg) int {
 	return nzero(msg.Work)
 }
 
+func seenRecently(k *known) bool {
+	return time.Since(k.seen) < PERIOD
+}
+
 func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dave.Msg, recv chan<- *dave.Msg) {
 	data := make(map[string]Dat)
 	for {
@@ -136,12 +141,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, func(k *known) bool { return true }) {
+					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
 				case dave.Op_GETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, func(k *known) bool { return true }) {
+					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
@@ -160,7 +165,10 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
-				for _, p := range m.Peers {
+				for i, p := range m.Peers {
+					if i >= NPEER {
+						break // don't get poisoned
+					}
 					pid := peerId(p)
 					_, ok := ks[pid]
 					if !ok {
@@ -169,7 +177,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return time.Since(k.seen) < PERIOD })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, seenRecently)
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
@@ -179,7 +187,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 				if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return true }) {
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -195,7 +203,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return true }) {
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -209,13 +217,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			}
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
-				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE { // multiply by 2 to give margin
+				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE {
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
 					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), addrPortFrom(k.peer))
 				}
-				// TODO: HOW DO WE WAIT BEFORE ACTUALLY DROPPING, TO PREVENT RE-ADDING FROM GOSSIP?
 			}
 		}
 	}
@@ -288,7 +295,7 @@ func peerFrom(addrport netip.AddrPort) *dave.Peer {
 }
 
 func peerId(p *dave.Peer) string {
-	return hex.EncodeToString(p.Ip) + ":" + strconv.Itoa(int(p.Port))
+	return strings.TrimLeft(hex.EncodeToString(p.Ip), "0") + ":" + strconv.Itoa(int(p.Port))
 }
 
 func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
