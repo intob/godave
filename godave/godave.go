@@ -37,8 +37,8 @@ const (
 	LEN_PACKET     = 1500
 	LEN_VAL        = 1200
 	NPEER          = 2
-	TOLERANCE      = 1
-	DROP           = 5
+	TOLERANCE      = 2
+	DROP           = 6
 	DISTANCE       = 6
 	FANOUT_GETDAT  = 2
 	FANOUT_SETDAT  = 2
@@ -143,7 +143,7 @@ func CheckWork(msg *dave.Msg) int {
 
 func d(conn *net.UDPConn, peers map[string]*known,
 	pkts <-chan packet, send <-chan *dave.Msg, minwork int) <-chan *dave.Msg {
-	recv := make(chan *dave.Msg, 32)
+	recv := make(chan *dave.Msg, 10)
 	go func() {
 		data := make(map[string]*Dat)
 		for {
@@ -243,7 +243,7 @@ func peerId(p *dave.Peer) string {
 }
 
 func lstn(conn *net.UDPConn) <-chan packet {
-	pkts := make(chan packet, 1)
+	pkts := make(chan packet, 10)
 	go func() {
 		msgPool := sync.Pool{
 			New: func() interface{} {
@@ -282,7 +282,10 @@ func lstn(conn *net.UDPConn) <-chan packet {
 func ping(conn *net.UDPConn, k *known) {
 	if k != nil && time.Since(k.seen) > PERIOD {
 		k.nping += 1
-		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
+		err := wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
+		if err != nil {
+			panic(err)
+		}
 	}
 }
 
@@ -293,7 +296,7 @@ func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int) []*
 	}
 	candidates := make([]*dave.Peer, 0, len(knownPeers))
 	for _, k := range knownPeers {
-		if !k.bootstrap && k.drop == 0 && k.nping <= TOLERANCE {
+		if k.drop == 0 && k.nping <= TOLERANCE {
 			if _, ok := excludeMap[peerId(k.peer)]; !ok {
 				candidates = append(candidates, k.peer)
 			}
@@ -327,6 +330,7 @@ func rndPeer(peers map[string]*known) *known {
 
 func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) error {
 	_, err := conn.WriteToUDPAddrPort(payload, addr)
+	time.Sleep(time.Microsecond * 50)
 	return err
 }
 

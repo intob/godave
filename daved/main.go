@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	BOOTSTRAP_MSG  = 6
+	BOOTSTRAP_MSG  = 3
 	TIMEOUT_GETDAT = time.Second
 )
 
@@ -63,12 +63,9 @@ func main() {
 	}
 
 	var n int
-	fmt.Printf("%v\nbootstrap\n", bootstrap)
 	for range d.Recv {
 		n++
-		fmt.Printf(".\033[0K")
 		if n >= BOOTSTRAP_MSG {
-			fmt.Print("\n\033[0K")
 			break
 		}
 	}
@@ -129,7 +126,7 @@ func setDat(d *godave.Dave, work int, prevhex, tag string) {
 		panic(err)
 	}
 	msg := <-wch
-	err = send(d, msg, 2*time.Second)
+	err = send(d, msg, 10*time.Second)
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)
 	}
@@ -229,20 +226,19 @@ func getFileDats(d *godave.Dave, minwork int, headstr string, timeout time.Durat
 		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 		var i int
 		for m := range d.Recv {
-			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) && godave.CheckWork(m) >= minwork {
-				out <- m.Val
-				i++
-				fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
-				if m.Prev == nil {
-					close(out)
-					return
-				}
-				head = m.Prev
-				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
-				send(d, nil, time.Second)
-			} else {
-				if godave.CheckWork(m) < minwork {
-					fmt.Println("invalid work:", m)
+			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, head) {
+				if godave.CheckWork(m) >= minwork {
+					out <- m.Val
+					i++
+					fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
+					if m.Prev == nil {
+						close(out)
+						return
+					}
+					head = m.Prev
+					send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+				} else {
+					fmt.Printf("invalid work: got %d, want %d\n", godave.CheckWork(m), minwork)
 				}
 			}
 		}
