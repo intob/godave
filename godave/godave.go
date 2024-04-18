@@ -218,12 +218,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
 				if k.ping > TOLERANCE {
-					k.drop += 1
+					k.drop++
 					k.ping = 0
-					if k.drop > DROP {
-						delete(ks, kid)
-						fmt.Println("dropped", kid)
-					}
+				}
+				if k.drop > DROP {
+					delete(ks, kid)
+					fmt.Println("dropped", kid)
 				}
 			}
 			r := rndKnown(ks)
@@ -269,7 +269,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 
 func ping(conn *net.UDPConn, k *known) {
 	wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
-	k.ping += 1
+	k.ping++
 }
 
 func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, match func(*known) bool) []*dave.Peer {
