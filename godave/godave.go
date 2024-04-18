@@ -137,12 +137,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				switch msend.Op {
 				case dave.Op_SETDAT:
 					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, func(k *known) bool { return true }) {
-						wraddr(c, marshal(msend), parsePeer(rp))
+						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
 				case dave.Op_GETDAT:
 					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, func(k *known) bool { return true }) {
-						wraddr(c, marshal(msend), parsePeer(rp))
+						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
 				}
@@ -181,7 +181,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 				if len(m.Peers) < DISTANCE {
 					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return true }) {
-						wraddr(c, marshal(m), parsePeer(fp))
+						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_GETDAT: // RETURN DAT OR FORWARD
@@ -193,11 +193,11 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				if ok {
 					for _, mp := range m.Peers {
 						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
-							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), parsePeer(mp))
+							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Peers) < DISTANCE {
 					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return true }) {
-						wraddr(c, marshal(m), parsePeer(fp))
+						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_DAT: // STORE INCOMING
@@ -210,11 +210,11 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			}
 		case <-time.After(PERIOD):
 			for kid, k := range ks {
-				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*2 { // multiply by 2 to give margin
+				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*3 { // multiply by 2 to give margin
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
-					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
+					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), addrPortFrom(k.peer))
 				}
 				// TODO: HOW DO WE WAIT BEFORE ACTUALLY DROPPING, TO PREVENT RE-ADDING FROM GOSSIP?
 			}
@@ -279,7 +279,7 @@ func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, mat
 	return ans
 }
 
-func parsePeer(peer *dave.Peer) netip.AddrPort {
+func addrPortFrom(peer *dave.Peer) netip.AddrPort {
 	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(peer.Ip)), uint16(peer.Port))
 }
 
