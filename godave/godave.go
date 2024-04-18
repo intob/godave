@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	PERIOD        = 500 * time.Millisecond
+	PERIOD        = time.Second
 	LEN_PACKET    = 1500
 	LEN_VAL       = 1200
 	NPEER         = 2
