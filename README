@@ -24,7 +24,7 @@ WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
 1.      Constants
 PERIOD              127713920ns     Good for now.
-LEN_PACKET          1500            Typical MTU.
+MTU                 1500            Typical.
 LEN_VAL             1200            Gives margin for peer descriptors.
 NPEER               3               Limit to prevent Eclipse attack.
 TOLERANCE           2               Low tolerance reduces message loss.

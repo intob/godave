@@ -35,10 +35,10 @@ import (
 
 const (
 	PERIOD        = time.Second
-	LEN_PACKET    = 1500
-	LEN_VAL       = 1200
+	MTU           = 1500
+	LEN_VAL       = 1200 /* When DISTANCE=7, 1230 is max */
 	NPEER         = 2
-	TOLERANCE     = 5
+	TOLERANCE     = 3
 	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
@@ -234,7 +234,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		msgPool := sync.Pool{New: func() interface{} { return &dave.Msg{} }}
 		defer conn.Close()
 		for {
-			buf := make([]byte, LEN_PACKET)
+			buf := make([]byte, MTU)
 			n, raddr, err := conn.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				panic(err)
