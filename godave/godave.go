@@ -37,8 +37,8 @@ const (
 	LEN_PACKET    = 1500
 	LEN_VAL       = 1200
 	NPEER         = 2
-	TOLERANCE     = 2
-	DROP          = 12
+	TOLERANCE     = 1
+	DROP          = 8
 	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
@@ -221,8 +221,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				if k.ping > TOLERANCE {
 					k.drop++
 					k.ping = 0
-				}
-				if k.drop > DROP {
+				} else if k.drop > DROP {
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				}
