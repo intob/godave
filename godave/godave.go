@@ -213,7 +213,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 			}
-		case <-time.After(time.Second):
+		case <-time.After(PERIOD):
 			fmt.Println("PING")
 			for kid, k := range ks {
 				if k.bootstrap {
@@ -226,7 +226,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				} else if k.drop > DROP {
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
-				} else if time.Since(k.seen) > PERIOD*TOLERANCE {
+				} else if time.Since(k.seen) > PERIOD {
 					ping(c, k)
 				}
 			}
