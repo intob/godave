@@ -33,7 +33,7 @@ import (
 )
 
 const (
-	PERIOD        = 100 * time.Millisecond
+	PERIOD        = 500 * time.Millisecond
 	LEN_PACKET    = 1500
 	LEN_VAL       = 1200
 	NPEER         = 2
@@ -214,7 +214,6 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 			}
 		case <-time.After(PERIOD):
-			fmt.Println("PING")
 			for kid, k := range ks {
 				if k.bootstrap {
 					continue
