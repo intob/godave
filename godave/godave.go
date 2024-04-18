@@ -175,7 +175,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP*TOLERANCE })
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
