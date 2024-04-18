@@ -223,12 +223,14 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				} else if k.drop > DROP {
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
+				} else if time.Since(k.seen) > PERIOD*TOLERANCE {
+					ping(c, k)
 				}
 			}
-			r := rndKnown(ks)
+			/*r := rndKnown(ks)
 			if r != nil {
 				ping(c, r)
-			}
+			}*/
 		}
 	}
 }
