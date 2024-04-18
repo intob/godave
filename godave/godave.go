@@ -300,7 +300,6 @@ func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, mat
 	for i := 0; i < limit; i++ {
 		r := i + mrand.Intn(len(candidates)-i)
 		ans[i] = candidates[r]
-		candidates[r] = candidates[i]
 	}
 	return ans
 }
