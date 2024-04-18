@@ -216,6 +216,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 		case <-time.After(time.Second):
 			fmt.Println("PING")
 			for kid, k := range ks {
+				fmt.Println(kid, k.drop)
 				if k.ping > TOLERANCE {
 					k.drop++
 					k.ping = 0
