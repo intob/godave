@@ -57,8 +57,8 @@ type Dat struct {
 	Nonce []byte
 }
 
-type known struct {
-	peer      *dave.Peer
+type peer struct {
+	pd        *dave.Pd
 	added     time.Time
 	seen      time.Time
 	bootstrap bool
@@ -75,10 +75,10 @@ func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
 		return nil, err
 	}
 	fmt.Printf("listening %s\n", conn.LocalAddr())
-	boot := make(map[string]*known)
+	boot := make(map[string]*peer)
 	for _, bap := range baps {
-		bp := peerFrom(bap)
-		boot[peerId(bp)] = &known{peer: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
+		bp := pdFrom(bap)
+		boot[pdStr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.Msg)
 	recv := make(chan *dave.Msg, 1)
@@ -129,11 +129,11 @@ func CheckWork(msg *dave.Msg) int {
 	return nzero(msg.Work)
 }
 
-func seenRecently(k *known) bool {
+func seenRecently(k *peer) bool {
 	return time.Since(k.seen) < PERIOD
 }
 
-func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dave.Msg, recv chan<- *dave.Msg) {
+func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave.Msg, recv chan<- *dave.Msg) {
 	data := make(map[string]Dat)
 	for {
 		select {
@@ -141,44 +141,44 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, seenRecently) {
+					for _, rp := range rndPds(ks, nil, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
-						fmt.Println("SENT TO", peerId(rp))
+						fmt.Println("SENT TO", pdStr(rp))
 					}
 				case dave.Op_GETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, seenRecently) {
+					for _, rp := range rndPds(ks, nil, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
-						fmt.Println("SENT TO", peerId(rp))
+						fmt.Println("SENT TO", pdStr(rp))
 					}
 				}
 			}
 		case pkt := <-pch: // HANDLE INCOMING PACKET
 			recv <- pkt.msg
-			pktpeer := peerFrom(pkt.ip)
-			pktpid := peerId(pktpeer)
+			pd := pdFrom(pkt.ip)
+			pktpid := pdStr(pd)
 			_, ok := ks[pktpid]
 			if !ok {
-				ks[pktpid] = &known{peer: pktpeer, added: time.Now()}
+				ks[pktpid] = &peer{pd: pd, added: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
 			}
 			ks[pktpid].seen = time.Now()
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
-				for i, p := range m.Peers {
+				for i, pd := range m.Pds {
 					if i >= NPEER {
 						break // don't get poisoned
 					}
-					pid := peerId(p)
+					pid := pdStr(pd)
 					_, ok := ks[pid]
 					if !ok {
-						ks[pid] = &known{peer: pktpeer, added: time.Now(), seen: time.Now()}
+						ks[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
 						fmt.Println("<-pkts added gossip", pid)
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, seenRecently)
-				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
+				randpds := rndPds(ks, []*dave.Pd{pd}, NPEER, seenRecently)
+				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
 				if check < MINWORK {
@@ -186,8 +186,8 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					continue
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
-				if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, seenRecently) {
+				if len(m.Pds) < DISTANCE {
+					for _, fp := range rndPds(ks, m.Pds, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -198,12 +198,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				d, ok := data[hex.EncodeToString(m.Work)]
 				if ok {
-					for _, mp := range m.Peers {
+					for _, mp := range m.Pds {
 						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
-				} else if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, seenRecently) {
+				} else if len(m.Pds) < DISTANCE {
+					for _, fp := range rndPds(ks, m.Pds, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -221,7 +221,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
-					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), addrPortFrom(k.peer))
+					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), addrPortFrom(k.pd))
 				}
 			}
 		}
@@ -247,11 +247,11 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				continue
 			}
 			if msg.Op == dave.Op_SETDAT || msg.Op == dave.Op_GETDAT {
-				rp := peerFrom(raddr)
-				if len(msg.Peers) == 0 {
-					msg.Peers = []*dave.Peer{rp}
+				pd := pdFrom(raddr)
+				if len(msg.Pds) == 0 {
+					msg.Pds = []*dave.Pd{pd}
 				} else {
-					msg.Peers = append(msg.Peers, rp)
+					msg.Pds = append(msg.Pds, pd)
 				}
 			}
 			pkts <- packet{msg, raddr}
@@ -261,23 +261,23 @@ func lstn(conn *net.UDPConn) <-chan packet {
 	return pkts
 }
 
-func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, match func(*known) bool) []*dave.Peer {
+func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*peer) bool) []*dave.Pd {
 	excludeMap := make(map[string]struct{}, len(exclude))
 	for _, pexcl := range exclude {
-		excludeMap[peerId(pexcl)] = struct{}{}
+		excludeMap[pdStr(pexcl)] = struct{}{}
 	}
-	candidates := make([]*dave.Peer, 0, len(knownPeers))
-	for _, k := range knownPeers {
+	candidates := make([]*dave.Pd, 0, len(peers))
+	for _, k := range peers {
 		if match(k) {
-			if _, ok := excludeMap[peerId(k.peer)]; !ok {
-				candidates = append(candidates, k.peer)
+			if _, ok := excludeMap[pdStr(k.pd)]; !ok {
+				candidates = append(candidates, k.pd)
 			}
 		}
 	}
 	if len(candidates) <= limit {
 		return candidates
 	}
-	ans := make([]*dave.Peer, limit)
+	ans := make([]*dave.Pd, limit)
 	for i := 0; i < limit; i++ {
 		r := i + mrand.Intn(len(candidates)-i)
 		ans[i] = candidates[r]
@@ -285,16 +285,16 @@ func rndPeers(knownPeers map[string]*known, exclude []*dave.Peer, limit int, mat
 	return ans
 }
 
-func addrPortFrom(peer *dave.Peer) netip.AddrPort {
-	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(peer.Ip)), uint16(peer.Port))
+func addrPortFrom(pd *dave.Pd) netip.AddrPort {
+	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(pd.Ip)), uint16(pd.Port))
 }
 
-func peerFrom(addrport netip.AddrPort) *dave.Peer {
+func pdFrom(addrport netip.AddrPort) *dave.Pd {
 	ip := addrport.Addr().As16()
-	return &dave.Peer{Ip: ip[:], Port: uint32(addrport.Port())}
+	return &dave.Pd{Ip: ip[:], Port: uint32(addrport.Port())}
 }
 
-func peerId(p *dave.Peer) string {
+func pdStr(p *dave.Pd) string {
 	return strings.TrimLeft(hex.EncodeToString(p.Ip), "0") + ":" + strconv.Itoa(int(p.Port))
 }
 

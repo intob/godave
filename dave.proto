@@ -16,24 +16,24 @@ syntax = "proto3";
 option go_package = "./godave/dave";
 
 enum Op {
-  GETPEER = 0;                // Peer discovery pt.1
-  PEER = 1;                   // Peer discovery pt.2
-  SETDAT = 2;                 // Write to the network
-  GETDAT = 3;                 // Read from the network
-  DAT = 4;                    // Message contains DAT value
+  GETPEER = 0;
+  PEER = 1;
+  SETDAT = 2;
+  GETDAT = 3;
+  DAT = 4;
 }
 
 message Msg {
-  Op op = 1;                  // Operation code
-  repeated Peer peers = 2;    // Peer descriptors
-  bytes prev = 3;             // SHA256
-  bytes work = 4;             // SHA256
-  bytes nonce = 5;            // Random, len=32
-  bytes val = 6;              // Anything, len<=1280
-  bytes tag = 7;              // Artibtrary data, len<=32
+  Op op = 1;
+  repeated Pd pds = 2;
+  bytes prev = 3;
+  bytes work = 4;
+  bytes nonce = 5;
+  bytes val = 6;
+  bytes tag = 7;
 }
 
-message Peer {
-  bytes ip = 1;               // IPv4 or IPv6 adress
-  uint32 port = 2;            // Port number
+message Pd {
+  bytes ip = 1;
+  uint32 port = 2;
 }
