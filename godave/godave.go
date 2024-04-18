@@ -165,7 +165,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					pid := peerId(p)
 					_, ok := ks[pid]
 					if !ok {
-						ks[pid] = &known{peer: pktpeer}
+						ks[pid] = &known{peer: pktpeer, added: time.Now()}
 						fmt.Println("<-pkts added gossip", pid)
 					}
 				}
