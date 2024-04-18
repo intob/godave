@@ -77,7 +77,7 @@ func NewDave(laddr *net.UDPAddr, bootstrap []netip.AddrPort) (*Dave, error) {
 	peers := make(map[string]*known)
 	for _, ap := range bootstrap {
 		p := peerFrom(ap)
-		peers[peerId(p)] = &known{peer: p, added: time.Now(), bootstrap: true}
+		peers[peerId(p)] = &known{peer: p, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.Msg)
 	recv := make(chan *dave.Msg, 1)
