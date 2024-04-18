@@ -158,7 +158,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			if ok {
 				k.seen = time.Now()
 				k.ping = 0
-				k.drop = max(k.drop-1, 0)
+				k.drop = 0
 			} else {
 				ks[pktpid] = &known{peer: pktpeer, added: time.Now(), seen: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
