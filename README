@@ -23,17 +23,14 @@ limitations under the License.
 WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
 1.      Constants
-PERIOD              127713920ns     Good for now.
-MTU                 1500            Typical.
-LEN_VAL             1200            Gives margin for peer descriptors.
-NPEER               3               Limit to prevent Eclipse attack.
-TOLERANCE           2               Low tolerance reduces message loss.
-DROP                5               Second tolerance stage to drop peers. Dropped peers are re-added if too low.
-DISTANCE            6               Higher value increases probability that all nodes receive packet.
-FANOUT_GETDAT       2               2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
-FANOUT_SETDAT       2               2 is good. Prefer increasing DISTANCE to add redundancy.
-SEND_FACTOR         2               Initial sender multiplies FANOUT by SEND_FACTOR to increase redundancy.
-MINWORK_FANOUT      2               Prevent DAT spam.
+PERIOD              1s          Good for now.
+MTU                 1500        Typical.
+NPEER               3           Limit to prevent Eclipse attack.
+TOLERANCE           3           Low tolerance reduces churn & message loss.
+DISTANCE            6           Higher value increases probability that all nodes receive packet.
+FANOUT_GETDAT       2           2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
+FANOUT_SETDAT       2           Don't flood network.
+MINWORK             2           Prevent DAT spam.
 
 2.      Operation Codes
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
@@ -43,44 +40,39 @@ GETDAT      Packet requesting DAT, remote should send DAT to all peer descriptor
 DAT, without forwarding, else if len(Peers) < DISTANCE, forward to FANOUT_GETDAT random peers.
 
 
-3.      Message Wire Format
-A message is serialized into binary using protobuf. See dave.proto for the protobuf spec.
+3.      Message
 
-3. 1.   Fields
-            DESCRIPTION                                 BYTE_LEN
+3. 1.   Message Fields
+            DESCRIPTION                                 BYTE LENGTH
 Op          Operation code.                             1
-Peers       List of peer descriptors who forwarded.     UNKNOWN
-Prev        Work of previous DAT.                       0 | 32
-Work        SHA256(SHA256(Prev, Val, Tag), Nonce).      0 | 32
-Nonce       Salt to compute work.                       0 | 32
-Val         The data                                    <= LEN_VAL
+Peers       List of peer descriptors who forwarded.     20*DISTANCE
+Time        Unix-milliseconds big-endian                8
+Work        SHA256(SHA256(Time, Val, Tag), Nonce).      0 | 32
+Nonce       Work salt.                                  0 | 32
 Tag         Arbitrary metaadata.                        <= 32
+Val         The data.                                   <= 1200 for MTU=1500,DISTANCE=7
 
-3. 2.   Transpiling Protobuf Spec for Go
+3. 2.   Wire Format
+A message is serialized into binary using protobuf. See protobuf spec dave.proto.
+
+Transpiling Protobuf Spec for Go:
 #!/bin/bash
 protoc --go_out=. dave.proto
 
 
 4.      Peer Discovery & Liveness
-The protocol ensures a cohesive network by combining ping and peer discovery into a single pair of messages (GETPEER & PEER).
-A node replies to a GETPEER message with a PEER message with up to NPEER random address:port strings, where each address:port is a responsive peer (ping and drop counters are zero).
-When a GETPEER message is sent, the ping counter (peer.nping) is incremented.
-If a PEER message is received from the address, both ping and drop counters are set to zero.
-If the ping counter reaches TOLERANCE, the drop counter is incremented.
-If the drop counter reaches DROP*TOLERANCE, the peer is deleted from the peer table.
-This 2-stage mechanism ensures that dropped peers are not immediately re-added, because unresponsive peers are not advertised.
+The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER). A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors. Peers are not advertised if they have not been seen recently.
 
 
 5.      DAT
-DAT is a construct representing a small value, some metadata (time & tag), and the proof of work. The proof-of-work allows the network to prioritise storage of keys backed by more work.
-The proof of work also makes it easier to protect the network from protocol deviation.
+DAT is a construct representing a small value, time, tag (32B metadata), nonce, and the proof-of-work. The proof-of-work allows the network to prioritise storage of keys backed by more work, and prevent spam/flooding. The proof also makes the network more resilient to protocol deviation.
 
 
 6.      Message Propagation
 The network propagates SETDAT and GETDAT messages.
-Each node appends the address:port of the message sender to the message address list.
-For the SETDAT operation, the message is forwarded to up to FANOUT_SETDAT (2) random addresses, excluding those in the message address list.
-For the GETDAT operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE addresses, the message is forwarded to up to FANOUT_GETDAT (2) random peers, excluding those in the message address list.
+Each node appends the peer descriptor of the message sender to the message address list.
+For the SETDAT operation, the message is forwarded to up to FANOUT_SETDAT random addresses, excluding those in the message address list.
+For the GETDAT operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE addresses, the message is forwarded to up to FANOUT_GETDAT random peers, excluding those in the message address list.
 For the GETDAT operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all addresses in the message address list. Each peer can then validate the work & store the DAT.
 
 7.      Resources

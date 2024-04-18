@@ -37,7 +37,6 @@ import (
 const (
 	PERIOD        = time.Second
 	MTU           = 1500
-	LEN_VAL       = 1200 /* When DISTANCE=7, 1230 is max */
 	NPEER         = 2
 	TOLERANCE     = 3
 	DISTANCE      = 7
