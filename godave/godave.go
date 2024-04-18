@@ -152,12 +152,11 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			pktpeer := peerFrom(pkt.ip)
 			pktpid := peerId(pktpeer)
 			_, ok := ks[pktpid]
-			if ok {
-				ks[pktpid].seen = time.Now()
-			} else {
-				ks[pktpid] = &known{peer: pktpeer, added: time.Now(), seen: time.Now()}
+			if !ok {
+				ks[pktpid] = &known{peer: pktpeer, added: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
 			}
+			ks[pktpid].seen = time.Now()
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
