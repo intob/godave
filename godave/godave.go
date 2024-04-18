@@ -39,7 +39,7 @@ const (
 	LEN_VAL       = 1200
 	NPEER         = 2
 	TOLERANCE     = 5
-	DISTANCE      = 7
+	DISTANCE      = 6
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	MINWORK       = 2
