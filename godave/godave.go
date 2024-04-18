@@ -95,7 +95,9 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 		zeros := make([]byte, work)
 		msg.Nonce = make([]byte, 32)
 		h := sha256.New()
-		h.Write(msg.Prev)
+		if msg.Prev != nil {
+			h.Write(msg.Prev)
+		}
 		h.Write(msg.Val)
 		h.Write(msg.Tag)
 		load := h.Sum(nil)
@@ -128,7 +130,9 @@ func CheckWork(msg *dave.Msg) int {
 		return -5
 	}
 	h := sha256.New()
-	h.Write(msg.Prev)
+	if msg.Prev != nil {
+		h.Write(msg.Prev)
+	}
 	h.Write(msg.Val)
 	h.Write(msg.Tag)
 	load := h.Sum(nil)
