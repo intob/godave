@@ -151,9 +151,9 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			recv <- pkt.msg
 			pktpeer := peerFrom(pkt.ip)
 			pktpid := peerId(pktpeer)
-			k, ok := ks[pktpid]
+			_, ok := ks[pktpid]
 			if ok {
-				k.seen = time.Now()
+				ks[pktpid].seen = time.Now()
 			} else {
 				ks[pktpid] = &known{peer: pktpeer, added: time.Now(), seen: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
