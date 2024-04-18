@@ -19,7 +19,7 @@ import (
 )
 
 const (
-	BOOTSTRAP_MSG  = 3
+	BOOTSTRAP_MSG  = 5
 	TIMEOUT_GETDAT = time.Second
 )
 
@@ -142,6 +142,7 @@ func getDat(d *godave.Dave, workhex string, timeout time.Duration) {
 	}
 	t := time.After(timeout)
 	send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: work}, timeout)
+	var tries int
 	for {
 		select {
 		case m := <-d.Recv:
@@ -150,7 +151,12 @@ func getDat(d *godave.Dave, workhex string, timeout time.Duration) {
 				return
 			}
 		case <-t:
-			return
+			tries++
+			if tries > 3 {
+				return
+			}
+			send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: work}, timeout)
+			t = time.After(timeout)
 		}
 	}
 }
@@ -224,26 +230,38 @@ func getFileDats(d *godave.Dave, headstr string, timeout time.Duration) <-chan [
 			fmt.Println("failed to decode hex")
 		}
 		send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
-		var i int
-		for m := range d.Recv {
-			if m.Op != dave.Op_DAT || !bytes.Equal(m.Work, head) {
-				continue
-			}
-			check := godave.CheckWork(m)
-			if check < godave.MINWORK {
-				fmt.Printf("invalid work: require %d, has %d, trying again...\n", godave.MINWORK, check)
+		t := time.After(timeout)
+		var i, try int
+		for {
+			select {
+			case <-t:
+				try++
+				if try > 3 {
+					close(out)
+					return
+				}
 				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
-				continue
+				t = time.After(timeout)
+			case m := <-d.Recv:
+				if m.Op != dave.Op_DAT || !bytes.Equal(m.Work, head) {
+					continue
+				}
+				check := godave.CheckWork(m)
+				if check < godave.MINWORK {
+					fmt.Printf("invalid work: require %d, has %d, trying again...\n", godave.MINWORK, check)
+					send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
+					continue
+				}
+				out <- m.Val
+				i++
+				fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
+				if m.Prev == nil {
+					close(out)
+					return
+				}
+				head = m.Prev
+				send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 			}
-			out <- m.Val
-			i++
-			fmt.Printf("GOT DAT %d PREV: %x\n", i, m.Prev)
-			if m.Prev == nil {
-				close(out)
-				return
-			}
-			head = m.Prev
-			send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: head}, timeout)
 		}
 	}()
 	return out
