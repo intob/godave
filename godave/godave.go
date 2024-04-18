@@ -37,8 +37,7 @@ const (
 	LEN_PACKET    = 1500
 	LEN_VAL       = 1200
 	NPEER         = 2
-	TOLERANCE     = 1
-	DROP          = 8
+	TOLERANCE     = 3
 	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
@@ -61,8 +60,6 @@ type known struct {
 	peer      *dave.Peer
 	added     time.Time
 	seen      time.Time
-	ping      int
-	drop      int
 	bootstrap bool
 }
 
@@ -139,12 +136,12 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, func(k *known) bool { return k.drop == 0 }) {
+					for _, rp := range rndPeers(ks, nil, FANOUT_SETDAT, func(k *known) bool { return true }) {
 						wraddr(c, marshal(msend), parsePeer(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
 				case dave.Op_GETDAT:
-					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, func(k *known) bool { return k.drop == 0 }) {
+					for _, rp := range rndPeers(ks, nil, FANOUT_GETDAT, func(k *known) bool { return true }) {
 						wraddr(c, marshal(msend), parsePeer(rp))
 						fmt.Println("SENT TO", peerId(rp))
 					}
@@ -157,8 +154,6 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 			k, ok := ks[pktpid]
 			if ok {
 				k.seen = time.Now()
-				k.ping = 0
-				k.drop = 0
 			} else {
 				ks[pktpid] = &known{peer: pktpeer, added: time.Now(), seen: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
@@ -175,7 +170,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return true })
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
@@ -185,7 +180,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 				if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return k.drop == 0 }) {
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return true }) {
 						wraddr(c, marshal(m), parsePeer(fp))
 					}
 				}
@@ -201,7 +196,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), parsePeer(mp))
 					}
 				} else if len(m.Peers) < DISTANCE {
-					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return k.drop == 0 }) {
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return true }) {
 						wraddr(c, marshal(m), parsePeer(fp))
 					}
 				}
@@ -218,16 +213,11 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				if k.bootstrap {
 					continue
 				}
-				fmt.Println(kid, k.drop)
-				if k.ping > TOLERANCE {
-					k.drop++
-					k.ping = 0
-				} else if k.drop > DROP {
+				if time.Since(k.seen) > PERIOD*TOLERANCE {
 					delete(ks, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
 					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), parsePeer(k.peer))
-					k.ping++
 				}
 			}
 		}
