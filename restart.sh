@@ -1,6 +1,6 @@
 git pull
-go work init godave daved
-cd daved && go build && cd ..
+/usr/local/go/bin work init godave daved
+cd daved && /usr/local/go/bin build && cd ..
 sudo cp -f dave.service.conf /etc/systemd/system/dave.service
 sudo systemctl daemon-reload
 sudo systemctl enable dave.service
