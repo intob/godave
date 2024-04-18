@@ -38,8 +38,8 @@ const (
 	LEN_VAL       = 1200
 	NPEER         = 2
 	TOLERANCE     = 2
-	DROP          = 32
-	DISTANCE      = 9
+	DROP          = 12
+	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	MINWORK       = 2
@@ -185,13 +185,9 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 				if len(m.Peers) < DISTANCE {
-					forward := rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return k.drop == 0 })
-					fmt.Printf("FORWARD SETDAT ")
-					for _, rp := range forward {
-						wraddr(c, marshal(m), parsePeer(rp))
-						fmt.Printf("%s, ", peerId(rp))
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_SETDAT, func(k *known) bool { return k.drop == 0 }) {
+						wraddr(c, marshal(m), parsePeer(fp))
 					}
-					fmt.Println()
 				}
 			case dave.Op_GETDAT: // RETURN DAT OR FORWARD
 				if nzero(m.Work) < MINWORK {
@@ -200,20 +196,14 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				}
 				d, ok := data[hex.EncodeToString(m.Work)]
 				if ok {
-					fmt.Println("FOUND!!!!!!!!!!!!!!!")
 					for _, mp := range m.Peers {
-						fmt.Println("SEND DAT TO", peerId(mp))
 						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Prev: d.Prev, Val: d.Val,
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), parsePeer(mp))
 					}
 				} else if len(m.Peers) < DISTANCE {
-					forward := rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return k.drop == 0 })
-					fmt.Printf("FORWARD GETDAT ")
-					for _, f := range forward {
-						wraddr(c, marshal(m), parsePeer(f))
-						fmt.Printf("%s, ", peerId(f))
+					for _, fp := range rndPeers(ks, m.Peers, FANOUT_GETDAT, func(k *known) bool { return k.drop == 0 }) {
+						wraddr(c, marshal(m), parsePeer(fp))
 					}
-					fmt.Println()
 				}
 			case dave.Op_DAT: // STORE INCOMING
 				check := CheckWork(m)
