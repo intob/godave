@@ -216,10 +216,6 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				data[hex.EncodeToString(m.Work)] = Dat{m.Prev, m.Val, m.Tag, m.Nonce}
 			}
 		case <-time.After(PERIOD):
-			r := rndKnown(ks)
-			if r != nil {
-				ping(c, r)
-			}
 			for kid, k := range ks {
 				if k.ping > TOLERANCE {
 					k.drop += 1
@@ -229,6 +225,10 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 						fmt.Println("dropped", kid)
 					}
 				}
+			}
+			r := rndKnown(ks)
+			if r != nil {
+				ping(c, r)
 			}
 		}
 	}
