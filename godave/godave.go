@@ -62,9 +62,8 @@ type known struct {
 	added     time.Time
 	seen      time.Time
 	ping      int
-	bootstrap bool
 	drop      int
-	msg       int
+	bootstrap bool
 }
 
 type packet struct {
@@ -160,7 +159,6 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 				k.seen = time.Now()
 				k.ping = 0
 				k.drop = max(k.drop-1, 0)
-				k.msg++
 			} else {
 				ks[pktpid] = &known{peer: pktpeer, added: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
@@ -177,7 +175,7 @@ func d(c *net.UDPConn, ks map[string]*known, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP*TOLERANCE && k.msg > 8 })
+				rps := rndPeers(ks, []*dave.Peer{pktpeer}, NPEER, func(k *known) bool { return k.drop == 0 && time.Since(k.added) > PERIOD*DROP })
 				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Peers: rps}), pkt.ip)
 			case dave.Op_SETDAT:
 				check := CheckWork(m)
