@@ -257,7 +257,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
-					fmt.Println("PEER/GETPEER collision, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
@@ -265,13 +264,11 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
-					fmt.Printf("dat seen, dropped: %s %x\n", raddr, m.Work)
 					pool.Put(m)
 					continue
 				}
 				if (m.Op == dave.Op_DAT || m.Op == dave.Op_SETDAT) && CheckMsg(m) < MINWORK {
 					ntorsten++
-					fmt.Println("work invalid, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
