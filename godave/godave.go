@@ -218,7 +218,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		h := sha256.New()
 		defer conn.Close()
 		for {
-			if time.Since(reset) > time.Second {
+			if time.Since(reset) > PERIOD {
 				f.Reset()
 				fmt.Println("reset filter")
 				reset = time.Now()
@@ -239,13 +239,13 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			h.Write([]byte(m.Op.String()))
 			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 				eb := make([]byte, 8)
-				binary.BigEndian.PutUint64(eb, uint64(time.Now().Unix()))
+				binary.BigEndian.PutUint64(eb, uint64(time.Now().Unix())) // PERIOD=1s
 				h.Write(eb)
 				rab := raddr.Addr().As16()
 				h.Write(rab[:])
 				s := h.Sum(nil)
 				fmt.Printf("insert: %x\n", s)
-				if f.InsertUnique(s) {
+				if !f.InsertUnique(s) {
 					fmt.Println(m.Op, "peer seen, dropped", raddr)
 					pool.Put(m)
 					continue
@@ -254,7 +254,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				rab := raddr.Addr().As16()
 				h.Write(rab[:])
 				h.Write(m.Work)
-				if f.InsertUnique(h.Sum(nil)) {
+				if !f.InsertUnique(h.Sum(nil)) {
 					fmt.Println(m.Op, "dat seen, dropped")
 					pool.Put(m)
 					continue
