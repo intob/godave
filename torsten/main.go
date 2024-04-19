@@ -66,10 +66,9 @@ func main() {
 				time.Sleep(r - time.Since(tlp))
 				tlp = time.Now()
 				i++
-				if i%100 == 0 {
+				if i%10 == 0 {
 					dt := time.Since(t)
-					r := jfmt.FmtCount32(uint32(float64(i) / dt.Seconds()))
-					fmt.Printf("\rsent %s packets in %s (%s/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), r)
+					fmt.Printf("\rsent %s packets in %s (%.2f/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), float64(i)/dt.Seconds())
 				}
 			}
 		}

@@ -241,6 +241,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			m := pool.Get().(*dave.M)
 			err = proto.Unmarshal(buf[:n], m)
 			if err != nil {
+				ntorsten++
 				fmt.Println("lstn unmarshal err:", raddr, err)
 				pool.Put(m)
 				continue
