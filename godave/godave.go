@@ -343,7 +343,7 @@ func pdStr(p *dave.Pd) string {
 }
 
 func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
-	time.Sleep(time.Microsecond * 250)
+	time.Sleep(time.Microsecond * 100)
 	_, err := conn.WriteToUDPAddrPort(payload, addr)
 	if err != nil {
 		panic(err)
