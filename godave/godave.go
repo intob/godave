@@ -18,7 +18,6 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"hash/fnv"
@@ -254,13 +253,9 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			h.Reset()
 			h.Write([]byte(m.Op.String()))
 			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-				eb := make([]byte, 8)
-				binary.BigEndian.PutUint64(eb, uint64(time.Now().Unix())) // PERIOD=1s
-				h.Write(eb)
 				rab := raddr.Addr().As16()
 				h.Write(rab[:])
-				s := h.Sum(nil)
-				if !f.InsertUnique(s) {
+				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
 					fmt.Println("PEER/GETPEER collision, dropped", raddr)
 					pool.Put(m)
@@ -272,7 +267,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
-					fmt.Println(m.Op, "dat seen, dropped", raddr)
+					fmt.Println(m.Op, "dat seen, dropped", raddr, string(m.Val))
 					pool.Put(m)
 					continue
 				}
