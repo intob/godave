@@ -139,12 +139,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 				case dave.Op_SETDAT:
 					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
-						fmt.Println("SENT TO", pdStr(rp))
 					}
 				case dave.Op_GETDAT:
 					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
-						fmt.Println("SENT TO", pdStr(rp))
 					}
 				}
 			}
@@ -161,10 +159,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
-				for i, pd := range m.Pds {
-					if i >= NPEER {
-						break // don't get poisoned
-					}
+				for _, pd := range m.Pds {
 					pid := pdStr(pd)
 					_, ok := prs[pid]
 					if !ok {
@@ -232,6 +227,10 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			err = proto.Unmarshal(buf[:n], m)
 			if err != nil {
 				fmt.Println("lstn unmarshal err:", err)
+				pool.Put(m)
+				continue
+			}
+			if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 				pool.Put(m)
 				continue
 			}
