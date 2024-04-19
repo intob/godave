@@ -68,12 +68,15 @@ func main() {
 		}
 		getDat(d, flag.Arg(1), time.Second)
 	default:
+		t := time.After(10 * time.Second)
 		for {
 			select {
+			case <-t:
+				fmt.Printf("Stat: %+v\n", d.Stat())
+				t = time.After(10 * time.Second)
 			case m := <-d.Recv:
 				printMsg(m)
-			case <-time.After(10 * time.Second):
-				fmt.Printf("Stat: %+v\n", d.Stat())
+
 			}
 		}
 	}
