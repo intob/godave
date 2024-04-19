@@ -213,80 +213,70 @@ func lstn(conn *net.UDPConn) <-chan packet {
 	pkts := make(chan packet, 100)
 	go func() {
 		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
-		f := []*ckoo.Filter{ckoo.NewFilter(FILTER_CAP), ckoo.NewFilter(FILTER_CAP)}
-		var epoch uint64
-		seen := func(h []byte) bool {
-			l := f[0].InsertUnique(h)
-			r := f[1].InsertUnique(h)
-			return l && r
-		}
+		f := ckoo.NewFilter(FILTER_CAP)
+		reset := time.Now()
 		h := sha256.New()
 		defer conn.Close()
 		for {
-			select {
-			case <-time.After(PERIOD):
-				epoch++
-				if epoch%10 == 0 {
-					f[epoch%2].Reset()
-					fmt.Println("reset filter", epoch%2)
-				}
-			default:
-				buf := make([]byte, MTU)
-				n, raddr, err := conn.ReadFromUDPAddrPort(buf)
-				if err != nil {
-					panic(err)
-				}
-				m := pool.Get().(*dave.M)
-				err = proto.Unmarshal(buf[:n], m)
-				if err != nil {
-					fmt.Println("lstn unmarshal err:", err)
+			if time.Since(reset) > time.Second {
+				f.Reset()
+				fmt.Println("reset filter")
+				reset = time.Now()
+			}
+			buf := make([]byte, MTU)
+			n, raddr, err := conn.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				panic(err)
+			}
+			m := pool.Get().(*dave.M)
+			err = proto.Unmarshal(buf[:n], m)
+			if err != nil {
+				fmt.Println("lstn unmarshal err:", err)
+				pool.Put(m)
+				continue
+			}
+			h.Reset()
+			h.Write([]byte(m.Op.String()))
+			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
+				eb := make([]byte, 8)
+				binary.BigEndian.PutUint64(eb, uint64(time.Now().Unix()))
+				h.Write(eb)
+				rab := raddr.Addr().As16()
+				h.Write(rab[:])
+				if f.InsertUnique(h.Sum(nil)) {
+					fmt.Println(m.Op, "peer seen, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
-				h.Reset()
-				h.Write([]byte(m.Op.String()))
-				if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-					eb := make([]byte, 8)
-					binary.BigEndian.PutUint64(eb, epoch)
-					h.Write(eb)
-					rab := raddr.Addr().As16()
-					h.Write(rab[:])
-					if seen(h.Sum(nil)) {
-						fmt.Println(m.Op, "seen, dropped")
-						pool.Put(m)
-						continue
-					}
-				} else { // DAT, GETDAT, SETDAT
-					rab := raddr.Addr().As16()
-					h.Write(rab[:])
-					h.Write(m.Work)
-					if seen(h.Sum(nil)) {
-						fmt.Println(m.Op, "seen, dropped")
-						pool.Put(m)
-						continue
-					}
-					if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
-						fmt.Println("work invalid, dropped")
-						pool.Put(m)
-						continue
-					}
-					if m.Op == dave.Op_GETDAT || m.Op == dave.Op_SETDAT {
-						pd := pdFrom(raddr)
-						if len(m.Pds) == 0 {
-							m.Pds = []*dave.Pd{pd}
-						} else {
-							m.Pds = append(m.Pds, pd)
-						}
+			} else { // DAT, GETDAT, SETDAT
+				rab := raddr.Addr().As16()
+				h.Write(rab[:])
+				h.Write(m.Work)
+				if f.InsertUnique(h.Sum(nil)) {
+					fmt.Println(m.Op, "dat seen, dropped")
+					pool.Put(m)
+					continue
+				}
+				if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
+					fmt.Println("work invalid, dropped")
+					pool.Put(m)
+					continue
+				}
+				if m.Op == dave.Op_GETDAT || m.Op == dave.Op_SETDAT {
+					pd := pdFrom(raddr)
+					if len(m.Pds) == 0 {
+						m.Pds = []*dave.Pd{pd}
+					} else {
+						m.Pds = append(m.Pds, pd)
 					}
 				}
-				copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
-				for i, pd := range m.Pds {
-					copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
-				}
-				pkts <- packet{copy, raddr}
-				pool.Put(m)
 			}
-
+			copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
+			for i, pd := range m.Pds {
+				copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
+			}
+			pkts <- packet{copy, raddr}
+			pool.Put(m)
 		}
 	}()
 	return pkts
