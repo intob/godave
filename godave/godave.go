@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash/fnv"
 	mrand "math/rand"
 	"net"
 	"net/netip"
@@ -225,7 +226,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
 		f := ckoo.NewFilter(FILTER_CAP)
 		reset := time.Now()
-		h := sha256.New()
+		h := fnv.New128a()
 		defer conn.Close()
 		for {
 			if time.Since(reset) > PERIOD {
