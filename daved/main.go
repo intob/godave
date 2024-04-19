@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	BOOTSTRAP_MSG = 5
+	BOOTSTRAP_MSG = 3
 )
 
 func main() {
