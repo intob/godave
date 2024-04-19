@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/intob/dave/godave/dave"
+	"github.com/intob/jfmt"
 	ckoo "github.com/seiflotfy/cuckoofilter"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -176,7 +177,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						fmt.Println("<-pkts added gossip", pid)
+						fmt.Printf("<-pkts added gossip %x", sha256.Sum256(pd.Ip))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
@@ -193,8 +194,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 				d, ok := dats[hex.EncodeToString(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val,
-							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
 					for _, fp := range rndPds(prs, m.Pds, FANOUT_GETDAT, shareable) {
@@ -221,12 +221,16 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 func lstn(conn *net.UDPConn) <-chan packet {
 	pkts := make(chan packet, 100)
 	go func() {
+		var ntorsten uint32
 		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
 		f := ckoo.NewFilter(FILTER_CAP)
 		reset := time.Now()
 		h := sha256.New()
 		defer conn.Close()
 		for {
+			if ntorsten%100 == 0 {
+				fmt.Printf("ntorsten: %s\n", jfmt.FmtCount32(ntorsten))
+			}
 			if time.Since(reset) > PERIOD {
 				f.Reset()
 				reset = time.Now()
@@ -257,6 +261,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(rab[:])
 				s := h.Sum(nil)
 				if !f.InsertUnique(s) {
+					ntorsten++
 					pool.Put(m)
 					continue
 				}
@@ -265,11 +270,13 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(rab[:])
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
+					ntorsten++
 					fmt.Println(m.Op, "dat seen, dropped")
 					pool.Put(m)
 					continue
 				}
 				if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
+					ntorsten++
 					fmt.Println("work invalid, dropped")
 					pool.Put(m)
 					continue

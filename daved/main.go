@@ -18,7 +18,6 @@ import (
 )
 
 func main() {
-	network := flag.String("network", "udp", "<udp|udp6|udp4>")
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
@@ -44,7 +43,7 @@ func main() {
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
-	udpaddr, err := net.ResolveUDPAddr(*network, *lap)
+	udpaddr, err := net.ResolveUDPAddr("udp", *lap)
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
@@ -66,17 +65,19 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getdat <WORK>")
 		}
-		getDat(d, flag.Arg(1), time.Second)
+		GetDat(d, flag.Arg(1), time.Second)
+
+	// SEND DIRECTLY TO PEERS:
+
 	default:
 		t := time.After(10 * time.Second)
 		for {
 			select {
 			case <-t:
-				fmt.Printf("Stat: %+v\n", d.Stat())
+				fmt.Printf("stat: %+v\n", d.Stat())
 				t = time.After(10 * time.Second)
 			case m := <-d.Recv:
 				printMsg(m)
-
 			}
 		}
 	}
@@ -88,7 +89,7 @@ func setDat(d *godave.Dave, work int, tag string) {
 		panic(err)
 	}
 	msg := <-wch
-	err = send(d, msg, 10*time.Second)
+	err = send(d, msg, time.Second)
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)
 	}
@@ -97,28 +98,30 @@ func setDat(d *godave.Dave, work int, tag string) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-func getDat(d *godave.Dave, workhex string, timeout time.Duration) {
+func GetDat(d *godave.Dave, workhex string, timeout time.Duration) (*godave.Dat, error) {
 	work, err := hex.DecodeString(workhex)
 	if err != nil {
 		exit(1, "failed: failed to decode hex")
 	}
-	t := time.After(timeout)
 	send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
 	var tries int
+	t := time.After(time.Second)
 	for {
 		select {
 		case m := <-d.Recv:
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
-				printMsg(m)
-				return
+				check := godave.CheckMsg(m)
+				if check < godave.MINWORK {
+					return &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce}, errors.New("")
+				}
 			}
 		case <-t:
 			tries++
 			if tries > 3 {
-				return
+				return nil, errors.New("not found")
 			}
 			send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
-			t = time.After(timeout)
+			t = time.After(time.Second)
 		}
 	}
 }
