@@ -18,8 +18,7 @@ import (
 )
 
 const (
-	BOOTSTRAP_MSG  = 5
-	TIMEOUT_GETDAT = time.Second
+	BOOTSTRAP_MSG = 5
 )
 
 func main() {
@@ -30,7 +29,6 @@ func main() {
 	work := flag.Int("w", 3, "<WORK> ammount of work to do")
 	tag := flag.String("t", "", "<TAG> arbitrary data")
 	flag.Parse()
-
 	bootstrap := make([]netip.AddrPort, 0)
 	bap := *bapref
 	if bap != "" {
@@ -50,7 +48,6 @@ func main() {
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
-
 	udpaddr, err := net.ResolveUDPAddr(*network, *lap)
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
@@ -59,7 +56,6 @@ func main() {
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
-
 	var n int
 	for range d.Recv {
 		n++
@@ -67,7 +63,6 @@ func main() {
 			break
 		}
 	}
-
 	var action string
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
@@ -78,13 +73,11 @@ func main() {
 			exit(1, "missing argument: setdat <VAL>")
 		}
 		setDat(d, *work, *tag)
-
 	case "GETDAT":
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getdat <WORK>")
 		}
-		getDat(d, flag.Arg(1), TIMEOUT_GETDAT)
-
+		getDat(d, flag.Arg(1), time.Second)
 	default:
 		for m := range d.Recv {
 			printMsg(m)

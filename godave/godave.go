@@ -139,6 +139,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 				case dave.Op_SETDAT:
 					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
+						fmt.Println("sent to", rp)
 					}
 				case dave.Op_GETDAT:
 					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, shareable) {
@@ -306,7 +307,7 @@ func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*p
 }
 
 func shareable(k *peer) bool {
-	return time.Since(k.seen) < PERIOD && time.Since(k.added) > SHARE_DELAY
+	return k.bootstrap || time.Since(k.seen) < PERIOD && time.Since(k.added) > SHARE_DELAY
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
