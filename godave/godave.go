@@ -51,12 +51,17 @@ const (
 type Dave struct {
 	Send chan<- *dave.M
 	Recv <-chan *dave.M
+	stat chan *Stat
 }
 
 type Dat struct {
 	Val   []byte
 	Tag   []byte
 	Nonce []byte
+}
+
+type Stat struct {
+	NPeer uint32
 }
 
 type peer struct {
@@ -69,6 +74,10 @@ type peer struct {
 type packet struct {
 	msg *dave.M
 	ip  netip.AddrPort
+}
+
+func (d *Dave) Stat() *Stat {
+	return <-d.stat
 }
 
 func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
@@ -84,11 +93,12 @@ func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(conn, boot, lstn(conn), send, recv)
+	stat := make(chan *Stat)
+	go d(conn, boot, lstn(conn), send, recv, stat)
 	for _, bap := range baps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
-	return &Dave{send, recv}, nil
+	return &Dave{send, recv, stat}, nil
 }
 
 func Work(msg *dave.M, work int) (<-chan *dave.M, error) {
@@ -129,7 +139,7 @@ func CheckMsg(msg *dave.M) int {
 	return nzero(msg.Work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dave.M, recv chan<- *dave.M) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
 	data := make(map[string]Dat)
 	for {
 		select {
@@ -153,6 +163,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
+
 				fmt.Println("<-pkts added", pktpid)
 			}
 			prs[pktpid].seen = time.Now()
@@ -192,7 +203,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 			case dave.Op_DAT: // STORE INCOMING
 				data[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
 			}
-		case <-time.After(PERIOD):
+		case <-time.After(PERIOD): // PEER LIVENESS & DISCOVERY
 			for kid, k := range prs {
 				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE {
 					delete(prs, kid)
@@ -201,6 +212,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(k.pd))
 				}
 			}
+		case stat <- &Stat{uint32(len(prs))}: // STATUS
 		}
 	}
 }
