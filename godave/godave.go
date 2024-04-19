@@ -250,11 +250,11 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				pool.Put(m)
 				continue
 			}
+			rab := raddr.Addr().As16()
 			h.Reset()
 			h.Write([]byte(m.Op.String()))
+			h.Write(rab[:])
 			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-				rab := raddr.Addr().As16()
-				h.Write(rab[:])
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
 					fmt.Println("PEER/GETPEER collision, dropped", raddr)
@@ -262,8 +262,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 					continue
 				}
 			} else { // DAT, GETDAT, SETDAT
-				rab := raddr.Addr().As16()
-				h.Write(rab[:])
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
@@ -271,7 +269,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 					pool.Put(m)
 					continue
 				}
-				if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
+				if (m.Op == dave.Op_DAT || m.Op == dave.Op_SETDAT) && CheckMsg(m) < MINWORK {
 					ntorsten++
 					fmt.Println("work invalid, dropped", raddr)
 					pool.Put(m)
