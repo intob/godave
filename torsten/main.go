@@ -72,7 +72,9 @@ func main() {
 			}
 		}
 	default:
-		exit(1, "command unrecognised %q\n", flag.Arg(0))
+		fmt.Printf("command unrecognised %q\n", flag.Arg(0))
+		for range d.Recv {
+		}
 	}
 }
 
