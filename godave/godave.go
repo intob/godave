@@ -215,7 +215,11 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
 		f := []*ckoo.Filter{ckoo.NewFilter(FILTER_CAP), ckoo.NewFilter(FILTER_CAP)}
 		var epoch uint64
-		seen := func(h []byte) bool { return f[0].InsertUnique(h) && f[1].InsertUnique(h) }
+		seen := func(h []byte) bool {
+			l := f[0].InsertUnique(h)
+			r := f[1].InsertUnique(h)
+			return l && r
+		}
 		h := sha256.New()
 		defer conn.Close()
 		for {
