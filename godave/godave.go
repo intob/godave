@@ -265,7 +265,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
-					fmt.Println(m.Op, "dat seen, dropped", raddr, string(m.Val))
+					fmt.Printf("dat seen, dropped %x: %s\n", m.Work, string(m.Val))
 					pool.Put(m)
 					continue
 				}
