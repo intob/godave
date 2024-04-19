@@ -242,7 +242,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Reset()
 				h.Write([]byte(m.Op.String()))
 				if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-					eb := make([]byte, 4)
+					eb := make([]byte, 8)
 					binary.BigEndian.PutUint64(eb, epoch)
 					h.Write(eb)
 					rab := raddr.Addr().As16()
