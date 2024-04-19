@@ -63,7 +63,7 @@ func main() {
 				if i%2 == 0 {
 					dt := time.Since(t)
 					r := jfmt.FmtCount32(uint32(float64(i) / dt.Seconds()))
-					fmt.Printf("\rsent %s packets in %s (%s/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), r)
+					fmt.Printf("\rsent %s packets in %s (%s/s)\n\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), r)
 				}
 			}
 		}
