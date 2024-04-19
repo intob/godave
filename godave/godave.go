@@ -241,7 +241,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			m := pool.Get().(*dave.M)
 			err = proto.Unmarshal(buf[:n], m)
 			if err != nil {
-				fmt.Println("lstn unmarshal err:", err)
+				fmt.Println("lstn unmarshal err:", raddr, err)
 				pool.Put(m)
 				continue
 			}
@@ -260,7 +260,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				s := h.Sum(nil)
 				if !f.InsertUnique(s) {
 					ntorsten++
-					fmt.Println("PEER/GETPEER collision, dropped. ", raddr)
+					fmt.Println("PEER/GETPEER collision, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
@@ -270,13 +270,13 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
 					ntorsten++
-					fmt.Println(m.Op, "dat seen, dropped")
+					fmt.Println(m.Op, "dat seen, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
 				if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
 					ntorsten++
-					fmt.Println("work invalid, dropped")
+					fmt.Println("work invalid, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
