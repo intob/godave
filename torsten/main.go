@@ -55,15 +55,18 @@ func main() {
 	case "FIRE":
 		var i uint32
 		t := time.Now()
+		tlp := time.Now()
 		for {
 			select {
 			case <-d.Recv:
 			case d.Send <- &dave.M{Op: dave.Op_DAT, Val: []byte("test")}:
+				time.Sleep(50*time.Microsecond - time.Since(tlp))
+				tlp = time.Now()
 				i++
-				if i%2 == 0 {
+				if i%100 == 0 {
 					dt := time.Since(t)
 					r := jfmt.FmtCount32(uint32(float64(i) / dt.Seconds()))
-					fmt.Printf("\rsent %s packets in %s (%s/s)\n\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), r)
+					fmt.Printf("\rsent %s packets in %s (%s/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), r)
 				}
 			}
 		}
