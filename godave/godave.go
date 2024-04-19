@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/intob/dave/godave/dave"
+	ckoo "github.com/seiflotfy/cuckoofilter"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -43,15 +44,15 @@ const (
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	MINWORK       = 2
+	FILTER_CAP    = 8000000
 )
 
 type Dave struct {
-	Send chan<- *dave.Msg
-	Recv <-chan *dave.Msg
+	Send chan<- *dave.M
+	Recv <-chan *dave.M
 }
 
 type Dat struct {
-	Time  []byte
 	Val   []byte
 	Tag   []byte
 	Nonce []byte
@@ -65,7 +66,7 @@ type peer struct {
 }
 
 type packet struct {
-	msg *dave.Msg
+	msg *dave.M
 	ip  netip.AddrPort
 }
 
@@ -80,23 +81,21 @@ func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
 		bp := pdFrom(bap)
 		boot[pdStr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
-	send := make(chan *dave.Msg)
-	recv := make(chan *dave.Msg, 1)
+	send := make(chan *dave.M)
+	recv := make(chan *dave.M, 1)
 	go d(conn, boot, lstn(conn), send, recv)
 	for _, bap := range baps {
-		wraddr(conn, marshal(&dave.Msg{Op: dave.Op_GETPEER}), bap)
+		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv}, nil
 }
 
-func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
-	result := make(chan *dave.Msg)
+func Work(msg *dave.M, work int) (<-chan *dave.M, error) {
+	result := make(chan *dave.M)
 	go func() {
 		zeros := make([]byte, work)
 		msg.Nonce = make([]byte, 32)
-		msg.Time = timeToBytes(time.Now())
 		h := sha256.New()
-		h.Write(msg.Time)
 		h.Write(msg.Val)
 		h.Write(msg.Tag)
 		load := h.Sum(nil)
@@ -115,12 +114,8 @@ func Work(msg *dave.Msg, work int) (<-chan *dave.Msg, error) {
 	return result, nil
 }
 
-func CheckMsg(msg *dave.Msg) int {
-	if bytesToTime(msg.Time).After(time.Now()) {
-		return -2
-	}
+func CheckMsg(msg *dave.M) int {
 	h := sha256.New()
-	h.Write(msg.Time)
 	h.Write(msg.Val)
 	h.Write(msg.Tag)
 	load := h.Sum(nil)
@@ -133,11 +128,7 @@ func CheckMsg(msg *dave.Msg) int {
 	return nzero(msg.Work)
 }
 
-func seenRecently(k *peer) bool {
-	return time.Since(k.seen) < PERIOD
-}
-
-func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave.Msg, recv chan<- *dave.Msg) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dave.M, recv chan<- *dave.M) {
 	data := make(map[string]Dat)
 	for {
 		select {
@@ -145,12 +136,12 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rp := range rndPds(ks, nil, FANOUT_SETDAT, seenRecently) {
+					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", pdStr(rp))
 					}
 				case dave.Op_GETDAT:
-					for _, rp := range rndPds(ks, nil, FANOUT_GETDAT, seenRecently) {
+					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", pdStr(rp))
 					}
@@ -160,12 +151,12 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 			recv <- pkt.msg
 			pd := pdFrom(pkt.ip)
 			pktpid := pdStr(pd)
-			_, ok := ks[pktpid]
+			_, ok := prs[pktpid]
 			if !ok {
-				ks[pktpid] = &peer{pd: pd, added: time.Now()}
+				prs[pktpid] = &peer{pd: pd, added: time.Now()}
 				fmt.Println("<-pkts added", pktpid)
 			}
-			ks[pktpid].seen = time.Now()
+			prs[pktpid].seen = time.Now()
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
@@ -174,58 +165,44 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 						break // don't get poisoned
 					}
 					pid := pdStr(pd)
-					_, ok := ks[pid]
+					_, ok := prs[pid]
 					if !ok {
-						ks[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
+						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
 						fmt.Println("<-pkts added gossip", pid)
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := rndPds(ks, []*dave.Pd{pd}, NPEER, seenRecently)
-				wraddr(c, marshal(&dave.Msg{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
+				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, seenRecently)
+				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SETDAT:
-				check := CheckMsg(m)
-				if check < MINWORK {
-					fmt.Printf("dropped SETDAT: require %d, has %d\n", MINWORK, check)
-					continue
-				}
-				data[hex.EncodeToString(m.Work)] = Dat{m.Time, m.Val, m.Tag, m.Nonce}
+				data[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
 				if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(ks, m.Pds, FANOUT_SETDAT, seenRecently) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_GETDAT: // RETURN DAT OR FORWARD
-				if nzero(m.Work) < MINWORK {
-					fmt.Printf("dropped GETDAT: require %d, has %d\n", MINWORK, nzero(m.Work))
-					continue
-				}
 				d, ok := data[hex.EncodeToString(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.Msg{Op: dave.Op_DAT, Time: d.Time, Val: d.Val,
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val,
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(ks, m.Pds, FANOUT_GETDAT, seenRecently) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT_GETDAT, seenRecently) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_DAT: // STORE INCOMING
-				check := CheckMsg(m)
-				if check < MINWORK {
-					fmt.Printf("dropped DAT: require %d, has %d\n", MINWORK, check)
-					continue
-				}
-				data[hex.EncodeToString(m.Work)] = Dat{m.Time, m.Val, m.Tag, m.Nonce}
+				data[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
 			}
 		case <-time.After(PERIOD):
-			for kid, k := range ks {
+			for kid, k := range prs {
 				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE {
-					delete(ks, kid)
+					delete(prs, kid)
 					fmt.Println("dropped", kid)
 				} else if time.Since(k.seen) > PERIOD {
-					wraddr(c, marshal(&dave.Msg{Op: dave.Op_GETPEER}), addrPortFrom(k.pd))
+					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(k.pd))
 				}
 			}
 		}
@@ -235,31 +212,77 @@ func d(c *net.UDPConn, ks map[string]*peer, pch <-chan packet, send <-chan *dave
 func lstn(conn *net.UDPConn) <-chan packet {
 	pkts := make(chan packet, 100)
 	go func() {
-		msgPool := sync.Pool{New: func() interface{} { return &dave.Msg{} }}
+		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
+		f := []*ckoo.Filter{ckoo.NewFilter(FILTER_CAP), ckoo.NewFilter(FILTER_CAP)}
+		var epoch uint64
+		seen := func(h []byte) bool { return f[0].InsertUnique(h) && f[1].InsertUnique(h) }
+		h := sha256.New()
 		defer conn.Close()
 		for {
-			buf := make([]byte, MTU)
-			n, raddr, err := conn.ReadFromUDPAddrPort(buf)
-			if err != nil {
-				panic(err)
-			}
-			msg := msgPool.Get().(*dave.Msg)
-			err = proto.Unmarshal(buf[:n], msg)
-			if err != nil {
-				fmt.Println("lstn unmarshal err:", err)
-				msgPool.Put(msg)
-				continue
-			}
-			if msg.Op == dave.Op_SETDAT || msg.Op == dave.Op_GETDAT {
-				pd := pdFrom(raddr)
-				if len(msg.Pds) == 0 {
-					msg.Pds = []*dave.Pd{pd}
-				} else {
-					msg.Pds = append(msg.Pds, pd)
+			select {
+			case <-time.After(PERIOD):
+				epoch++
+				if epoch%10 == 0 {
+					f[epoch%2].Reset()
+					fmt.Println("reset filter", epoch%2)
 				}
+			default:
+				buf := make([]byte, MTU)
+				n, raddr, err := conn.ReadFromUDPAddrPort(buf)
+				if err != nil {
+					panic(err)
+				}
+				m := pool.Get().(*dave.M)
+				err = proto.Unmarshal(buf[:n], m)
+				if err != nil {
+					fmt.Println("lstn unmarshal err:", err)
+					pool.Put(m)
+					continue
+				}
+				h.Reset()
+				h.Write([]byte(m.Op.String()))
+				if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
+					eb := make([]byte, 4)
+					binary.BigEndian.PutUint64(eb, epoch)
+					h.Write(eb)
+					rab := raddr.Addr().As16()
+					h.Write(rab[:])
+					if seen(h.Sum(nil)) {
+						fmt.Println("seen, dropped")
+						pool.Put(m)
+						continue
+					}
+				} else { // DAT, GETDAT, SETDAT
+					rab := raddr.Addr().As16()
+					h.Write(rab[:])
+					h.Write(m.Work)
+					if seen(h.Sum(nil)) {
+						fmt.Println("seen, dropped")
+						pool.Put(m)
+						continue
+					}
+					if m.Op == dave.Op_SETDAT && CheckMsg(m) < MINWORK {
+						fmt.Println("work invalid, dropped")
+						pool.Put(m)
+						continue
+					}
+					if m.Op == dave.Op_GETDAT || m.Op == dave.Op_SETDAT {
+						pd := pdFrom(raddr)
+						if len(m.Pds) == 0 {
+							m.Pds = []*dave.Pd{pd}
+						} else {
+							m.Pds = append(m.Pds, pd)
+						}
+					}
+				}
+				copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
+				for i, pd := range m.Pds {
+					copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
+				}
+				pkts <- packet{copy, raddr}
+				pool.Put(m)
 			}
-			pkts <- packet{msg, raddr}
-			msgPool.Put(msg)
+
 		}
 	}()
 	return pkts
@@ -287,6 +310,10 @@ func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*p
 		ans[i] = candidates[r]
 	}
 	return ans
+}
+
+func seenRecently(k *peer) bool {
+	return time.Since(k.seen) < PERIOD
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
@@ -325,19 +352,4 @@ func nzero(key []byte) int {
 		}
 	}
 	return len(key)
-}
-
-func timeToBytes(t time.Time) []byte {
-	milli := t.UnixNano() / 1000000
-	bytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(milli))
-	return bytes
-}
-
-func bytesToTime(b []byte) time.Time {
-	if len(b) != 8 {
-		return time.Time{}
-	}
-	milli := int64(binary.BigEndian.Uint64(b))
-	return time.Unix(0, milli*1000000)
 }

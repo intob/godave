@@ -8,14 +8,11 @@ import (
 
 func TestCheckMsgEmpty(t *testing.T) {
 	expect := -1
-	c := CheckMsg(&dave.Msg{})
+	c := CheckMsg(&dave.M{})
 	if c != expect {
 		t.Fatalf("Expected %v, CheckWork returned %v", expect, c)
 	}
-	c = CheckMsg(&dave.Msg{
-		Op:  dave.Op_SETDAT,
-		Val: []byte("test"),
-	})
+	c = CheckMsg(&dave.M{Op: dave.Op_SETDAT, Val: []byte("test")})
 	if c != expect {
 		t.Fatalf("Expected %v, CheckWork returned %v", expect, c)
 	}
@@ -23,10 +20,7 @@ func TestCheckMsgEmpty(t *testing.T) {
 
 func TestWork(t *testing.T) {
 	work := 2
-	m := &dave.Msg{
-		Op:  dave.Op_SETDAT,
-		Val: []byte("test"),
-	}
+	m := &dave.M{Op: dave.Op_SETDAT, Val: []byte("test")}
 	w, err := Work(m, work)
 	if err != nil {
 		t.Fatal(err)

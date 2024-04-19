@@ -93,7 +93,7 @@ func main() {
 }
 
 func setDat(d *godave.Dave, work int, tag string) {
-	wch, err := godave.Work(&dave.Msg{Op: dave.Op_SETDAT, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
+	wch, err := godave.Work(&dave.M{Op: dave.Op_SETDAT, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
 	if err != nil {
 		panic(err)
 	}
@@ -113,7 +113,7 @@ func getDat(d *godave.Dave, workhex string, timeout time.Duration) {
 		exit(1, "failed: failed to decode hex")
 	}
 	t := time.After(timeout)
-	send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: work}, timeout)
+	send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
 	var tries int
 	for {
 		select {
@@ -127,13 +127,13 @@ func getDat(d *godave.Dave, workhex string, timeout time.Duration) {
 			if tries > 3 {
 				return
 			}
-			send(d, &dave.Msg{Op: dave.Op_GETDAT, Work: work}, timeout)
+			send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
 			t = time.After(timeout)
 		}
 	}
 }
 
-func send(d *godave.Dave, msg *dave.Msg, timeout time.Duration) error {
+func send(d *godave.Dave, msg *dave.M, timeout time.Duration) error {
 	t := time.After(timeout)
 	for {
 		select {
@@ -146,7 +146,7 @@ func send(d *godave.Dave, msg *dave.Msg, timeout time.Duration) error {
 	}
 }
 
-func printMsg(m *dave.Msg) {
+func printMsg(m *dave.M) {
 	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return
 	}

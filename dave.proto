@@ -23,10 +23,9 @@ enum Op {
   DAT = 4;
 }
 
-message Msg {
+message M {
   Op op = 1;
   repeated Pd pds = 2;
-  bytes time = 3;
   bytes val = 4;
   bytes tag = 5;
   bytes nonce = 6;
