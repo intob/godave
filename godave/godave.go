@@ -221,7 +221,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		for {
 			if time.Since(reset) > PERIOD {
 				f.Reset()
-				fmt.Println("reset filter")
 				reset = time.Now()
 			}
 			buf := make([]byte, MTU)
