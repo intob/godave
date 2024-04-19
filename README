@@ -97,7 +97,23 @@ For the GETDAT operation, if the receiver DOES have the data, the receiver sends
 [18] https://acropolis.aueb.gr/~spyros/www/papers/Gossip-based%20Peer%20Sampling.pdf
 [19] https://github.com/ethereum/portal-network-specs/blob/master/transaction-gossip.md
 
-8.      In Development
-The protocol & daved are still far from finished.
+8.      Recently Implemented
 
-I'm also currently writing a HTTP gatetway, daveg, to serve as a proof of concept, and to quickly find and address usability issues. We can soon build our first web dApp. https://github.com/intob/daveg
+8. 1.   Cuckoo Filter
+Dropping packets efficiently is fundamental to an app's resilience to DoS attacks.
+
+A naive approach such as a ring-buffer is O(n^2), unsuitable in this case.
+
+Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling fast insertions, deletions and lookups. This makes them well-suited for performance-critical applications like packet filtering to improve DoS attack resilience.
+
+Packets that deviate from the protocol are efficiently detected & dropped without unnecessary processing.
+
+8. 2.   Torsten
+Torsten is an attack testing tool, allowing us to run worst-case byzantine scenarios to find weaknesses in the protocol and implementation.
+
+
+9.      In Development
+CONSIDERING: Direct messaging between nodes
+CONSIDERING: Topic pub/sub
+
+I'm writing a HTTP gatetway, daveg, to serve as a proof of concept, and to quickly find and address usability issues. We can soon build our first web dApp. https://github.com/intob/daveg.
