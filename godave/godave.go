@@ -244,9 +244,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				rab := raddr.Addr().As16()
 				h.Write(rab[:])
 				s := h.Sum(nil)
-				fmt.Printf("insert: %x\n", s)
 				if !f.InsertUnique(s) {
-					fmt.Println(m.Op, "peer seen, dropped", raddr)
 					pool.Put(m)
 					continue
 				}
