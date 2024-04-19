@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/intob/dave/godave"
 	"github.com/intob/dave/godave/dave"
 	"github.com/intob/jfmt"
+	"google.golang.org/protobuf/proto"
 )
 
 func main() {
@@ -30,24 +30,24 @@ func main() {
 		}
 		addr, err := netip.ParseAddrPort(bap)
 		if err != nil {
-			exit(1, "failed to parse -p=%q: %v", bap, err)
+			panic(err)
 		}
 		bootstrap = append(bootstrap, addr)
 	}
 	if *bfile != "" {
 		bh, err := readHosts(*bfile)
 		if err != nil {
-			exit(1, "failed to read file %s: %v", *bfile, err)
+			panic(err)
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
 	udpaddr, err := net.ResolveUDPAddr("udp", *lap)
 	if err != nil {
-		exit(1, "failed to resolve UDP address: %v", err)
+		panic(err)
 	}
-	d, err := godave.NewDave(udpaddr, bootstrap)
+	conn, err := net.ListenUDP("udp", udpaddr)
 	if err != nil {
-		exit(1, "failed to make dave: %v", err)
+		panic(err)
 	}
 	var action string
 	if flag.NArg() > 0 {
@@ -55,31 +55,31 @@ func main() {
 	}
 	switch strings.ToUpper(action) {
 	case "FIRE":
-		var i uint32
-		for i < 10 {
-			i++
-			fmt.Println("msg", <-d.Recv)
-		}
 		t := time.Now()
 		tlp := time.Now()
+		m, err := proto.Marshal(&dave.M{Op: dave.Op_DAT})
+		if err != nil {
+			panic(err)
+		}
+		var i uint32
 		for {
-			select {
-			case <-d.Recv:
-				fmt.Println("stat", d.Stat())
-			case d.Send <- &dave.M{Op: dave.Op_DAT, Val: []byte("test")}:
-				time.Sleep(r - time.Since(tlp))
-				tlp = time.Now()
-				i++
-				if i%10 == 0 {
-					dt := time.Since(t)
-					fmt.Printf("\rsent %s packets in %s (%.2f/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), float64(i)/dt.Seconds())
+			for _, b := range bootstrap {
+				_, err = conn.WriteToUDPAddrPort(m, b)
+				if err != nil {
+					panic(err)
 				}
+			}
+			time.Sleep(r - time.Since(tlp))
+			tlp = time.Now()
+			i++
+			if i%10 == 0 {
+				dt := time.Since(t)
+				fmt.Printf("\rsent %s packets in %s (%.2f/s)\033[0K", jfmt.FmtCount32(i), jfmt.FmtDuration(dt), float64(i)/dt.Seconds())
 			}
 		}
 	default:
 		fmt.Printf("command unrecognised %q\n", flag.Arg(0))
-		for range d.Recv {
-		}
+		os.Exit(1)
 	}
 }
 
@@ -108,9 +108,4 @@ func readHosts(fname string) ([]netip.AddrPort, error) {
 		}
 	}
 	return ans, nil
-}
-
-func exit(code int, msg string, args ...any) {
-	fmt.Printf(msg, args...)
-	os.Exit(code)
 }
