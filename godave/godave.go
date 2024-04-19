@@ -45,6 +45,7 @@ const (
 	FANOUT_SETDAT = 2
 	MINWORK       = 2
 	FILTER_CAP    = 8000000
+	SHARE_DELAY   = time.Minute
 )
 
 type Dave struct {
@@ -136,12 +137,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SETDAT:
-					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, seenRecently) {
+					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", pdStr(rp))
 					}
 				case dave.Op_GETDAT:
-					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, seenRecently) {
+					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 						fmt.Println("SENT TO", pdStr(rp))
 					}
@@ -172,12 +173,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, seenRecently)
+				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SETDAT:
 				data[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
 				if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, seenRecently) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -189,7 +190,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 							Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT_GETDAT, seenRecently) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT_GETDAT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -306,8 +307,8 @@ func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*p
 	return ans
 }
 
-func seenRecently(k *peer) bool {
-	return time.Since(k.seen) < PERIOD
+func shareable(k *peer) bool {
+	return time.Since(k.seen) < PERIOD && time.Since(k.added) > SHARE_DELAY
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
