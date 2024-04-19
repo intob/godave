@@ -65,7 +65,11 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "failed: correct usage is getdat <WORK>")
 		}
-		GetDat(d, flag.Arg(1), time.Second)
+		dat, err := GetDat(d, flag.Arg(1), time.Second)
+		if err != nil {
+			exit(1, "failed: %v", err)
+		}
+		fmt.Println(string(dat.Val))
 
 	// SEND DIRECTLY TO PEERS:
 
@@ -111,9 +115,11 @@ func GetDat(d *godave.Dave, workhex string, timeout time.Duration) (*godave.Dat,
 		case m := <-d.Recv:
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
 				check := godave.CheckMsg(m)
+				dat := &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce}
 				if check < godave.MINWORK {
-					return &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce}, errors.New("")
+					return dat, errors.New("invalid work")
 				}
+				return dat, nil
 			}
 		case <-t:
 			tries++
