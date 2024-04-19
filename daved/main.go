@@ -17,10 +17,6 @@ import (
 	"github.com/intob/dave/godave/dave"
 )
 
-const (
-	BOOTSTRAP_MSG = 3
-)
-
 func main() {
 	network := flag.String("network", "udp", "<udp|udp6|udp4>")
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
@@ -55,13 +51,6 @@ func main() {
 	d, err := godave.NewDave(udpaddr, bootstrap)
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
-	}
-	var n int
-	for range d.Recv {
-		n++
-		if n >= BOOTSTRAP_MSG {
-			break
-		}
 	}
 	var action string
 	if flag.NArg() > 0 {
