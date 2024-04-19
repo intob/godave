@@ -252,7 +252,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 					rab := raddr.Addr().As16()
 					h.Write(rab[:])
 					if seen(h.Sum(nil)) {
-						fmt.Println("seen, dropped")
+						fmt.Println(m.Op, "seen, dropped")
 						pool.Put(m)
 						continue
 					}
@@ -261,7 +261,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 					h.Write(rab[:])
 					h.Write(m.Work)
 					if seen(h.Sum(nil)) {
-						fmt.Println("seen, dropped")
+						fmt.Println(m.Op, "seen, dropped")
 						pool.Put(m)
 						continue
 					}
