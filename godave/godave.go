@@ -260,6 +260,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 				s := h.Sum(nil)
 				if !f.InsertUnique(s) {
 					ntorsten++
+					fmt.Println("PEER/GETPEER collision, dropped. ", raddr)
 					pool.Put(m)
 					continue
 				}
