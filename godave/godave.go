@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/intob/dave/godave/dave"
-	"github.com/intob/jfmt"
 	ckoo "github.com/seiflotfy/cuckoofilter"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -221,7 +220,6 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 func lstn(conn *net.UDPConn) <-chan packet {
 	pkts := make(chan packet, 100)
 	go func() {
-		var ntorsten uint32
 		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
 		f := ckoo.NewFilter(FILTER_CAP)
 		reset := time.Now()
@@ -229,7 +227,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		defer conn.Close()
 		for {
 			if time.Since(reset) > PERIOD {
-				fmt.Printf("ntorsten: %s\n", jfmt.FmtCount32(ntorsten))
 				f.Reset()
 				reset = time.Now()
 			}
@@ -241,7 +238,6 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			m := pool.Get().(*dave.M)
 			err = proto.Unmarshal(buf[:n], m)
 			if err != nil {
-				ntorsten++
 				fmt.Println("lstn unmarshal err:", raddr, err)
 				pool.Put(m)
 				continue
@@ -256,19 +252,16 @@ func lstn(conn *net.UDPConn) <-chan packet {
 			h.Write(rab[:])
 			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 				if !f.InsertUnique(h.Sum(nil)) {
-					ntorsten++
 					pool.Put(m)
 					continue
 				}
 			} else { // DAT, GETDAT, SETDAT
 				h.Write(m.Work)
 				if !f.InsertUnique(h.Sum(nil)) {
-					ntorsten++
 					pool.Put(m)
 					continue
 				}
 				if (m.Op == dave.Op_DAT || m.Op == dave.Op_SETDAT) && CheckMsg(m) < MINWORK {
-					ntorsten++
 					pool.Put(m)
 					continue
 				}
