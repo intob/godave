@@ -228,7 +228,7 @@ func lstn(conn *net.UDPConn) <-chan packet {
 		h := sha256.New()
 		defer conn.Close()
 		for {
-			if ntorsten%100 == 0 {
+			if ntorsten%10 == 0 {
 				fmt.Printf("ntorsten: %s\n", jfmt.FmtCount32(ntorsten))
 			}
 			if time.Since(reset) > PERIOD {

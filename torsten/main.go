@@ -59,6 +59,7 @@ func main() {
 		for {
 			select {
 			case <-d.Recv:
+				fmt.Println("stat", d.Stat())
 			case d.Send <- &dave.M{Op: dave.Op_DAT, Val: []byte("test")}:
 				time.Sleep(50*time.Microsecond - time.Since(tlp))
 				tlp = time.Now()
