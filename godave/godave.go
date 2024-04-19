@@ -39,13 +39,13 @@ const (
 	PERIOD        = time.Second
 	MTU           = 1500
 	NPEER         = 2
+	SHARE_DELAY   = time.Minute
 	TOLERANCE     = 3
 	DISTANCE      = 7
 	FANOUT_GETDAT = 2
 	FANOUT_SETDAT = 2
 	MINWORK       = 2
-	FILTER_CAP    = 8000000
-	SHARE_DELAY   = time.Minute
+	FILTER_CAP    = 1000000
 )
 
 type Dave struct {

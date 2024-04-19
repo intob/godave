@@ -4,7 +4,7 @@
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
 
-Peer-to-peer store on proof-of-work and gossip over UDP.
+Peer-to-peer store on proof-of-work, cuckoo hashing, and gossip over UDP.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
@@ -26,16 +26,18 @@ WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 PERIOD              1s          Good for now.
 MTU                 1500        Typical.
 NPEER               3           Limit to prevent Eclipse attack.
+SHARE_DELAY         1m          Do not advertise peers added within the last minute to prevent churn.
 TOLERANCE           3           Low tolerance reduces churn & message loss.
 DISTANCE            6           Higher value increases probability that all nodes receive packet.
 FANOUT_GETDAT       2           2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
 FANOUT_SETDAT       2           Don't flood network.
 MINWORK             2           Prevent DAT spam.
+FILTER_CAP          1M          1 million is OK.
 
 2.      Operation Codes
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
-SETDAT      Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT_SETDAT random peers, after appending source address:port to Peers.
+SETDAT      Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT_SETDAT random peers, after appending remote address to message peer descriptors.
 GETDAT      Packet requesting DAT, remote should send DAT to all peer descriptors contained in packet.
 DAT, without forwarding, else if len(Peers) < DISTANCE, forward to FANOUT_GETDAT random peers.
 
@@ -43,14 +45,13 @@ DAT, without forwarding, else if len(Peers) < DISTANCE, forward to FANOUT_GETDAT
 3.      Message
 
 3. 1.   Message Fields
-            DESCRIPTION                                 BYTE LENGTH
-Op          Operation code.                             1
-Peers       List of peer descriptors who forwarded.     20*DISTANCE
-Time        Unix-milliseconds big-endian                8
-Work        SHA256(SHA256(Time, Val, Tag), Nonce).      0 | 32
-Nonce       Work salt.                                  0 | 32
-Tag         Arbitrary metaadata.                        <= 32
-Val         The data.                                   <= 1200 for MTU=1500,DISTANCE=7
+            DESCRIPTION                             BYTE LENGTH
+Op          Operation code.                         1
+Peers       List of peer descriptors who forwarded. 20*DISTANCE
+Work        SHA256(SHA256(Val, Tag), Nonce).        0 | 32
+Nonce       Work salt.                              0 | 32
+Tag         Arbitrary metaadata.                    <= 32
+Val         The data.                               <= 1200 for MTU=1500,DISTANCE=7
 
 3. 2.   Wire Format
 A message is serialized into binary using protobuf. See protobuf spec dave.proto.
