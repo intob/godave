@@ -56,6 +56,10 @@ func main() {
 	switch strings.ToUpper(action) {
 	case "FIRE":
 		var i uint32
+		for i < 10 {
+			i++
+			fmt.Println("msg", <-d.Recv)
+		}
 		t := time.Now()
 		tlp := time.Now()
 		for {
