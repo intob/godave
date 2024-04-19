@@ -19,9 +19,11 @@ func main() {
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
+	rref := flag.Duration("r", 250*time.Microsecond, "rate")
 	flag.Parse()
 	bootstrap := make([]netip.AddrPort, 0)
 	bap := *bapref
+	r := *rref
 	if bap != "" {
 		if strings.HasPrefix(bap, ":") {
 			bap = "[::1]" + bap
@@ -61,7 +63,7 @@ func main() {
 			case <-d.Recv:
 				fmt.Println("stat", d.Stat())
 			case d.Send <- &dave.M{Op: dave.Op_DAT, Val: []byte("test")}:
-				time.Sleep(50*time.Microsecond - time.Since(tlp))
+				time.Sleep(r - time.Since(tlp))
 				tlp = time.Now()
 				i++
 				if i%100 == 0 {
