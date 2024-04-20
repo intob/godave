@@ -219,7 +219,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			for pid, p := range prs {
 				if !p.bootstrap && time.Since(p.seen) > PERIOD*TOLERANCE*TOLERANCE {
 					delete(prs, pid)
-					fmt.Println("dropped", pdfp(p.pd))
+					fmt.Printf("dropped %x\n", pdfp(p.pd))
 				} else if time.Since(p.seen) > PERIOD {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
