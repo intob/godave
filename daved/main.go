@@ -150,9 +150,9 @@ func printMsg(m *dave.M) {
 	fmt.Printf("%s ", m.Op)
 	switch m.Op {
 	case dave.Op_SET:
-		fmt.Printf("#%s/%x\n", m.Tag, m.Work)
+		fmt.Printf("#%s %x\n", m.Tag, m.Work)
 	case dave.Op_DAT:
-		fmt.Printf("#%s/%x\n%s\n", m.Tag, m.Work, string(m.Val))
+		fmt.Printf("#%s %x\n%s\n", m.Tag, m.Work, string(m.Val))
 	default:
 		fmt.Printf("%x\n", m.Work)
 	}
