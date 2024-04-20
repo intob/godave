@@ -86,8 +86,8 @@ func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
 	fmt.Printf("listening %s\n", conn.LocalAddr())
 	boot := make(map[string]*peer)
 	for _, bap := range baps {
-		bp := pdFrom(bap)
-		boot[pdStr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
+		bp := pdfrom(bap)
+		boot[pdstr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
@@ -145,19 +145,19 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SET:
-					for _, rp := range rndPds(prs, nil, FANOUT, shareable) {
+					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 					}
 				case dave.Op_GET:
-					for _, rp := range rndPds(prs, nil, FANOUT, shareable) {
+					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 					}
 				}
 			}
 		case pkt := <-pch: // HANDLE INCOMING PACKET
 			recv <- pkt.msg
-			pd := pdFrom(pkt.ip)
-			pktpid := pdStr(pd)
+			pd := pdfrom(pkt.ip)
+			pktpid := pdstr(pd)
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
@@ -168,7 +168,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
 				for _, pd := range m.Pds {
-					pid := pdStr(pd)
+					pid := pdstr(pd)
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
@@ -176,12 +176,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, shareable)
+				randpds := randpds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
 				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT, shareable) {
+					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -192,7 +192,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT, shareable) {
+					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
@@ -286,21 +286,21 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	h.Write(op)
 	if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdFrom(raddr)))
+			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
 	} else { // DAT, GETDAT, SETDAT, RAND
 		h.Write(m.Work)
 		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdFrom(raddr)))
+			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
 		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && CheckMsg(m) < MINWORK {
-			fmt.Printf("dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdFrom(raddr)))
+			fmt.Printf("dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdfrom(raddr)))
 			return nil
 		}
 		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
-			pd := pdFrom(raddr)
+			pd := pdfrom(raddr)
 			if len(m.Pds) == 0 {
 				m.Pds = []*dave.Pd{pd}
 			} else {
@@ -315,15 +315,15 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	return &packet{copy, raddr}
 }
 
-func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*peer) bool) []*dave.Pd {
+func randpds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*peer) bool) []*dave.Pd {
 	excludeMap := make(map[string]struct{}, len(exclude))
 	for _, pexcl := range exclude {
-		excludeMap[pdStr(pexcl)] = struct{}{}
+		excludeMap[pdstr(pexcl)] = struct{}{}
 	}
 	candidates := make([]*dave.Pd, 0, len(peers))
 	for _, k := range peers {
 		if match(k) {
-			if _, ok := excludeMap[pdStr(k.pd)]; !ok {
+			if _, ok := excludeMap[pdstr(k.pd)]; !ok {
 				candidates = append(candidates, k.pd)
 			}
 		}
@@ -347,20 +347,13 @@ func addrPortFrom(pd *dave.Pd) netip.AddrPort {
 	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(pd.Ip)), uint16(pd.Port))
 }
 
-func pdFrom(addrport netip.AddrPort) *dave.Pd {
+func pdfrom(addrport netip.AddrPort) *dave.Pd {
 	ip := addrport.Addr().As16()
 	return &dave.Pd{Ip: ip[:], Port: uint32(addrport.Port())}
 }
 
-func pdStr(p *dave.Pd) string {
+func pdstr(p *dave.Pd) string {
 	return strings.TrimLeft(hex.EncodeToString(p.Ip), "0") + ":" + strconv.Itoa(int(p.Port))
-}
-
-func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
-	_, err := conn.WriteToUDPAddrPort(payload, addr)
-	if err != nil {
-		panic(err)
-	}
 }
 
 func pdfp(pd *dave.Pd) []byte {
@@ -376,6 +369,13 @@ func id(v []byte) uint64 {
 	h := fnv.New64a()
 	h.Write(v)
 	return h.Sum64()
+}
+
+func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
+	_, err := conn.WriteToUDPAddrPort(payload, addr)
+	if err != nil {
+		panic(err)
+	}
 }
 
 func marshal(m protoreflect.ProtoMessage) []byte {
