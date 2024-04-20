@@ -219,30 +219,33 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				fmt.Printf("stored rand: %x\n", m.Work)
 			}
 		case <-time.After(PERIOD): // PERIODIC
-			rdati := mrand.Intn(len(store))
-			var x int
-			var rdat Dat
-			for s := range store {
-				if x == rdati {
-					rdat = store[s]
-					break
+			var rdat *Dat
+			var x, rdatpeer int
+			if len(store) > 0 {
+				rdati := mrand.Intn(len(store))
+				for s := range store {
+					if x == rdati {
+						rd := store[s]
+						rdat = &rd
+						rdatpeer = mrand.Intn(len(prs))
+						x = 0
+						break
+					}
+					x++
 				}
-				x++
 			}
-			x = 0
-			rdatpeer := mrand.Intn(len(prs))
 			for pid, p := range prs {
-				if x == rdatpeer {
+				if rdat != nil && x == rdatpeer {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_RAND, Tag: rdat.Tag, Val: rdat.Val, Nonce: rdat.Nonce, Work: rdat.Work}), addrPortFrom(p.pd))
 					fmt.Printf("sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
 				}
+				x++
 				if !p.bootstrap && time.Since(p.seen) > PERIOD*TOLERANCE*TOLERANCE {
 					delete(prs, pid)
 					fmt.Printf("dropped %x\n", pdfp(p.pd))
 				} else if time.Since(p.seen) > PERIOD {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
-				x++
 			}
 		case stat <- &Stat{uint32(len(prs)), uint32(len(store))}: // STATUS
 		}
