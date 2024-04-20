@@ -60,7 +60,10 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: set <VAL>")
 		}
-		go setDat(d, *work, *tag)
+		go func() {
+			setDat(d, *work, *tag)
+			os.Exit(0)
+		}()
 	case "get":
 		if flag.NArg() < 2 {
 			exit(1, "correct usage is get <WORK>")
@@ -69,11 +72,12 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
-		dat, err := GetDat(d, work, time.Second)
+		dat, err := getDat(d, work, time.Second)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
 		fmt.Println(string(dat.Val))
+		os.Exit(0)
 	}
 	t := time.After(10 * time.Second)
 	for {
@@ -100,7 +104,7 @@ func setDat(d *godave.Dave, work int, tag string) {
 	printMsg(msg)
 }
 
-func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
+func getDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
 	send(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
 	var tries int
 	t := time.After(time.Second)
@@ -145,12 +149,12 @@ func printMsg(m *dave.M) {
 	}
 	fmt.Printf("%s ", m.Op)
 	switch m.Op {
-	case dave.Op_GET:
-		fmt.Printf("%x\n", m.Work)
 	case dave.Op_SET:
-		fmt.Printf("TAG: %s :: WORK: %x\n", m.Tag, m.Work)
+		fmt.Printf("#%s/%x\n", m.Tag, m.Work)
 	case dave.Op_DAT:
-		fmt.Printf("TAG: %s :: WORK: %x\nVAL: %s\n", m.Tag, m.Work, string(m.Val))
+		fmt.Printf("#%s/%x\n%s\n", m.Tag, m.Work, string(m.Val))
+	default:
+		fmt.Printf("%x\n", m.Work)
 	}
 }
 
