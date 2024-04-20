@@ -38,16 +38,15 @@ import (
 )
 
 const (
-	PERIOD        = time.Second
-	MTU           = 1500
-	NPEER         = 2
-	SHARE_DELAY   = time.Minute
-	TOLERANCE     = 3
-	DISTANCE      = 7
-	FANOUT_GETDAT = 2
-	FANOUT_SETDAT = 2
-	MINWORK       = 2
-	FILTER_CAP    = 1000000
+	EPOCH       = time.Second
+	MTU         = 1500
+	NPEER       = 2
+	SHARE_DELAY = time.Minute
+	TOLERANCE   = 3
+	DISTANCE    = 7
+	FANOUT      = 2
+	MINWORK     = 2
+	FILTER_CAP  = 1000000
 )
 
 type Dave struct {
@@ -62,20 +61,6 @@ func (d *Dave) Stat() *Stat {
 
 type Dat struct {
 	Val, Tag, Nonce, Work []byte
-}
-
-type stud struct {
-	bytes []byte
-}
-
-func (s stud) Equal(other stud) bool {
-	return bytes.Equal(s.bytes, other.bytes)
-}
-
-func (s stud) Hash() uint64 {
-	h := fnv.New64a()
-	h.Write(s.bytes)
-	return h.Sum64()
 }
 
 type Stat struct {
@@ -153,18 +138,18 @@ func CheckMsg(msg *dave.M) int {
 }
 
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
-	store := make(map[*stud]Dat)
+	store := make(map[uint64]Dat)
 	for {
 		select {
 		case msend := <-send: // SEND PACKET
 			if msend != nil {
 				switch msend.Op {
 				case dave.Op_SET:
-					for _, rp := range rndPds(prs, nil, FANOUT_SETDAT, shareable) {
+					for _, rp := range rndPds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 					}
 				case dave.Op_GET:
-					for _, rp := range rndPds(prs, nil, FANOUT_GETDAT, shareable) {
+					for _, rp := range rndPds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 					}
 				}
@@ -194,31 +179,31 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
-				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, shareable) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_GET: // RETURN DAT OR FORWARD
-				d, ok := store[&stud{m.Work}]
+				d, ok := store[id(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
-					for _, fp := range rndPds(prs, m.Pds, FANOUT_GETDAT, shareable) {
+					for _, fp := range rndPds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_DAT: // STORE INCOMING
-				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				fmt.Printf("stored: %x\n", m.Work)
 			case dave.Op_RAND:
-				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				fmt.Printf("stored rand: %x\n", m.Work)
 			}
-		case <-time.After(PERIOD): // PERIODIC
+		case <-time.After(EPOCH): // PERIODIC
 			var rdat *Dat
 			var x, rdatpeer int
 			if len(store) > 0 {
@@ -240,10 +225,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					fmt.Printf("sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
 				}
 				x++
-				if !p.bootstrap && time.Since(p.seen) > PERIOD*TOLERANCE*TOLERANCE {
+				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE*TOLERANCE {
 					delete(prs, pid)
 					fmt.Printf("dropped %x\n", pdfp(p.pd))
-				} else if time.Since(p.seen) > PERIOD {
+				} else if time.Since(p.seen) > EPOCH {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
@@ -272,7 +257,7 @@ func lstn(conn *net.UDPConn) <-chan *packet {
 }
 
 func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool) *packet {
-	if time.Since(*reset) > PERIOD {
+	if time.Since(*reset) > EPOCH {
 		fmt.Println("reset filter")
 		f.Reset()
 		*reset = time.Now()
@@ -355,7 +340,7 @@ func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*p
 }
 
 func shareable(k *peer) bool {
-	return k.bootstrap || time.Since(k.seen) < PERIOD && time.Since(k.added) > SHARE_DELAY
+	return k.bootstrap || time.Since(k.seen) < EPOCH && time.Since(k.added) > SHARE_DELAY
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
@@ -385,6 +370,12 @@ func pdfp(pd *dave.Pd) []byte {
 	h.Write(port)
 	h.Write(pd.Ip)
 	return h.Sum(nil)
+}
+
+func id(v []byte) uint64 {
+	h := fnv.New64a()
+	h.Write(v)
+	return h.Sum64()
 }
 
 func marshal(m protoreflect.ProtoMessage) []byte {

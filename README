@@ -23,16 +23,15 @@ limitations under the License.
 WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
 1.      Constants
-PERIOD              1s          Good for now.
-MTU                 1500        Typical.
-NPEER               3           Limit to prevent Eclipse attack.
-SHARE_DELAY         1m          Do not advertise peers added within the last minute to prevent churn.
-TOLERANCE           3           Low tolerance reduces churn & message loss.
-DISTANCE            6           Higher value increases probability that all nodes receive packet.
-FANOUT_GETDAT       2           2 is good. Prefer increasing DISTANCE to benefit from DAT propagation via GETDAT.
-FANOUT_SETDAT       2           Don't flood network.
-MINWORK             2           Prevent DAT spam.
-FILTER_CAP          1M          1 million is OK.
+EPOCH           1s      Good for now.
+MTU             1500    Typical for home WiFi connections.
+NPEER           3       Limit to prevent Eclipse attack.
+SHARE_DELAY     1m      Do not advertise peers added within the last minute to prevent churn.
+TOLERANCE       3       Low tolerance reduces churn & message loss.
+DISTANCE        6       Higher value increases probability that all nodes receive packet.
+FANOUT          2       Don't flood network.
+MINWORK         2       Prevent spam.
+FILTER_CAP      1M      Plenty for 1 EPOCH.
 
 2.      Operation Codes
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
