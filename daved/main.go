@@ -60,7 +60,7 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: set <VAL>")
 		}
-		setDat(d, *work, *tag)
+		go setDat(d, *work, *tag)
 	case "get":
 		if flag.NArg() < 2 {
 			exit(1, "correct usage is get <WORK>")
@@ -74,17 +74,15 @@ func main() {
 			exit(1, "failed: %v", err)
 		}
 		fmt.Println(string(dat.Val))
-
-	default:
-		t := time.After(10 * time.Second)
-		for {
-			select {
-			case <-t:
-				fmt.Printf("stat: %+v\n", d.Stat())
-				t = time.After(10 * time.Second)
-			case m := <-d.Recv:
-				printMsg(m)
-			}
+	}
+	t := time.After(10 * time.Second)
+	for {
+		select {
+		case <-t:
+			fmt.Printf("stat: %+v\n", d.Stat())
+			t = time.After(10 * time.Second)
+		case m := <-d.Recv:
+			printMsg(m)
 		}
 	}
 }

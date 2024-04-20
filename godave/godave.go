@@ -194,7 +194,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
-				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Work, m.Nonce}
+				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
@@ -311,7 +311,7 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 			return nil
 		}
 		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && CheckMsg(m) < MINWORK {
-
+			fmt.Printf("dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdFrom(raddr)))
 			return nil
 		}
 		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
