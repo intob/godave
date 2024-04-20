@@ -99,9 +99,7 @@ func setDat(d *godave.Dave, work int, tag string) {
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)
 	}
-	fmt.Print("-> ")
 	printMsg(msg)
-	time.Sleep(500 * time.Millisecond)
 }
 
 func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
@@ -152,9 +150,9 @@ func printMsg(m *dave.M) {
 	case dave.Op_GET:
 		fmt.Printf("%x\n", m.Work)
 	case dave.Op_SET:
-		fmt.Printf("TAG: %s :: WORK: %x\n", m.Work, m.Tag)
+		fmt.Printf("TAG: %s :: WORK: %x\n", m.Tag, m.Work)
 	case dave.Op_DAT:
-		fmt.Printf("TAG: %s :: WORK: %x\nVAL: %s\n", m.Work, string(m.Val), m.Tag)
+		fmt.Printf("TAG: %s :: WORK: %x\nVAL: %s\n", m.Tag, m.Work, string(m.Val))
 	}
 }
 
