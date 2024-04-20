@@ -18,8 +18,10 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
+	"hash"
 	"hash/fnv"
 	mrand "math/rand"
 	"net"
@@ -140,7 +142,7 @@ func CheckMsg(msg *dave.M) int {
 	return nzero(msg.Work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
 	dats := make(map[string]Dat)
 	for {
 		select {
@@ -164,8 +166,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
-
-				fmt.Println("<-pkts added", pktpid)
+				fmt.Printf("peer added: %x\n", pdfp(pd))
 			}
 			prs[pktpid].seen = time.Now()
 			m := pkt.msg
@@ -176,7 +177,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						fmt.Printf("<-pkts added gossip %x", sha256.Sum256(pd.Ip))
+						fmt.Printf("peer added: gossip %x\n", pdfp(pd))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
@@ -202,6 +203,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 				}
 			case dave.Op_DAT: // STORE INCOMING
 				dats[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
+				fmt.Printf("stored: %x\n", m.Work)
 			}
 		case <-time.After(PERIOD): // PEER LIVENESS & DISCOVERY
 			for kid, k := range prs {
@@ -217,72 +219,76 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan packet, send <-chan *dav
 	}
 }
 
-func lstn(conn *net.UDPConn) <-chan packet {
-	pkts := make(chan packet, 100)
+func lstn(conn *net.UDPConn) <-chan *packet {
+	pkts := make(chan *packet, 100)
 	go func() {
-		pool := sync.Pool{New: func() interface{} { return &dave.M{} }}
+		mpool := sync.Pool{New: func() any { return &dave.M{} }}
+		opool := sync.Pool{New: func() any { return make([]byte, 8) }}
 		f := ckoo.NewFilter(FILTER_CAP)
 		reset := time.Now()
 		h := fnv.New128a()
 		defer conn.Close()
 		for {
-			if time.Since(reset) > PERIOD {
-				f.Reset()
-				reset = time.Now()
+			p := readPacket(conn, f, h, &reset, &mpool, &opool)
+			if p != nil {
+				pkts <- p
 			}
-			buf := make([]byte, MTU)
-			n, raddr, err := conn.ReadFromUDPAddrPort(buf)
-			if err != nil {
-				panic(err)
-			}
-			m := pool.Get().(*dave.M)
-			err = proto.Unmarshal(buf[:n], m)
-			if err != nil {
-				fmt.Println("lstn unmarshal err:", raddr, err)
-				pool.Put(m)
-				continue
-			}
-			if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-				pool.Put(m)
-				continue
-			}
-			rab := raddr.Addr().As16()
-			h.Reset()
-			h.Write([]byte(m.Op.String()))
-			h.Write(rab[:])
-			if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-				if !f.InsertUnique(h.Sum(nil)) {
-					pool.Put(m)
-					continue
-				}
-			} else { // DAT, GETDAT, SETDAT
-				h.Write(m.Work)
-				if !f.InsertUnique(h.Sum(nil)) {
-					pool.Put(m)
-					continue
-				}
-				if (m.Op == dave.Op_DAT || m.Op == dave.Op_SETDAT) && CheckMsg(m) < MINWORK {
-					pool.Put(m)
-					continue
-				}
-				if m.Op == dave.Op_GETDAT || m.Op == dave.Op_SETDAT {
-					pd := pdFrom(raddr)
-					if len(m.Pds) == 0 {
-						m.Pds = []*dave.Pd{pd}
-					} else {
-						m.Pds = append(m.Pds, pd)
-					}
-				}
-			}
-			copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
-			for i, pd := range m.Pds {
-				copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
-			}
-			pkts <- packet{copy, raddr}
-			pool.Put(m)
 		}
 	}()
 	return pkts
+}
+
+func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool) *packet {
+	if time.Since(*reset) > PERIOD {
+		f.Reset()
+		*reset = time.Now()
+	}
+	buf := make([]byte, MTU)
+	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
+	if err != nil {
+		panic(err)
+	}
+	m := mpool.Get().(*dave.M)
+	defer mpool.Put(m)
+	err = proto.Unmarshal(buf[:n], m)
+	if err != nil {
+		return nil
+	}
+	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
+		return nil
+	}
+	h.Reset()
+	rab := raddr.Addr().As16()
+	h.Write(rab[:])
+	op := opool.Get().([]byte)
+	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
+	h.Write(op)
+	if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
+		if !f.InsertUnique(h.Sum(nil)) {
+			return nil
+		}
+	} else { // DAT, GETDAT, SETDAT
+		h.Write(m.Work)
+		if !f.InsertUnique(h.Sum(nil)) {
+			return nil
+		}
+		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SETDAT) && CheckMsg(m) < MINWORK {
+			return nil
+		}
+		if m.Op == dave.Op_GETDAT || m.Op == dave.Op_SETDAT {
+			pd := pdFrom(raddr)
+			if len(m.Pds) == 0 {
+				m.Pds = []*dave.Pd{pd}
+			} else {
+				m.Pds = append(m.Pds, pd)
+			}
+		}
+	}
+	copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
+	for i, pd := range m.Pds {
+		copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
+	}
+	return &packet{copy, raddr}
 }
 
 func rndPds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*peer) bool) []*dave.Pd {
@@ -331,6 +337,15 @@ func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
 	if err != nil {
 		panic(err)
 	}
+}
+
+func pdfp(pd *dave.Pd) []byte {
+	port := make([]byte, 8)
+	binary.BigEndian.PutUint32(port, pd.Port)
+	h := fnv.New64a()
+	h.Write(port)
+	h.Write(pd.Ip)
+	return h.Sum(nil)
 }
 
 func marshal(m protoreflect.ProtoMessage) []byte {
