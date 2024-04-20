@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"hash"
 	"hash/fnv"
+	"io"
 	mrand "math/rand"
 	"net"
 	"net/netip"
@@ -55,6 +56,12 @@ type Dave struct {
 	stat chan *Stat
 }
 
+type Cfg struct {
+	Listen     *net.UDPAddr
+	Bootstraps []netip.AddrPort
+	Log        io.Writer
+}
+
 func (d *Dave) Stat() *Stat {
 	return <-d.stat
 }
@@ -78,22 +85,22 @@ type packet struct {
 	ip  netip.AddrPort
 }
 
-func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
-	conn, err := net.ListenUDP("udp", laddr)
+func NewDave(cfg *Cfg) (*Dave, error) {
+	conn, err := net.ListenUDP("udp", cfg.Listen)
 	if err != nil {
 		return nil, err
 	}
 	fmt.Printf("listening %s\n", conn.LocalAddr())
 	boot := make(map[string]*peer)
-	for _, bap := range baps {
+	for _, bap := range cfg.Bootstraps {
 		bp := pdfrom(bap)
 		boot[pdstr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	stat := make(chan *Stat)
-	go d(conn, boot, lstn(conn), send, recv, stat)
-	for _, bap := range baps {
+	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log)
+	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv, stat}, nil
@@ -137,7 +144,7 @@ func CheckMsg(msg *dave.M) int {
 	return nzero(msg.Work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer) {
 	store := make(map[uint64]Dat)
 	for {
 		select {
@@ -161,7 +168,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
-				fmt.Printf("peer added: %x\n", pdfp(pd))
+				fmt.Fprintf(log, "peer added: %x\n", pdfp(pd))
 			}
 			prs[pktpid].seen = time.Now()
 			m := pkt.msg
@@ -172,7 +179,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						fmt.Printf("peer added: gossip %x\n", pdfp(pd))
+						fmt.Fprintf(log, "peer added: gossip %x\n", pdfp(pd))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
@@ -198,10 +205,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				}
 			case dave.Op_DAT: // STORE INCOMING
 				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
-				fmt.Printf("stored: %x\n", m.Work)
+				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND:
 				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
-				fmt.Printf("stored rand: %x\n", m.Work)
+				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		case <-time.After(EPOCH): // PERIODIC
 			var rdat *Dat
@@ -222,12 +229,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			for pid, p := range prs {
 				if rdat != nil && x == rdatpeer {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_RAND, Tag: rdat.Tag, Val: rdat.Val, Nonce: rdat.Nonce, Work: rdat.Work}), addrPortFrom(p.pd))
-					fmt.Printf("sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
+					fmt.Fprintf(log, "sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
 				}
 				x++
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE*TOLERANCE {
 					delete(prs, pid)
-					fmt.Printf("dropped %x\n", pdfp(p.pd))
+					fmt.Fprintf(log, "removed peer %x\n", pdfp(p.pd))
 				} else if time.Since(p.seen) > EPOCH {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
@@ -237,7 +244,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 	}
 }
 
-func lstn(conn *net.UDPConn) <-chan *packet {
+func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
 	pkts := make(chan *packet, 100)
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
@@ -247,7 +254,7 @@ func lstn(conn *net.UDPConn) <-chan *packet {
 		h := fnv.New128a()
 		defer conn.Close()
 		for {
-			p := readPacket(conn, f, h, &reset, &mpool, &opool)
+			p := readPacket(conn, f, h, &reset, &mpool, &opool, log)
 			if p != nil {
 				pkts <- p
 			}
@@ -256,11 +263,11 @@ func lstn(conn *net.UDPConn) <-chan *packet {
 	return pkts
 }
 
-func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool) *packet {
+func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool, log io.Writer) *packet {
 	if time.Since(*reset) > EPOCH {
-		fmt.Println("reset filter")
 		f.Reset()
 		*reset = time.Now()
+		fmt.Fprint(log, "reset filter\n")
 	}
 	buf := make([]byte, MTU)
 	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
@@ -271,11 +278,11 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	defer mpool.Put(m)
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
-		fmt.Printf("dropped: unmarshal err\n")
+		fmt.Fprintf(log, "dropped: unmarshal err\n")
 		return nil
 	}
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-		fmt.Printf("dropped %s: too many peers\n", m.Op)
+		fmt.Fprintf(log, "dropped %s: too many peers\n", m.Op)
 		return nil
 	}
 	h.Reset()
@@ -286,17 +293,17 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	h.Write(op)
 	if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdfrom(raddr)))
+			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
 	} else { // DAT, GETDAT, SETDAT, RAND
 		h.Write(m.Work)
 		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdfrom(raddr)))
+			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
 		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && CheckMsg(m) < MINWORK {
-			fmt.Printf("dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdfrom(raddr)))
+			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdfrom(raddr)))
 			return nil
 		}
 		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {

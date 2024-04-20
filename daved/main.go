@@ -23,8 +23,9 @@ func main() {
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
 	work := flag.Int("w", 3, "<WORK> ammount of work to do")
 	tag := flag.String("t", "", "<TAG> arbitrary data")
+	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
-	bootstrap := make([]netip.AddrPort, 0)
+	bootstraps := make([]netip.AddrPort, 0)
 	bap := *bapref
 	if bap != "" {
 		if strings.HasPrefix(bap, ":") {
@@ -34,20 +35,30 @@ func main() {
 		if err != nil {
 			exit(1, "failed to parse -p=%q: %v", bap, err)
 		}
-		bootstrap = append(bootstrap, addr)
+		bootstraps = append(bootstraps, addr)
 	}
 	if *bfile != "" {
 		bh, err := readHosts(*bfile)
 		if err != nil {
 			exit(1, "failed to read file %q: %v", *bfile, err)
 		}
-		bootstrap = append(bootstrap, bh...)
+		bootstraps = append(bootstraps, bh...)
 	}
-	udpaddr, err := net.ResolveUDPAddr("udp", *lap)
+	laddr, err := net.ResolveUDPAddr("udp", *lap)
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
-	d, err := godave.NewDave(udpaddr, bootstrap)
+	var log *os.File
+	if *verbose {
+		log = os.Stderr
+	} else {
+		log, err = os.Open(os.DevNull)
+		if err != nil {
+			panic(err)
+		}
+		defer log.Close()
+	}
+	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, Log: log})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
