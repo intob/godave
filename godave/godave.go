@@ -56,31 +56,41 @@ type Dave struct {
 	stat chan *Stat
 }
 
+func (d *Dave) Stat() *Stat {
+	return <-d.stat
+}
+
 type Dat struct {
-	Val   []byte
-	Tag   []byte
-	Nonce []byte
+	Val, Tag, Nonce, Work []byte
+}
+
+type stud struct {
+	work []byte
+}
+
+func (s stud) Equal(other stud) bool {
+	return bytes.Equal(s.work, other.work)
+}
+
+func (s stud) Hash() uint64 {
+	h := fnv.New64a()
+	h.Write(s.work)
+	return h.Sum64()
 }
 
 type Stat struct {
-	NPeer uint32
-	NDat  uint32
+	NPeer, NDat uint32
 }
 
 type peer struct {
-	pd        *dave.Pd
-	added     time.Time
-	seen      time.Time
-	bootstrap bool
+	pd          *dave.Pd
+	added, seen time.Time
+	bootstrap   bool
 }
 
 type packet struct {
 	msg *dave.M
 	ip  netip.AddrPort
-}
-
-func (d *Dave) Stat() *Stat {
-	return <-d.stat
 }
 
 func NewDave(laddr *net.UDPAddr, baps []netip.AddrPort) (*Dave, error) {
@@ -143,7 +153,7 @@ func CheckMsg(msg *dave.M) int {
 }
 
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat) {
-	dats := make(map[string]Dat)
+	store := make(map[*stud]Dat)
 	for {
 		select {
 		case msend := <-send: // SEND PACKET
@@ -184,14 +194,14 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				randpds := rndPds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SETDAT:
-				dats[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
+				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Work, m.Nonce}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range rndPds(prs, m.Pds, FANOUT_SETDAT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_GETDAT: // RETURN DAT OR FORWARD
-				d, ok := dats[hex.EncodeToString(m.Work)]
+				d, ok := store[&stud{m.Work}]
 				if ok {
 					for _, mp := range m.Pds {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
@@ -202,19 +212,19 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE INCOMING
-				dats[hex.EncodeToString(m.Work)] = Dat{m.Val, m.Tag, m.Nonce}
+				store[&stud{m.Work}] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				fmt.Printf("stored: %x\n", m.Work)
 			}
 		case <-time.After(PERIOD): // PEER LIVENESS & DISCOVERY
-			for kid, k := range prs {
-				if !k.bootstrap && time.Since(k.seen) > PERIOD*TOLERANCE*TOLERANCE {
-					delete(prs, kid)
-					fmt.Println("dropped", kid)
-				} else if time.Since(k.seen) > PERIOD {
-					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(k.pd))
+			for pid, p := range prs {
+				if !p.bootstrap && time.Since(p.seen) > PERIOD*TOLERANCE*TOLERANCE {
+					delete(prs, pid)
+					fmt.Println("dropped", pdfp(p.pd))
+				} else if time.Since(p.seen) > PERIOD {
+					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
-		case stat <- &Stat{uint32(len(prs)), uint32(len(dats))}: // STATUS
+		case stat <- &Stat{uint32(len(prs)), uint32(len(store))}: // STATUS
 		}
 	}
 }
