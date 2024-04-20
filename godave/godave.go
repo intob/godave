@@ -273,6 +273,7 @@ func lstn(conn *net.UDPConn) <-chan *packet {
 
 func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool) *packet {
 	if time.Since(*reset) > PERIOD {
+		fmt.Println("reset filter")
 		f.Reset()
 		*reset = time.Now()
 	}
@@ -285,9 +286,11 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	defer mpool.Put(m)
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
+		fmt.Printf("dropped: unmarshal err\n")
 		return nil
 	}
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
+		fmt.Printf("dropped %s: too many peers\n", m.Op)
 		return nil
 	}
 	h.Reset()
@@ -298,14 +301,17 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time
 	h.Write(op)
 	if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
 		if !f.InsertUnique(h.Sum(nil)) {
+			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdFrom(raddr)))
 			return nil
 		}
 	} else { // DAT, GETDAT, SETDAT, RAND
 		h.Write(m.Work)
 		if !f.InsertUnique(h.Sum(nil)) {
+			fmt.Printf("dropped %s: filter collision: pd %x\n", m.Op, pdfp(pdFrom(raddr)))
 			return nil
 		}
 		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && CheckMsg(m) < MINWORK {
+
 			return nil
 		}
 		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
