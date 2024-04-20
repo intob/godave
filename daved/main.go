@@ -39,7 +39,7 @@ func main() {
 	if *bfile != "" {
 		bh, err := readHosts(*bfile)
 		if err != nil {
-			exit(1, "failed to read file %s: %v", *bfile, err)
+			exit(1, "failed to read file %q: %v", *bfile, err)
 		}
 		bootstrap = append(bootstrap, bh...)
 	}
@@ -55,23 +55,25 @@ func main() {
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
 	}
-	switch strings.ToUpper(action) {
-	case "SETDAT":
+	switch strings.ToLower(action) {
+	case "set":
 		if flag.NArg() < 2 {
-			exit(1, "missing argument: setdat <VAL>")
+			exit(1, "missing argument: set <VAL>")
 		}
 		setDat(d, *work, *tag)
-	case "GETDAT":
+	case "get":
 		if flag.NArg() < 2 {
-			exit(1, "failed: correct usage is getdat <WORK>")
+			exit(1, "correct usage is get <WORK>")
 		}
-		dat, err := GetDat(d, flag.Arg(1), time.Second)
+		work, err := hex.DecodeString(flag.Arg(1))
+		if err != nil {
+			exit(1, "invalid input <WORK>: %v", err)
+		}
+		dat, err := GetDat(d, work, time.Second)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
 		fmt.Println(string(dat.Val))
-
-	// SEND DIRECTLY TO PEERS:
 
 	default:
 		t := time.After(10 * time.Second)
@@ -88,7 +90,7 @@ func main() {
 }
 
 func setDat(d *godave.Dave, work int, tag string) {
-	wch, err := godave.Work(&dave.M{Op: dave.Op_SETDAT, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
+	wch, err := godave.Work(&dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
 	if err != nil {
 		panic(err)
 	}
@@ -102,12 +104,8 @@ func setDat(d *godave.Dave, work int, tag string) {
 	time.Sleep(500 * time.Millisecond)
 }
 
-func GetDat(d *godave.Dave, workhex string, timeout time.Duration) (*godave.Dat, error) {
-	work, err := hex.DecodeString(workhex)
-	if err != nil {
-		exit(1, "failed: failed to decode hex")
-	}
-	send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
+func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
+	send(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
 	var tries int
 	t := time.After(time.Second)
 	for {
@@ -126,7 +124,7 @@ func GetDat(d *godave.Dave, workhex string, timeout time.Duration) (*godave.Dat,
 			if tries > 3 {
 				return nil, errors.New("not found")
 			}
-			send(d, &dave.M{Op: dave.Op_GETDAT, Work: work}, timeout)
+			send(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
 			t = time.After(time.Second)
 		}
 	}
@@ -151,12 +149,12 @@ func printMsg(m *dave.M) {
 	}
 	fmt.Printf("%s ", m.Op)
 	switch m.Op {
-	case dave.Op_GETDAT:
+	case dave.Op_GET:
 		fmt.Printf("%x\n", m.Work)
-	case dave.Op_SETDAT:
-		fmt.Printf("WORK: %x\nTAG: %s\n", m.Work, m.Tag)
+	case dave.Op_SET:
+		fmt.Printf("TAG: %s :: WORK: %x\n", m.Work, m.Tag)
 	case dave.Op_DAT:
-		fmt.Printf("WORK: %x\nVAL: %s\nTAG: %s\n", m.Work, string(m.Val), m.Tag)
+		fmt.Printf("TAG: %s :: WORK: %x\nVAL: %s\n", m.Work, string(m.Val), m.Tag)
 	}
 }
 
