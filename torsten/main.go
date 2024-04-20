@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	crand "crypto/rand"
 	"flag"
 	"fmt"
 	"net"
@@ -57,13 +58,18 @@ func main() {
 	case "FIRE":
 		t := time.Now()
 		tlp := time.Now()
-		m, err := proto.Marshal(&dave.M{Op: dave.Op_DAT})
-		if err != nil {
-			panic(err)
-		}
 		var i uint32
 		for {
 			for _, b := range bootstrap {
+				r := make([]byte, 32)
+				_, err := crand.Read(r)
+				if err != nil {
+					panic(err)
+				}
+				m, err := proto.Marshal(&dave.M{Op: dave.Op_DAT, Work: r})
+				if err != nil {
+					panic(err)
+				}
 				_, err = conn.WriteToUDPAddrPort(m, b)
 				if err != nil {
 					panic(err)
