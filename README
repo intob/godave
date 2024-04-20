@@ -4,7 +4,7 @@
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
 
-Peer-to-peer store on proof-of-work, cuckoo hashing, and gossip over UDP.
+Peer-to-peer DHT on proof-of-work, cuckoo hashing, and gossip over UDP.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
@@ -23,6 +23,7 @@ limitations under the License.
 WARNING: THIS PROJECT HAS JUST STARTED, AND IS NOT FIT FOR PRODUCTION
 
 1.      Constants
+
 EPOCH           1s      Good for now.
 MTU             1500    Typical for home WiFi connections.
 NPEER           3       Limit to prevent Eclipse attack.
@@ -33,17 +34,21 @@ FANOUT          2       Don't flood network.
 MINWORK         2       Prevent spam.
 FILTER_CAP      1M      Plenty for 1 EPOCH.
 
+
 2.      Operation Codes
+
 GETPEER     Packet requesting that the remote replies with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
-SETDAT      Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT_SETDAT random peers, after appending remote address to message peer descriptors.
-GETDAT      Packet requesting DAT, remote should send DAT to all peer descriptors contained in packet.
-DAT, without forwarding, else if len(Peers) < DISTANCE, forward to FANOUT_GETDAT random peers.
+SET         Packet containing DAT, remote should verify work, and then store. If len(Peers) < DISTANCE, remote should forward to FANOUT random peers, after appending remote address to message peer descriptors.
+GET         Packet requesting DAT, remote should send DAT to all peer descriptors contained in packet.
+DAT         Packet containing a value, tag, nonce & PoW.
+RAND        Random DAT, pushed to one random peer once per EPOCH.
 
 
 3.      Message
 
 3. 1.   Message Fields
+
             DESCRIPTION                             BYTE LENGTH
 Op          Operation code.                         1
 Peers       List of peer descriptors who forwarded. 20*DISTANCE
@@ -53,6 +58,7 @@ Tag         Arbitrary metaadata.                    <= 32
 Val         The data.                               <= 1200 for MTU=1500,DISTANCE=7
 
 3. 2.   Wire Format
+
 A message is serialized into binary using protobuf. See protobuf spec dave.proto.
 
 Transpiling Protobuf Spec for Go:
@@ -61,44 +67,32 @@ protoc --go_out=. dave.proto
 
 
 4.      Peer Discovery & Liveness
+
 The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER). A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors. Peers are not advertised if they have not been seen recently.
 
 
 5.      DAT
-DAT is a construct representing a small value, time, tag (32B metadata), nonce, and the proof-of-work. The proof-of-work allows the network to prioritise storage of keys backed by more work, and prevent spam/flooding. The proof also makes the network more resilient to protocol deviation.
+
+DAT is a construct representing a small value, tag (arbitrary 32B), nonce, and proof-of-work. The proof-of-work allows the network to prioritise storage of keys backed by more work, and prevent spam/flooding. The proof, combined with cuckoo hashing, makes the network resilient to protocol deviation.
 
 
 6.      Message Propagation
-The network propagates SETDAT and GETDAT messages.
-Each node appends the peer descriptor of the message sender to the message address list.
-For the SETDAT operation, the message is forwarded to up to FANOUT_SETDAT random addresses, excluding those in the message address list.
-For the GETDAT operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE addresses, the message is forwarded to up to FANOUT_GETDAT random peers, excluding those in the message address list.
-For the GETDAT operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all addresses in the message address list. Each peer can then validate the work & store the DAT.
 
-7.      Resources
-[1] https://en.wikipedia.org/wiki/Gossip_protocol
-[2] https://www.linkedin.com/advice/1/how-do-you-tune-parameters-optimize-performance
-[3] https://www.cs.cornell.edu/projects/Quicksilver/public_pdfs/2007PromiseAndLimitations.pdf
-[4] https://www.prismmodelchecker.org/casestudies/gossip.php
-[5] https://www.linkedin.com/advice/1/how-do-you-implement-gossip-protocol-peer-to-peer
-[6] https://highscalability.com/gossip-protocol-explained/
-[7] https://www.inesc-id.pt/ficheiros/publicacoes/8356.pdf
-[8] https://www.inf.usi.ch/faculty/pedone/Paper/2021/middleware2021b.pdf
-[9] https://jisajournal.springeropen.com/articles/10.1186/1869-0238-4-14
-[10] https://www.linkedin.com/advice/3/how-do-you-evaluate-performance-reliability-6c
-[11] https://www.geeksforgeeks.org/the-gossip-protocol-in-cloud-computing/
-[12] https://asc.di.fct.unl.pt/~jleitao/pdf/p2p-book-1.pdf
-[13] https://d-central.tech/understanding-how-gossip-protocols-enhance-bitcoin-mining-efficiencyunderstanding-how-gossip-protocols-work-for-bitcoin-mining/
-[14] https://docs.iza.org/dp9704.pdf
-[15] https://hyperledger-fabric.readthedocs.io/en/release-2.2/orderer/ordering_service.html
-[16] https://ethereum.stackexchange.com/questions/108008/which-node-does-your-transaction-get-sent-to-first-for-validation-and-broadcast
-[17] https://github.com/libp2p/specs/blob/master/pubsub/gossipsub/gossipsub-v1.1.md
-[18] https://acropolis.aueb.gr/~spyros/www/papers/Gossip-based%20Peer%20Sampling.pdf
-[19] https://github.com/ethereum/portal-network-specs/blob/master/transaction-gossip.md
+6. 1.   Forward with Fanout
+Nodes forward SET and GET messages to FANOUT nodes, until forwarded DISTANCE times. Each node appends the peer descriptor of the packet source to the message peer descriptor list.
+For the SET operation, if the message contains less than DISTANCE peer descriptors, the message is forwarded to FANOUT random peers, excluding those already in the message.
+For the GET operation, if the receiver DOES NOT have the data, and the message contains less than DISTANCE peer descriptors, the message is forwarded to FANOUT random peers, excluding those already in the message.
+For the GET operation, if the receiver DOES have the data, the receiver sends a DAT message with the data to all peers in the message peer descriptor list. Each peer can then validate the work & store the DAT.
 
-8.      Recently Implemented
+6. 2. Random Push
 
-8. 1.   Cuckoo Filter
+Every EPOCH, each node sends one random DAT to one random peer. This ensures reliable propagation, and eventual consistency.
+
+
+7.      Recently Implemented
+
+7. 1.   Cuckoo Filter
+
 Dropping packets efficiently is fundamental to an app's resilience to DoS attacks.
 
 A naive approach such as a ring-buffer is O(n^2), unsuitable in this case.
@@ -107,11 +101,9 @@ Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a co
 
 Packets that deviate from the protocol are efficiently detected & dropped without unnecessary processing.
 
-8. 2.   Torsten
-Torsten is an attack testing tool, allowing us to run worst-case byzantine scenarios to find weaknesses in the protocol and implementation.
 
+8.      In Development
 
-9.      In Development
 CONSIDERING: Direct messaging between nodes
 CONSIDERING: Topic pub/sub
 
