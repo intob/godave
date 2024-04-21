@@ -39,12 +39,12 @@ import (
 )
 
 const (
-	EPOCH       = time.Second
+	EPOCH       = 333 * time.Millisecond
 	MTU         = 1500
 	NPEER       = 2
 	SHARE_DELAY = time.Minute
 	TOLERANCE   = 9
-	DISTANCE    = 7
+	DISTANCE    = 9
 	FANOUT      = 2
 	MINWORK     = 2
 	FILTER_CAP  = 1000000
