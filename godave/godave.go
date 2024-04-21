@@ -156,17 +156,18 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 						wraddr(c, marshal(msend), addrPortFrom(rp))
 					}
 				case dave.Op_GET:
-					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
-						wraddr(c, marshal(msend), addrPortFrom(rp))
+					loc, ok := store[id(msend.Work)]
+					if ok {
+						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Tag: loc.Tag, Nonce: loc.Nonce, Work: loc.Work}
+					} else {
+						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
+							wraddr(c, marshal(msend), addrPortFrom(rp))
+						}
 					}
 				}
 			}
 		case pkt := <-pch: // HANDLE INCOMING PACKET
-			select {
-			case recv <- pkt.msg:
-			default:
-				fmt.Fprintf(log, "could not send on blocked Recv chan")
-			}
+			recv <- pkt.msg
 			pd := pdfrom(pkt.ip)
 			pktpid := pdstr(pd)
 			_, ok := prs[pktpid]
@@ -249,7 +250,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 }
 
 func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
-	pkts := make(chan *packet, 100)
+	pkts := make(chan *packet, 1)
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		opool := sync.Pool{New: func() any { return make([]byte, 8) }}

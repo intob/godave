@@ -119,6 +119,9 @@ func printMsg(m *dave.M) {
 		return
 	}
 	fmt.Printf("%s ", m.Op)
+	if m.Op == dave.Op_SET {
+		fmt.Printf("%x ", m.Work)
+	}
 	if len(m.Tag) > 0 {
 		fmt.Printf("#%s ", m.Tag)
 	}
