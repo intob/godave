@@ -39,7 +39,7 @@ import (
 )
 
 const (
-	EPOCH       = 333 * time.Millisecond
+	EPOCH       = 127713921 * time.Nanosecond
 	MTU         = 1500
 	NPEER       = 2
 	SHARE_DELAY = time.Minute
