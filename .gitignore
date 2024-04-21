@@ -1,2 +1,4 @@
 .vscode/launch.json
 go.work
+run.sh
+update.sh
