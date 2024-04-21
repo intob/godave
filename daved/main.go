@@ -2,9 +2,7 @@ package main
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
-	"errors"
 	"flag"
 	"fmt"
 	"net"
@@ -13,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/intob/dave/dapi"
 	"github.com/intob/dave/godave"
 	"github.com/intob/dave/godave/dave"
 )
@@ -56,8 +55,8 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
-		defer log.Close()
 	}
+	defer log.Close()
 	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, Log: log})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
@@ -83,7 +82,7 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
-		dat, err := getDat(d, work, time.Second)
+		dat, err := dapi.GetDat(d, work, time.Second)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
@@ -108,50 +107,11 @@ func setDat(d *godave.Dave, work int, tag string) {
 		panic(err)
 	}
 	msg := <-wch
-	err = send(d, msg, time.Second)
+	err = dapi.SendM(d, msg, time.Second)
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)
 	}
 	printMsg(msg)
-}
-
-func getDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
-	send(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
-	var tries int
-	t := time.After(time.Second)
-	for {
-		select {
-		case m := <-d.Recv:
-			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
-				check := godave.CheckMsg(m)
-				dat := &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce}
-				if check < godave.MINWORK {
-					return dat, errors.New("invalid work")
-				}
-				return dat, nil
-			}
-		case <-t:
-			tries++
-			if tries > 3 {
-				return nil, errors.New("not found")
-			}
-			send(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
-			t = time.After(time.Second)
-		}
-	}
-}
-
-func send(d *godave.Dave, msg *dave.M, timeout time.Duration) error {
-	t := time.After(timeout)
-	for {
-		select {
-		case <-d.Recv:
-		case d.Send <- msg:
-			return nil
-		case <-t:
-			return errors.New("timeout")
-		}
-	}
 }
 
 func printMsg(m *dave.M) {
@@ -159,14 +119,13 @@ func printMsg(m *dave.M) {
 		return
 	}
 	fmt.Printf("%s ", m.Op)
-	switch m.Op {
-	case dave.Op_SET:
-		fmt.Printf("#%s %x\n", m.Tag, m.Work)
-	case dave.Op_DAT:
-		fmt.Printf("#%s %x\n%s\n", m.Tag, m.Work, string(m.Val))
-	default:
-		fmt.Printf("%x\n", m.Work)
+	if len(m.Tag) > 0 {
+		fmt.Printf("#%s ", m.Tag)
 	}
+	if len(m.Val) > 0 {
+		fmt.Printf("%s ", m.Val)
+	}
+	fmt.Print("\n")
 }
 
 func readHosts(fname string) ([]netip.AddrPort, error) {

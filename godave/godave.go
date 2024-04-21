@@ -162,7 +162,11 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				}
 			}
 		case pkt := <-pch: // HANDLE INCOMING PACKET
-			recv <- pkt.msg
+			select {
+			case recv <- pkt.msg:
+			default:
+				fmt.Fprintf(log, "could not send on blocked Recv chan")
+			}
 			pd := pdfrom(pkt.ip)
 			pktpid := pdstr(pd)
 			_, ok := prs[pktpid]
@@ -250,25 +254,26 @@ func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		opool := sync.Pool{New: func() any { return make([]byte, 8) }}
 		f := ckoo.NewFilter(FILTER_CAP)
-		reset := time.Now()
+		reset := time.After(EPOCH)
 		h := fnv.New128a()
 		defer conn.Close()
 		for {
-			p := readPacket(conn, f, h, &reset, &mpool, &opool, log)
-			if p != nil {
-				pkts <- p
+			select {
+			case <-reset:
+				reset = time.After(EPOCH)
+				f.Reset()
+			default:
+				p := readPacket(conn, f, h, &mpool, &opool, log)
+				if p != nil {
+					pkts <- p
+				}
 			}
 		}
 	}()
 	return pkts
 }
 
-func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, reset *time.Time, mpool *sync.Pool, opool *sync.Pool, log io.Writer) *packet {
-	if time.Since(*reset) > EPOCH {
-		f.Reset()
-		*reset = time.Now()
-		fmt.Fprint(log, "reset filter\n")
-	}
+func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool, opool *sync.Pool, log io.Writer) *packet {
 	buf := make([]byte, MTU)
 	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
 	if err != nil {
