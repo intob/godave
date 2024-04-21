@@ -43,7 +43,7 @@ const (
 	MTU         = 1500
 	NPEER       = 2
 	SHARE_DELAY = time.Minute
-	TOLERANCE   = 3
+	TOLERANCE   = 9
 	DISTANCE    = 7
 	FANOUT      = 2
 	MINWORK     = 2
@@ -130,18 +130,18 @@ func Work(msg *dave.M, work int) (<-chan *dave.M, error) {
 	return result, nil
 }
 
-func CheckMsg(msg *dave.M) int {
+func Check(val, tag, nonce, work []byte) int {
 	h := sha256.New()
-	h.Write(msg.Val)
-	h.Write(msg.Tag)
+	h.Write(val)
+	h.Write(tag)
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
-	h.Write(msg.Nonce)
-	if !bytes.Equal(h.Sum(nil), msg.Work) {
+	h.Write(nonce)
+	if !bytes.Equal(h.Sum(nil), work) {
 		return -1
 	}
-	return nzero(msg.Work)
+	return nzero(work)
 }
 
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer) {
@@ -237,7 +237,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					fmt.Fprintf(log, "sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
 				}
 				x++
-				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE*TOLERANCE {
+				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE {
 					delete(prs, pid)
 					fmt.Fprintf(log, "removed peer %x\n", pdfp(p.pd))
 				} else if time.Since(p.seen) > EPOCH {
@@ -308,8 +308,9 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool
 			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
-		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && CheckMsg(m) < MINWORK {
-			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, CheckMsg(m), m.Work, pdfp(pdfrom(raddr)))
+		check := Check(m.Val, m.Tag, m.Nonce, m.Work)
+		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && check < MINWORK {
+			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, check, m.Work, pdfp(pdfrom(raddr)))
 			return nil
 		}
 		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {

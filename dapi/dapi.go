@@ -13,7 +13,6 @@ import (
 func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
 	err := SendM(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
 	if err != nil {
-		fmt.Println("first send timeout")
 		return nil, err
 	}
 	var tries int
@@ -21,12 +20,11 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, er
 		select {
 		case m := <-d.Recv:
 			if (m.Op == dave.Op_DAT || m.Op == dave.Op_RAND) && bytes.Equal(m.Work, work) {
-				check := godave.CheckMsg(m)
-				dat := &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
+				check := godave.Check(m.Val, m.Tag, m.Nonce, m.Work)
 				if check < godave.MINWORK {
-					return dat, fmt.Errorf("invalid work: %d", check)
+					return nil, fmt.Errorf("invalid work: %d", check)
 				}
-				return dat, nil
+				return &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}, nil
 			}
 		case <-time.After(timeout):
 			tries++
