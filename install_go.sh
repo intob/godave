@@ -1,7 +1,7 @@
 #!/bin/bash
 sudo apt-get update && sudo apt-get -y install git
-GO_VERSION="1.22.2"
-ARCH="arm64"
+GO_VERSION=$1
+ARCH=$2
 wget https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz
 sudo rm -rf /usr/local/go
 sudo tar -C /usr/local -xzf go${GO_VERSION}.linux-${ARCH}.tar.gz
