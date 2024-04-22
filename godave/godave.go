@@ -208,14 +208,14 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
-			case dave.Op_DAT: // STORE INCOMING
+			case dave.Op_DAT: // STORE DAT
 				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
-			case dave.Op_RAND:
+			case dave.Op_RAND: // STORE RAND DAT
 				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
-		case <-time.After(EPOCH): // PERIODIC
+		case <-time.After(EPOCH): // PERIODICALLY
 			var rdat *Dat
 			var x, rdatpeer int
 			if len(store) > 0 && len(prs) > 0 {
@@ -232,12 +232,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				}
 			}
 			for pid, p := range prs {
-				if rdat != nil && x == rdatpeer {
+				if rdat != nil && x == rdatpeer { // PUSH RAND DAT
 					wraddr(c, marshal(&dave.M{Op: dave.Op_RAND, Tag: rdat.Tag, Val: rdat.Val, Nonce: rdat.Nonce, Work: rdat.Work}), addrPortFrom(p.pd))
 					fmt.Fprintf(log, "sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
 				}
 				x++
-				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE {
+				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
 					fmt.Fprintf(log, "removed peer %x\n", pdfp(p.pd))
 				} else if time.Since(p.seen) > EPOCH {
