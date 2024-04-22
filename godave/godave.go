@@ -413,6 +413,10 @@ func nzero(key []byte) int {
 }
 
 func store(dats map[uint64]Dat, size int, dat *Dat, log io.Writer) {
+	_, have := dats[id(dat.Work)]
+	if have {
+		return
+	}
 	if len(dats) >= size {
 		lightest := lightest(dats)
 		fmt.Fprintf(log, "replaced lightest: %x\n", dats[lightest].Work)
