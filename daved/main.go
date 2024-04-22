@@ -20,8 +20,9 @@ func main() {
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
-	work := flag.Int("w", 3, "<WORK> ammount of work to do")
-	tag := flag.String("t", "", "<TAG> arbitrary data")
+	difficulty := flag.Int("d", 3, "<DIFFICULTY")
+	size := flag.Int("s", 1000000, "<SIZE> number of dats to store")
+	tag := flag.String("t", "", "<TAG> arbitrary")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 	bootstraps := make([]netip.AddrPort, 0)
@@ -57,7 +58,7 @@ func main() {
 		}
 	}
 	defer log.Close()
-	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, Log: log})
+	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, Size: *size, Log: log})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
@@ -71,7 +72,7 @@ func main() {
 			exit(1, "missing argument: set <VAL>")
 		}
 		go func() {
-			setDat(d, *work, *tag)
+			setDat(d, *difficulty, *tag)
 			os.Exit(0)
 		}()
 	case "get":
@@ -101,8 +102,8 @@ func main() {
 	}
 }
 
-func setDat(d *godave.Dave, work int, tag string) {
-	wch, err := godave.Work(&dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, work)
+func setDat(d *godave.Dave, difficulty int, tag string) {
+	wch, err := godave.Work(&dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, difficulty)
 	if err != nil {
 		panic(err)
 	}

@@ -59,6 +59,7 @@ type Dave struct {
 type Cfg struct {
 	Listen     *net.UDPAddr
 	Bootstraps []netip.AddrPort
+	Size       int
 	Log        io.Writer
 }
 
@@ -100,17 +101,17 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	stat := make(chan *Stat)
-	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log, 100)
+	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log, cfg.Size)
 	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv, stat}, nil
 }
 
-func Work(msg *dave.M, work int) (<-chan *dave.M, error) {
+func Work(msg *dave.M, difficulty int) (<-chan *dave.M, error) {
 	result := make(chan *dave.M)
 	go func() {
-		zeros := make([]byte, work)
+		zeros := make([]byte, difficulty)
 		msg.Nonce = make([]byte, 32)
 		h := sha256.New()
 		h.Write(msg.Val)
