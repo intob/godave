@@ -248,7 +248,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
-		case stat <- &Stat{uint32(len(prs)), uint32(len(dats))}: // STATUS
+		case stat <- &Stat{uint32(len(prs)), uint32(sz(dats))}: // STATUS
 		}
 	}
 }
@@ -425,6 +425,14 @@ func store(dats map[uint64]Dat, size int, dat *Dat, log io.Writer) {
 		delete(dats, lightest)
 	}
 	dats[id(dat.Work)] = *dat
+}
+
+func sz(dats map[uint64]Dat) int { // not len
+	var i int
+	for range dats {
+		i++
+	}
+	return i
 }
 
 func lightest(dats map[uint64]Dat) uint64 {
