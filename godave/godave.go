@@ -260,7 +260,7 @@ func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
 	pkts := make(chan *packet, 1)
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
-		opool := sync.Pool{New: func() any { return make([]byte, 8) }}
+		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		f := ckoo.NewFilter(FILTER_CAP)
 		reset := time.After(EPOCH)
 		h := fnv.New128a()
@@ -271,7 +271,7 @@ func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
 				reset = time.After(EPOCH)
 				f.Reset()
 			default:
-				p := readPacket(conn, f, h, &mpool, &opool, log)
+				p := readPacket(conn, f, h, &bufpool, &mpool, log)
 				if p != nil {
 					pkts <- p
 				}
@@ -281,8 +281,9 @@ func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
 	return pkts
 }
 
-func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool, opool *sync.Pool, log io.Writer) *packet {
-	buf := make([]byte, MTU)
+func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log io.Writer) *packet {
+	buf := bufpool.Get().([]byte)
+	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
 	if err != nil {
 		panic(err)
@@ -294,21 +295,20 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool
 		fmt.Fprintf(log, "dropped: unmarshal err\n")
 		return nil
 	}
-	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-		fmt.Fprintf(log, "dropped %s: too many peers\n", m.Op)
-		return nil
-	}
 	h.Reset()
 	rab := raddr.Addr().As16()
 	h.Write(rab[:])
-	op := opool.Get().([]byte)
+	op := make([]byte, 8)
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
 	if !f.InsertUnique(h.Sum(nil)) {
 		fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 		return nil
 	}
-	if m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND {
+	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
+		fmt.Fprintf(log, "dropped %s: too many peers\n", m.Op)
+		return nil
+	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND {
 		check := Check(m.Val, m.Tag, m.Nonce, m.Work)
 		if check < MINWORK {
 			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, check, m.Work, pdfp(pdfrom(raddr)))
