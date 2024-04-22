@@ -414,8 +414,9 @@ func nzero(key []byte) int {
 }
 
 func store(dats map[uint64]Dat, size int, dat *Dat, log io.Writer) {
-	_, have := dats[id(dat.Work)]
-	if have {
+	loc, ok := dats[id(dat.Work)]
+	if ok {
+		fmt.Fprintf(log, "already have %x %v\n", loc.Work, weight(loc.Work, loc.added))
 		return
 	}
 	if len(dats) >= size {
@@ -430,7 +431,7 @@ func lightest(dats map[uint64]Dat) uint64 {
 	var lw float64
 	var l uint64
 	for key, dat := range dats {
-		wd := weight(&dat)
+		wd := weight(dat.Work, dat.added)
 		if lw == 0 || wd < lw {
 			lw = wd
 			l = key
@@ -439,7 +440,7 @@ func lightest(dats map[uint64]Dat) uint64 {
 	return l
 }
 
-func weight(dat *Dat) float64 {
+func weight(work []byte, t time.Time) float64 {
 	// Use linear zero count to accurately reflect exponential difficulty
-	return float64(nzero(dat.Work)) * (1 / time.Since(dat.added).Seconds())
+	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
 }

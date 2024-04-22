@@ -50,7 +50,7 @@ func main() {
 	}
 	var log *os.File
 	if *verbose {
-		log = os.Stderr
+		log = os.Stdout
 	} else {
 		log, err = os.Open(os.DevNull)
 		if err != nil {
