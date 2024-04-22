@@ -88,11 +88,12 @@ type packet struct {
 }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
+	fmt.Fprintf(cfg.Log, "creating dave: %+v\n", cfg)
 	conn, err := net.ListenUDP("udp", cfg.Listen)
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("listening %s\n", conn.LocalAddr())
+	fmt.Fprintf(cfg.Log, "listening %s\n", conn.LocalAddr())
 	boot := make(map[string]*peer)
 	for _, bap := range cfg.Bootstraps {
 		bp := pdfrom(bap)
