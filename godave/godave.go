@@ -304,29 +304,22 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool
 	op := opool.Get().([]byte)
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
-	if m.Op == dave.Op_PEER || m.Op == dave.Op_GETPEER {
-		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
-			return nil
-		}
-	} else { // DAT, GET, SET, RAND
-		h.Write(m.Work)
-		if !f.InsertUnique(h.Sum(nil)) {
-			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
-			return nil
-		}
+	if !f.InsertUnique(h.Sum(nil)) {
+		fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
+		return nil
+	}
+	if m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND {
 		check := Check(m.Val, m.Tag, m.Nonce, m.Work)
-		if (m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND) && check < MINWORK {
+		if check < MINWORK {
 			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, check, m.Work, pdfp(pdfrom(raddr)))
 			return nil
 		}
-		if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
-			pd := pdfrom(raddr)
-			if len(m.Pds) == 0 {
-				m.Pds = []*dave.Pd{pd}
-			} else {
-				m.Pds = append(m.Pds, pd)
-			}
+	}
+	if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
+		if len(m.Pds) == 0 {
+			m.Pds = []*dave.Pd{pdfrom(raddr)}
+		} else {
+			m.Pds = append(m.Pds, pdfrom(raddr))
 		}
 	}
 	copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}
