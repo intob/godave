@@ -302,7 +302,7 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, mpool *sync.Pool
 			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 			return nil
 		}
-	} else { // DAT, GETDAT, SETDAT, RAND
+	} else { // DAT, GET, SET, RAND
 		h.Write(m.Work)
 		if !f.InsertUnique(h.Sum(nil)) {
 			fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
