@@ -68,6 +68,7 @@ func (d *Dave) Stat() *Stat {
 
 type Dat struct {
 	Val, Tag, Nonce, Work []byte
+	added                 time.Time
 }
 
 type Stat struct {
@@ -99,7 +100,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	stat := make(chan *Stat)
-	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log)
+	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log, 100)
 	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
@@ -144,24 +145,25 @@ func Check(val, tag, nonce, work []byte) int {
 	return nzero(work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer) {
-	store := make(map[uint64]Dat)
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer, size int) {
+	dats := make(map[uint64]Dat)
 	for {
 		select {
-		case msend := <-send: // SEND PACKET
-			if msend != nil {
-				switch msend.Op {
+		case m := <-send: // SEND PACKET
+			if m != nil {
+				switch m.Op {
 				case dave.Op_SET:
+					store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
-						wraddr(c, marshal(msend), addrPortFrom(rp))
+						wraddr(c, marshal(m), addrPortFrom(rp))
 					}
 				case dave.Op_GET:
-					loc, ok := store[id(msend.Work)]
+					loc, ok := dats[id(m.Work)]
 					if ok {
 						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Tag: loc.Tag, Nonce: loc.Nonce, Work: loc.Work}
 					} else {
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
-							wraddr(c, marshal(msend), addrPortFrom(rp))
+							wraddr(c, marshal(m), addrPortFrom(rp))
 						}
 					}
 				}
@@ -191,14 +193,14 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				randpds := randpds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
-				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				dats[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
 					}
 				}
 			case dave.Op_GET: // RETURN DAT OR FORWARD
-				d, ok := store[id(m.Work)]
+				d, ok := dats[id(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Tag: d.Tag, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
@@ -209,20 +211,20 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND: // STORE RAND DAT
-				store[id(m.Work)] = Dat{m.Val, m.Tag, m.Nonce, m.Work}
+				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		case <-time.After(EPOCH): // PERIODICALLY
 			var rdat *Dat
 			var x, rdatpeer int
-			if len(store) > 0 && len(prs) > 0 {
-				rdati := mrand.Intn(len(store))
-				for s := range store {
+			if len(dats) > 0 && len(prs) > 0 {
+				rdati := mrand.Intn(len(dats))
+				for s := range dats {
 					if x == rdati {
-						rd := store[s]
+						rd := dats[s]
 						rdat = &rd
 						rdatpeer = mrand.Intn(len(prs))
 						x = 0
@@ -244,7 +246,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
-		case stat <- &Stat{uint32(len(prs)), uint32(len(store))}: // STATUS
+		case stat <- &Stat{uint32(len(prs)), uint32(len(dats))}: // STATUS
 		}
 	}
 }
@@ -407,4 +409,30 @@ func nzero(key []byte) int {
 		}
 	}
 	return len(key)
+}
+
+func store(dats map[uint64]Dat, size int, dat *Dat, log io.Writer) {
+	if len(dats) >= size {
+		lightest := lightest(dats)
+		fmt.Fprintf(log, "replaced lightest: %x\n", dats[lightest].Work)
+		delete(dats, lightest)
+	}
+	dats[id(dat.Work)] = *dat
+}
+
+func lightest(dats map[uint64]Dat) uint64 {
+	var lw float64
+	var l uint64
+	for key, dat := range dats {
+		wd := weight(&dat)
+		if lw == 0 || wd < lw {
+			lw = wd
+			l = key
+		}
+	}
+	return l
+}
+
+func weight(dat *Dat) float64 {
+	return float64(nzero(dat.Work)) * (1 / time.Since(dat.added).Seconds())
 }
