@@ -149,13 +149,14 @@ func Check(val, tag, nonce, work []byte) int {
 
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer, size int) {
 	dats := make(map[uint64]Dat)
+	var nepoch uint64
 	for {
 		select {
 		case m := <-send: // SEND PACKET
 			if m != nil {
 				switch m.Op {
 				case dave.Op_SET:
-					store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+					store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(rp))
 					}
@@ -213,13 +214,26 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND: // STORE RAND DAT
-				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		case <-time.After(EPOCH): // PERIODICALLY
+			nepoch++
+			if nepoch%100 == 0 { // REFRESH MAPS
+				newdats := make(map[uint64]Dat)
+				for k, d := range dats {
+					newdats[k] = d
+				}
+				dats = newdats
+				newpeers := make(map[string]*peer)
+				for k, p := range prs {
+					newpeers[k] = p
+				}
+				prs = newpeers
+			}
 			var rdat *Dat
 			var x, rdatpeer int
 			if len(dats) > 0 && len(prs) > 0 {
@@ -413,18 +427,14 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, size int, dat *Dat, log io.Writer) {
-	loc, ok := dats[id(dat.Work)]
-	if ok {
-		fmt.Fprintf(log, "already have %x %v\n", loc.Work, weight(loc.Work, loc.added))
-		return
+func store(dats map[uint64]Dat, size int, dat *Dat) {
+	_, ok := dats[id(dat.Work)]
+	if !ok {
+		for i := 0; i < sz(dats)-size; i++ {
+			delete(dats, lightest(dats))
+		}
+		dats[id(dat.Work)] = *dat
 	}
-	if len(dats) >= size {
-		lightest := lightest(dats)
-		fmt.Fprintf(log, "replaced lightest: %x\n", dats[lightest].Work)
-		delete(dats, lightest)
-	}
-	dats[id(dat.Work)] = *dat
 }
 
 func sz(dats map[uint64]Dat) int { // not len
@@ -436,13 +446,13 @@ func sz(dats map[uint64]Dat) int { // not len
 }
 
 func lightest(dats map[uint64]Dat) uint64 {
-	var lw float64
 	var l uint64
+	var w float64
 	for key, dat := range dats {
 		wd := weight(dat.Work, dat.added)
-		if lw == 0 || wd < lw {
-			lw = wd
+		if w == 0 || wd < w {
 			l = key
+			w = wd
 		}
 	}
 	return l
