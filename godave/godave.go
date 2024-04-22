@@ -218,7 +218,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 		case <-time.After(EPOCH): // PERIODIC
 			var rdat *Dat
 			var x, rdatpeer int
-			if len(store) > 0 {
+			if len(store) > 0 && len(prs) > 0 {
 				rdati := mrand.Intn(len(store))
 				for s := range store {
 					if x == rdati {
