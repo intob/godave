@@ -296,13 +296,13 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *
 		fmt.Fprintf(log, "dropped: unmarshal err\n")
 		return nil
 	}
-	//h.Reset()
+	h.Reset()
 	rab := raddr.Addr().As16()
-	/*h.Write(rab[:])
+	h.Write(rab[:])
 	op := make([]byte, 8)
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
-	h.Write(op)*/
-	if !f.InsertUnique(rab[:]) { //(h.Sum(nil)) {
+	h.Write(op)
+	if !f.InsertUnique(h.Sum(nil)) {
 		fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
 		return nil
 	}
