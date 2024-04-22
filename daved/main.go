@@ -90,15 +90,8 @@ func main() {
 		fmt.Println(string(dat.Val))
 		os.Exit(0)
 	}
-	t := time.After(10 * time.Second)
-	for {
-		select {
-		case <-t:
-			fmt.Printf("stat: %+v\n", d.Stat())
-			t = time.After(10 * time.Second)
-		case m := <-d.Recv:
-			printMsg(m)
-		}
+	for m := range d.Recv {
+		printMsg(m)
 	}
 }
 

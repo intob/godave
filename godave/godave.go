@@ -53,7 +53,6 @@ const (
 type Dave struct {
 	Send chan<- *dave.M
 	Recv <-chan *dave.M
-	stat chan *Stat
 }
 
 type Cfg struct {
@@ -63,17 +62,9 @@ type Cfg struct {
 	Log        io.Writer
 }
 
-func (d *Dave) Stat() *Stat {
-	return <-d.stat
-}
-
 type Dat struct {
 	Val, Tag, Nonce, Work []byte
 	added                 time.Time
-}
-
-type Stat struct {
-	NPeer, NDat uint32
 }
 
 type peer struct {
@@ -101,12 +92,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	stat := make(chan *Stat)
-	go d(conn, boot, lstn(conn, cfg.Log), send, recv, stat, cfg.Log, cfg.Size)
+	go d(conn, boot, lstn(conn, cfg.Log), send, recv, cfg.Log, cfg.Size)
 	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
-	return &Dave{send, recv, stat}, nil
+	return &Dave{send, recv}, nil
 }
 
 func Work(msg *dave.M, difficulty int) (<-chan *dave.M, error) {
@@ -147,7 +137,7 @@ func Check(val, tag, nonce, work []byte) int {
 	return nzero(work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, stat chan<- *Stat, log io.Writer, size int) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, size int) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	for {
@@ -262,7 +252,6 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
-		case stat <- &Stat{uint32(len(prs)), uint32(sz(dats))}: // STATUS
 		}
 	}
 }
