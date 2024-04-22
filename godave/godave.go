@@ -435,5 +435,6 @@ func lightest(dats map[uint64]Dat) uint64 {
 }
 
 func weight(dat *Dat) float64 {
+	// Use linear zero count to accurately reflect exponential difficulty
 	return float64(nzero(dat.Work)) * (1 / time.Since(dat.added).Seconds())
 }
