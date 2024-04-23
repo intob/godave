@@ -59,7 +59,12 @@ func main() {
 		}
 	}
 	defer log.Close()
-	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, DatCap: *dcap, FilterCap: *fcap, Log: log})
+	d, err := godave.NewDave(&godave.Cfg{
+		Listen:     laddr,
+		Bootstraps: bootstraps,
+		DatCap:     *dcap,
+		FilterCap:  *fcap,
+		Log:        bufio.NewWriter(log)})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
