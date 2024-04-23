@@ -442,6 +442,5 @@ func lightest(dats map[uint64]Dat) uint64 {
 }
 
 func weight(work []byte, t time.Time) float64 {
-	nz := float64(nzero(work))
-	return nz * nz * (1 / time.Since(t).Seconds())
+	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
 }
