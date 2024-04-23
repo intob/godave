@@ -136,8 +136,7 @@ Each peer can then validate the work & store the DAT.
 
 6. 2. Random Push
 
-Every EPOCH, each node sends one random DAT to one random peer. This ensures
-reliable propagation, and eventual consistency.
+Every EPOCH, each node sends one random DAT to FANOUT random peers. This ensures reliable propagation, and eventual consistency.
 
 
 7.   Packet Filter

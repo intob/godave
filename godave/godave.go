@@ -159,27 +159,23 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				prs = newpeers
 				fmt.Fprintf(log, "got %d peers, %d dats\n", len(newpeers), len(newdats))
 			}
-			var rdat *Dat
-			var x, rdatpeer int
-			if len(dats) > 0 && len(prs) > 0 {
+			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO FANOUT PEERS
 				rdati := mrand.Intn(len(dats))
+				var x int
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
-						rdat = &rd
-						rdatpeer = mrand.Intn(len(prs))
-						x = 0
+						m := marshal(&dave.M{Op: dave.Op_RAND, Tag: rd.Tag, Val: rd.Val, Nonce: rd.Nonce, Work: rd.Work})
+						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
+							wraddr(c, m, addrPortFrom(rp))
+							fmt.Fprintf(log, "sent random dat %x to %x\n", rd.Work, pdfp(rp))
+						}
 						break
 					}
 					x++
 				}
 			}
 			for pid, p := range prs {
-				if rdat != nil && x == rdatpeer { // PUSH RAND DAT
-					wraddr(c, marshal(&dave.M{Op: dave.Op_RAND, Tag: rdat.Tag, Val: rdat.Val, Nonce: rdat.Nonce, Work: rdat.Work}), addrPortFrom(p.pd))
-					fmt.Fprintf(log, "sent random dat %x to %x\n", rdat.Work, pdfp(p.pd))
-				}
-				x++
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
 					fmt.Fprintf(log, "removed peer %x\n", pdfp(p.pd))
