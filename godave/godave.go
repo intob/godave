@@ -53,7 +53,7 @@ const (
 	DISTANCE    = 9
 	FANOUT      = 2
 	MINWORK     = 2
-	REPLACEMENT = 128
+	PRUNE       = 128
 )
 
 type Dave struct {
@@ -147,7 +147,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 		case <-et.C: // PERIODICALLY
 			et.Reset(EPOCH)
 			nepoch++
-			if nepoch%REPLACEMENT == 0 { // KEEP CAP HEAVIEST DATS
+			if nepoch%PRUNE == 0 { // KEEP CAP HEAVIEST DATS
 				newdats := make(map[uint64]Dat)
 				var minw float64
 				var l uint64
