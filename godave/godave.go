@@ -413,21 +413,13 @@ func nzero(key []byte) int {
 func store(dats map[uint64]Dat, datcap uint, dat *Dat, log io.Writer) {
 	_, ok := dats[id(dat.Work)]
 	if !ok {
-		for i := uint(0); i < sz(dats)-datcap; i++ {
+		if uint(len(dats)) > datcap {
 			l := lightest(dats)
-			fmt.Fprintf(log, "deleted %x %s\n", dats[l].Work, dats[l].Val)
+			fmt.Fprintf(log, "oversized, deleted %x %s\n", dats[l].Work, dats[l].Val)
 			delete(dats, l)
 		}
 		dats[id(dat.Work)] = *dat
 	}
-}
-
-func sz(dats map[uint64]Dat) uint { // not len
-	var i uint
-	for range dats {
-		i++
-	}
-	return i
 }
 
 func lightest(dats map[uint64]Dat) uint64 {
