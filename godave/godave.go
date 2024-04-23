@@ -47,7 +47,6 @@ const (
 	DISTANCE    = 9
 	FANOUT      = 2
 	MINWORK     = 2
-	FILTER_CAP  = 1000000
 )
 
 type Dave struct {
@@ -56,10 +55,10 @@ type Dave struct {
 }
 
 type Cfg struct {
-	Listen     *net.UDPAddr
-	Bootstraps []netip.AddrPort
-	Size       int
-	Log        io.Writer
+	Listen            *net.UDPAddr
+	Bootstraps        []netip.AddrPort
+	DatCap, FilterCap uint
+	Log               io.Writer
 }
 
 type Dat struct {
@@ -92,7 +91,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(conn, boot, lstn(conn, cfg.Log), send, recv, cfg.Log, cfg.Size)
+	go d(conn, boot, lstn(conn, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, cfg.DatCap)
 	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
@@ -137,7 +136,7 @@ func Check(val, tag, nonce, work []byte) int {
 	return nzero(work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, size int) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, datcap uint) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	for {
@@ -146,7 +145,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			if m != nil {
 				switch m.Op {
 				case dave.Op_SET:
-					store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+					store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(rp))
 					}
@@ -204,10 +203,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND: // STORE RAND DAT
-				store(dats, size, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		case <-time.After(EPOCH): // PERIODICALLY
@@ -257,12 +256,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 	}
 }
 
-func lstn(conn *net.UDPConn, log io.Writer) <-chan *packet {
+func lstn(conn *net.UDPConn, fcap uint, log io.Writer) <-chan *packet {
 	pkts := make(chan *packet, 1)
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
-		f := ckoo.NewFilter(FILTER_CAP)
+		f := ckoo.NewFilter(fcap)
 		reset := time.After(EPOCH)
 		h := fnv.New128a()
 		defer conn.Close()
@@ -410,18 +409,18 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, size int, dat *Dat) {
+func store(dats map[uint64]Dat, datcap uint, dat *Dat) {
 	_, ok := dats[id(dat.Work)]
 	if !ok {
-		for i := 0; i < sz(dats)-size; i++ {
+		for i := uint(0); i < sz(dats)-datcap; i++ {
 			delete(dats, lightest(dats))
 		}
 		dats[id(dat.Work)] = *dat
 	}
 }
 
-func sz(dats map[uint64]Dat) int { // not len
-	var i int
+func sz(dats map[uint64]Dat) uint { // not len
+	var i uint
 	for range dats {
 		i++
 	}

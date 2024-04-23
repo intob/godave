@@ -20,8 +20,9 @@ func main() {
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
-	difficulty := flag.Int("d", 3, "<DIFFICULTY")
-	size := flag.Int("s", 1000000, "<SIZE> number of dats to store")
+	difficulty := flag.Int("d", 3, "<DIFFICULTY> number of leading zeros")
+	dcap := flag.Uint("dc", 1000000, "<DCAP> dat map capacity")
+	fcap := flag.Uint("fc", 1000000, "<FCAP> cuckoo filter capacity")
 	tag := flag.String("t", "", "<TAG> arbitrary")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
@@ -58,7 +59,7 @@ func main() {
 		}
 	}
 	defer log.Close()
-	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, Size: *size, Log: log})
+	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: bootstraps, DatCap: *dcap, FilterCap: *fcap, Log: log})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
