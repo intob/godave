@@ -42,6 +42,7 @@ FANOUT          2               Balance propagation speed, reliability &
                                 network load.
 MINWORK         2               Minimum difficulty of DAT packets to accept. We
                                 can increase to 3 if necessary.
+PRUNE           128             Number of epochs between DAT pruning.
 
 
 2. User Configurable Settings
@@ -112,10 +113,12 @@ where difficulty is number of leading zero bytes.
 
 5. 2. Replacement by Weight
 
+Once per PRUNE epochs, a user defined number of heaviest DATs are persisted,
+and the remaining are garbage collected.
 
 6.      Message Propagation
 
-6. 1.   Forward with Fanout
+6. 1.   Forward
 
 Nodes forward SET and GET messages to FANOUT nodes, until forwarded DISTANCE
 times. Each node appends the peer descriptor of the packet source to the
@@ -136,7 +139,8 @@ Each peer can then validate the work & store the DAT.
 
 6. 2. Random Push
 
-Every EPOCH, each node sends one random DAT to FANOUT random peers. This ensures reliable propagation, and eventual consistency.
+Every EPOCH, each node sends one random DAT to FANOUT random peers. This ensures
+reliable propagation, and eventual consistency.
 
 
 7.   Packet Filter
@@ -150,5 +154,3 @@ improve DoS attack resilience.
 
 Packets that deviate from the protocol are detected & dropped without
 further processing.
-
-8. DAT Weight

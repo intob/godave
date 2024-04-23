@@ -53,6 +53,7 @@ const (
 	DISTANCE    = 9
 	FANOUT      = 2
 	MINWORK     = 2
+	REPLACEMENT = 128
 )
 
 type Dave struct {
@@ -97,7 +98,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(conn, boot, lstn(conn, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, cfg.DatCap)
+	go d(conn, boot, lstn(conn, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap))
 	for _, bap := range cfg.Bootstraps {
 		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
@@ -137,7 +138,7 @@ func Check(val, tag, nonce, work []byte) int {
 	return nzero(work)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, datcap uint) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, cap int) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTimer(EPOCH)
@@ -146,10 +147,25 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 		case <-et.C: // PERIODICALLY
 			et.Reset(EPOCH)
 			nepoch++
-			if nepoch%128 == 0 { // KEEP HEAVIEST KEYS
+			if nepoch%REPLACEMENT == 0 { // KEEP CAP HEAVIEST DATS
 				newdats := make(map[uint64]Dat)
+				var minw float64
+				var l uint64
 				for k, d := range dats {
-					newdats[k] = d
+					w := weight(d.Work, d.added)
+					if len(newdats) >= cap { // BEYOND CAP, REPLACE BY WEIGHT
+						if w > minw {
+							delete(newdats, l)
+							newdats[k] = d
+							l = k
+							minw = w
+						}
+					} else {
+						if w < minw {
+							minw = w
+						}
+						newdats[k] = d
+					}
 				}
 				dats = newdats
 				newpeers := make(map[string]*peer)
@@ -413,19 +429,6 @@ func store(dats map[uint64]Dat, dat *Dat) {
 	if !ok {
 		dats[id(dat.Work)] = *dat
 	}
-}
-
-func lightest(dats map[uint64]Dat) uint64 {
-	var l uint64
-	var w float64
-	for key, dat := range dats {
-		wd := weight(dat.Work, dat.added)
-		if w == 0 || wd < w {
-			l = key
-			w = wd
-		}
-	}
-	return l
 }
 
 func weight(work []byte, t time.Time) float64 {
