@@ -103,7 +103,7 @@ newer keys backed by more work, and prevent spam/flooding.
 
 5. 1.   Weight
 Weight is calculated as
-(difficulty^2) * (1 / secondsSinceAdded)
+difficulty * (1 / secondsSinceAdded)
 
 6.      Message Propagation
 
