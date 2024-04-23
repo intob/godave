@@ -157,7 +157,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					newpeers[k] = p
 				}
 				prs = newpeers
-				fmt.Fprintf(log, "got %d dats and %d peers\n", len(newdats), len(newpeers))
+				fmt.Fprintf(log, "got %d peers, %d dats\n", len(newpeers), len(newdats))
 			}
 			var rdat *Dat
 			var x, rdatpeer int
