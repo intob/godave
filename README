@@ -4,7 +4,7 @@
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
 
-Peer-to-peer DHT on proof-of-work, cuckoo hashing, and gossip over UDP.
+DHT on proof-of-work, cuckoo hashing and gossip over UDP.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
