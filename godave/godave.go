@@ -153,7 +153,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				var l uint64
 				for k, d := range dats {
 					w := weight(d.Work, d.added)
-					if len(newdats) >= cap { // BEYOND CAP, REPLACE BY WEIGHT
+					if len(newdats) >= cap-1 { // BEYOND CAP, REPLACE BY WEIGHT
 						if w > minw {
 							delete(newdats, l)
 							newdats[k] = d
