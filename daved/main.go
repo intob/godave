@@ -73,7 +73,7 @@ func main() {
 			exit(1, "missing argument: set <VAL>")
 		}
 		go func() {
-			setDat(d, *difficulty, *tag)
+			setDat(d, *difficulty, []byte(flag.Arg(1)), []byte(*tag))
 			os.Exit(0)
 		}()
 	case "get":
@@ -96,9 +96,11 @@ func main() {
 	}
 }
 
-func setDat(d *godave.Dave, difficulty int, tag string) {
-	m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}
-	m.Work, m.Nonce = godave.Work(m.Val, m.Tag, difficulty)
+func setDat(d *godave.Dave, difficulty int, val, tag []byte) {
+	m := &dave.M{Op: dave.Op_SET, Val: val, Tag: tag}
+	work, nonce := godave.Work(m.Val, m.Tag, difficulty)
+	m.Work = work
+	m.Nonce = nonce
 	err := dapi.SendM(d, m, time.Second)
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)

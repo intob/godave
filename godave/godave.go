@@ -146,7 +146,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			if m != nil {
 				switch m.Op {
 				case dave.Op_SET:
-					store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+					store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(rp))
 					}
@@ -204,10 +204,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND: // STORE RAND DAT
-				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
+				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		case <-time.After(EPOCH): // PERIODICALLY
@@ -410,11 +410,13 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, datcap uint, dat *Dat) {
+func store(dats map[uint64]Dat, datcap uint, dat *Dat, log io.Writer) {
 	_, ok := dats[id(dat.Work)]
 	if !ok {
 		for i := uint(0); i < sz(dats)-datcap; i++ {
-			delete(dats, lightest(dats))
+			l := lightest(dats)
+			fmt.Fprintf(log, "deleted %x %s\n", dats[l].Work, dats[l].Val)
+			delete(dats, l)
 		}
 		dats[id(dat.Work)] = *dat
 	}
