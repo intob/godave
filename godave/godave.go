@@ -144,7 +144,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 		select {
 		case <-time.After(EPOCH): // PERIODICALLY
 			nepoch++
-			if nepoch%100 == 0 { // REFRESH MAPS
+			if nepoch%50 == 0 { // REFRESH MAPS
 				newdats := make(map[uint64]Dat)
 				for k, d := range dats {
 					newdats[k] = d
