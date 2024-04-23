@@ -113,8 +113,8 @@ where difficulty is number of leading zero bytes.
 
 5. 2. Replacement by Weight
 
-Once per PRUNE epochs, a user defined number of heaviest DATs are persisted,
-and the remaining are garbage collected.
+Once per PRUNE epochs, a user defined number of heaviest DATs persist, and the
+remaining removed.
 
 6.      Message Propagation
 
