@@ -26,6 +26,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"hash"
 	"hash/fnv"
@@ -85,6 +86,12 @@ type packet struct {
 }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
+	if cfg.DatCap == 0 {
+		return nil, errors.New("DatCap must not be 0")
+	}
+	if cfg.FilterCap == 0 {
+		return nil, errors.New("FilterCap must not be 0, 1M is recommended")
+	}
 	fmt.Fprintf(cfg.Log, "creating dave: %+v\n", cfg)
 	conn, err := net.ListenUDP("udp", cfg.Listen)
 	if err != nil {
@@ -317,16 +324,20 @@ func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
 	if !f.InsertUnique(h.Sum(nil)) {
-		fmt.Fprintf(log, "dropped %s: filter collision: %x\n", m.Op, pdfp(pdfrom(raddr)))
+		fmt.Fprint(log, "dropped: filter collision: IP-OP\n")
 		return nil
 	}
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-		fmt.Fprintf(log, "dropped %s: too many peers\n", m.Op)
+		fmt.Fprint(log, "dropped: too many peers\n")
 		return nil
 	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND {
+		if !f.InsertUnique(m.Work) {
+			fmt.Fprint(log, "dropped: filter collision: work\n")
+			return nil
+		}
 		check := Check(m.Val, m.Tag, m.Nonce, m.Work)
 		if check < MINWORK {
-			fmt.Fprintf(log, "dropped %s: invalid work: %d, %x, %x\n", m.Op, check, m.Work, pdfp(pdfrom(raddr)))
+			fmt.Fprintf(log, "dropped: invalid work: %s, %d, %x\n", m.Op, check, m.Work)
 			return nil
 		}
 	}
