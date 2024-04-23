@@ -140,13 +140,13 @@ func Check(val, tag, nonce, work []byte) int {
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, datcap uint) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
-	et := time.After(EPOCH)
+	et := time.NewTimer(EPOCH)
 	for {
 		select {
-		case <-et: // PERIODICALLY
-			et = time.After(EPOCH)
+		case <-et.C: // PERIODICALLY
+			et.Reset(EPOCH)
 			nepoch++
-			if nepoch%50 == 0 { // REFRESH MAPS
+			if nepoch%128 == 0 { // KEEP HEAVIEST KEYS
 				newdats := make(map[uint64]Dat)
 				for k, d := range dats {
 					newdats[k] = d
@@ -191,7 +191,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			if m != nil {
 				switch m.Op {
 				case dave.Op_SET:
-					store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+					store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(rp))
 					}
@@ -249,10 +249,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+				store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
 			case dave.Op_RAND: // STORE RAND DAT
-				store(dats, datcap, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}, log)
+				store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		}
@@ -265,14 +265,14 @@ func lstn(conn *net.UDPConn, fcap uint, log io.Writer) <-chan *packet {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		f := ckoo.NewFilter(fcap)
-		reset := time.After(EPOCH)
+		rt := time.NewTimer(EPOCH)
 		h := fnv.New128a()
 		defer conn.Close()
 		for {
 			select {
-			case <-reset:
-				reset = time.After(EPOCH)
+			case <-rt.C:
 				f.Reset()
+				rt.Reset(EPOCH)
 			default:
 				p := readPacket(conn, f, h, &bufpool, &mpool, log)
 				if p != nil {
@@ -412,14 +412,9 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, datcap uint, dat *Dat, log io.Writer) {
+func store(dats map[uint64]Dat, dat *Dat) {
 	_, ok := dats[id(dat.Work)]
 	if !ok {
-		if uint(len(dats)) > datcap {
-			l := lightest(dats)
-			fmt.Fprintf(log, "oversized, deleted %x %s\n", dats[l].Work, dats[l].Val)
-			delete(dats, l)
-		}
 		dats[id(dat.Work)] = *dat
 	}
 }
