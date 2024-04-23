@@ -1,16 +1,22 @@
 // Copyright 2024 Joey Innes <joey@inneslabs.uk>
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-// http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 package godave
 
@@ -98,28 +104,23 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{send, recv}, nil
 }
 
-func Work(msg *dave.M, difficulty int) (<-chan *dave.M, error) {
-	result := make(chan *dave.M)
-	go func() {
-		zeros := make([]byte, difficulty)
-		msg.Nonce = make([]byte, 32)
-		h := sha256.New()
-		h.Write(msg.Val)
-		h.Write(msg.Tag)
-		load := h.Sum(nil)
-		for {
-			crand.Read(msg.Nonce)
-			h.Reset()
-			h.Write(load)
-			h.Write(msg.Nonce)
-			msg.Work = h.Sum(nil)
-			if bytes.HasPrefix(msg.Work, zeros) {
-				result <- msg
-				return
-			}
+func Work(val, tag []byte, difficulty int) (work, nonce []byte) {
+	zeros := make([]byte, difficulty)
+	nonce = make([]byte, 32)
+	h := sha256.New()
+	h.Write(val)
+	h.Write(tag)
+	load := h.Sum(nil)
+	for {
+		crand.Read(nonce)
+		h.Reset()
+		h.Write(load)
+		h.Write(nonce)
+		work = h.Sum(nil)
+		if bytes.HasPrefix(work, zeros) {
+			return work, nonce
 		}
-	}()
-	return result, nil
+	}
 }
 
 func Check(val, tag, nonce, work []byte) int {
@@ -441,6 +442,6 @@ func lightest(dats map[uint64]Dat) uint64 {
 }
 
 func weight(work []byte, t time.Time) float64 {
-	// Use linear zero count to accurately reflect exponential difficulty
-	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
+	nz := float64(nzero(work))
+	return nz * nz * (1 / time.Since(t).Seconds())
 }

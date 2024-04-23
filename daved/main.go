@@ -97,16 +97,13 @@ func main() {
 }
 
 func setDat(d *godave.Dave, difficulty int, tag string) {
-	wch, err := godave.Work(&dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}, difficulty)
-	if err != nil {
-		panic(err)
-	}
-	msg := <-wch
-	err = dapi.SendM(d, msg, time.Second)
+	m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(tag)}
+	m.Work, m.Nonce = godave.Work(m.Val, m.Tag, difficulty)
+	err := dapi.SendM(d, m, time.Second)
 	if err != nil {
 		exit(1, "failed to set dat: %v", err)
 	}
-	printMsg(msg)
+	printMsg(m)
 }
 
 func printMsg(m *dave.M) {
