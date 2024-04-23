@@ -140,9 +140,11 @@ func Check(val, tag, nonce, work []byte) int {
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, datcap uint) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
+	et := time.After(EPOCH)
 	for {
 		select {
-		case <-time.After(EPOCH): // PERIODICALLY
+		case <-et: // PERIODICALLY
+			et = time.After(EPOCH)
 			nepoch++
 			if nepoch%50 == 0 { // REFRESH MAPS
 				newdats := make(map[uint64]Dat)
