@@ -31,15 +31,17 @@ SOFTWARE.
 
 EPOCH           127713921ns
 MTU             1500
-NPEER           3       Limit to prevent Eclipse attack.
-SHARE_DELAY     1m      Limit to prevent churn & Sybil attack, we can
-                        increase if necessary.
-TOLERANCE       3       Low tolerance minimises message loss.
-DISTANCE        6       Higher value increases reliability of initial
-                        propagation, but more addresses leave less space for
-                        value (~1200B with 6).
-FANOUT          2       Balance propagation speed, reliability & network load.
-MINWORK         2       We can increase to 3 if necessary.
+NPEER           3               Limit to prevent Eclipse attack.
+SHARE_DELAY     1m              Limit to prevent churn & Sybil attack, we can
+                                increase if necessary.
+TOLERANCE       3               Low tolerance minimises message loss.
+DISTANCE        6               Higher value increases reliability of initial
+                                propagation, but more addresses leave less
+                                space for value (~1200B with 6).
+FANOUT          2               Balance propagation speed, reliability &
+                                network load.
+MINWORK         2               Minimum difficulty of DAT packets to accept. We
+                                can increase to 3 if necessary.
 
 
 2. User Configurable Settings
@@ -47,7 +49,8 @@ MINWORK         2       We can increase to 3 if necessary.
                 SUGGESTED VALUE
 FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or
                         8M if possible.
-DAT_CAP         1M      As large as possible for available memory. ~1304B per DAT.
+DAT_CAP         1M      As large as possible for available memory. ~1304B per
+                        DAT.
 
 
 2.      Operation Codes
@@ -97,13 +100,18 @@ descriptors. Peers are not advertised if they have not been seen recently.
 
 5.      DAT
 
-DAT is a construct representing a 1200B value, 32B arbitrary tag, 32B nonce, and
-32B proof-of-work. The proof-of-work allows the network to prioritise storage of
-newer keys backed by more work, and prevent spam/flooding.
+DAT is a construct representing a 1200B value, 32B arbitrary tag, 32B nonce,
+and 32B proof-of-work. The proof-of-work allows the network to prioritise
+storage of newer keys backed by more work, and prevent spam/flooding.
 
 5. 1.   Weight
-Weight is calculated as
-difficulty * (1 / secondsSinceAdded)
+
+Calculated as
+        weight = difficulty * (1 / secondsSinceAdded)
+where difficulty is number of leading zero bytes.
+
+5. 2. Replacement by Weight
+
 
 6.      Message Propagation
 
