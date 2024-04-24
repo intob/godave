@@ -272,8 +272,9 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
-				fmt.Fprintf(log, "stored: %x\n", m.Work)
+				if store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()}) {
+					fmt.Fprintf(log, "stored: %x\n", m.Work)
+				}
 			}
 		}
 	}
@@ -436,9 +437,10 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, dat *Dat) {
+func store(dats map[uint64]Dat, dat *Dat) bool {
 	_, ok := dats[id(dat.Work)]
 	if !ok {
 		dats[id(dat.Work)] = *dat
 	}
+	return !ok
 }
