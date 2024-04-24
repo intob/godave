@@ -71,7 +71,7 @@ type Cfg struct {
 
 type Dat struct {
 	Val, Tag, Nonce, Work []byte
-	added                 time.Time
+	Added                 time.Time
 }
 
 type peer struct {
@@ -145,6 +145,10 @@ func Check(val, tag, nonce, work []byte) int {
 	return nzero(work)
 }
 
+func Weight(work []byte, t time.Time) float64 {
+	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
+}
+
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, cap int) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
@@ -159,7 +163,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				var minw float64
 				var l uint64
 				for k, d := range dats {
-					w := weight(d.Work, d.added)
+					w := Weight(d.Work, d.Added)
 					if len(newdats) >= cap-1 { // BEYOND CAP, REPLACE BY WEIGHT
 						if w > minw {
 							delete(newdats, l)
@@ -440,8 +444,4 @@ func store(dats map[uint64]Dat, dat *Dat) {
 	if !ok {
 		dats[id(dat.Work)] = *dat
 	}
-}
-
-func weight(work []byte, t time.Time) float64 {
-	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
 }
