@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
-	"hash/fnv"
 	"io"
 	"net"
 	"net/netip"
@@ -137,16 +136,7 @@ func main() {
 		fmt.Println(string(dat.Val))
 		return
 	}
-	fph := fnv.New64a()
-	for bm := range d.Recv {
-		if bm.Op == dave.Op_DAT {
-			break
-		}
-		if bm.Op == dave.Op_PEER && len(bm.Pds) > 0 {
-			fmt.Printf("%s %x, ", bm.Op, godave.Pdfp(fph, bm.Pds[0]))
-		}
-	}
-	fmt.Println()
+	dapi.WaitForBootstrap(d, lw)
 	for m := range d.Recv {
 		if printMsg(lw, m) {
 			lw.Flush()
