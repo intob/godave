@@ -54,7 +54,7 @@ const (
 	DISTANCE    = 9
 	FANOUT      = 2
 	MINWORK     = 2
-	PRUNE       = 128
+	PRUNE       = 256
 )
 
 type Dave struct {

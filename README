@@ -42,10 +42,10 @@ FANOUT          2               Balance propagation speed, reliability &
                                 network load.
 MINWORK         2               Minimum difficulty of DAT packets to accept. We
                                 can increase to 3 if necessary.
-PRUNE           128             Number of epochs between DAT pruning.
+PRUNE           256             Number of epochs between DAT pruning.
 
 
-2. User Configurable Settings
+2.      User-configurable Settings
 
                 SUGGESTED VALUE
 FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or
@@ -65,7 +65,6 @@ SET         Packet containing DAT, remote should verify work, and then store.
 GET         Packet requesting DAT, remote should send DAT to all peer
             descriptors contained in packet.
 DAT         Packet containing a value, tag, nonce & PoW.
-RAND        Random DAT, pushed to one random peer once per EPOCH.
 
 
 3.      Message
@@ -105,16 +104,19 @@ DAT is a construct representing a 1200B value, 32B arbitrary tag, 32B nonce,
 and 32B proof-of-work. The proof-of-work allows the network to prioritise
 storage of newer keys backed by more work, and prevent spam/flooding.
 
+
 5. 1.   Weight
 
 Calculated as
         weight = difficulty * (1 / secondsSinceAdded)
 where difficulty is number of leading zero bytes.
 
-5. 2. Replacement by Weight
+
+5. 2.   Replacement by Weight
 
 Once per PRUNE epochs, a user defined number of heaviest DATs persist, and the
 remaining removed.
+
 
 6.      Message Propagation
 
@@ -137,13 +139,13 @@ DAT message with the data to all peers in the message peer descriptor list.
 Each peer can then validate the work & store the DAT.
 
 
-6. 2. Random Push
+6. 2.   Random Push
 
 Every EPOCH, each node sends one random DAT to FANOUT random peers. This ensures
 reliable propagation, and eventual consistency.
 
 
-7.   Packet Filter
+7.      Packet Filter
 
 Dropping packets efficiently is fundamental to resilience against attack.
 
@@ -154,3 +156,4 @@ improve DoS attack resilience.
 
 Packets that deviate from the protocol are detected & dropped without
 further processing.
+
