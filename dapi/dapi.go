@@ -16,15 +16,16 @@ import (
 // expected after godave.SHARE_DELAY.
 func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 	fph := fnv.New64a()
+	var pc uint32
 	for bm := range d.Recv {
 		if bm.Op == dave.Op_DAT {
 			break
 		}
-		if bm.Op == dave.Op_PEER && len(bm.Pds) > 0 {
-			fmt.Fprintf(w, "%s %x, ", bm.Op, godave.Pdfp(fph, bm.Pds[0]))
-		} else {
-			fmt.Fprintf(w, "%s, ", bm.Op)
+		if len(bm.Pds) > 0 {
+			pc += uint32(len(bm.Pds))
+			fmt.Fprintf(w, "\rpeer descriptors collected: %d, latest from: %x", pc, godave.Pdfp(fph, bm.Pds[0]))
 		}
+
 	}
 	fmt.Fprint(w, "\n")
 }
