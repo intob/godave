@@ -297,7 +297,7 @@ func lstn(conn *net.UDPConn, fcap uint, log io.Writer) <-chan *packet {
 				f.Reset()
 				rt.Reset(EPOCH)
 			default:
-				p := readPacket(conn, f, h, &bufpool, &mpool, log)
+				p := rdpacket(conn, f, h, &bufpool, &mpool, log)
 				if p != nil {
 					pkts <- p
 				}
@@ -307,7 +307,7 @@ func lstn(conn *net.UDPConn, fcap uint, log io.Writer) <-chan *packet {
 	return pkts
 }
 
-func readPacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log io.Writer) *packet {
+func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log io.Writer) *packet {
 	buf := bufpool.Get().([]byte)
 	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
