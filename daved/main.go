@@ -10,12 +10,14 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/intob/dave/dapi"
 	"github.com/intob/dave/godave"
 	"github.com/intob/dave/godave/dave"
+	"github.com/intob/jfmt"
 )
 
 func main() {
@@ -81,14 +83,44 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: set <VAL>")
 		}
+		done := make(chan struct{})
+		go func() {
+			tim := time.NewTicker(time.Second)
+			t := time.Now()
+			for {
+				select {
+				case <-done:
+					fmt.Print("\n")
+					return
+				case <-tim.C:
+					fmt.Printf("\rworking for %s\033[0K", jfmt.FmtDuration(time.Since(t)))
+				}
+			}
+		}()
 		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(*tag)}
-		m.Work, m.Nonce = godave.Work(m.Val, m.Tag, *difficulty) // Only 1 core?!
+		type sol struct{ work, nonce []byte }
+		solch := make(chan sol)
+		ncpu := max(runtime.NumCPU()-2, 1)
+		fmt.Printf("running on %d cores\n", ncpu)
+		for n := 0; n < ncpu; n++ {
+			go func() {
+				w, n := godave.Work(m.Val, m.Tag, *difficulty)
+				solch <- sol{w, n}
+			}()
+		}
+		s := <-solch
+		m.Work = s.work
+		m.Nonce = s.nonce
+		done <- struct{}{}
 		err := dapi.SendM(d, m, time.Second)
 		if err != nil {
-			exit(1, "failed to set dat: %v", err)
+			fmt.Printf("failed to set dat: %v\n", err)
 		}
 		printMsg(os.Stdout, m)
 		fmt.Printf("\n%x\n", m.Work)
+		if err != nil {
+			exit(1, err.Error())
+		}
 		return
 	case "get":
 		if flag.NArg() < 2 {
