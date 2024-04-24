@@ -136,7 +136,7 @@ func main() {
 		fmt.Println(string(dat.Val))
 		return
 	}
-	dapi.WaitForFirstDat(d, lw)
+	dapi.WaitForFirstDat(d, os.Stdout)
 	for m := range d.Recv {
 		if printMsg(lw, m) {
 			lw.Flush()
