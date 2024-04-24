@@ -12,7 +12,9 @@ import (
 	"github.com/intob/dave/godave/dave"
 )
 
-func WaitForBootstrap(d *godave.Dave, w *bufio.Writer) {
+// WaitForFirstDat logs the peer collection process, until we receive a DAT,
+// expected after godave.SHARE_DELAY.
+func WaitForFirstDat(d *godave.Dave, w *bufio.Writer) {
 	fph := fnv.New64a()
 	for bm := range d.Recv {
 		if bm.Op == dave.Op_DAT {
@@ -27,12 +29,13 @@ func WaitForBootstrap(d *godave.Dave, w *bufio.Writer) {
 	w.Flush()
 }
 
-func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, error) {
+// GetDat is a helper to get with timeout & retry.
+func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*godave.Dat, error) {
 	err := SendM(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
 	if err != nil {
 		return nil, err
 	}
-	var tries int
+	var tries uint
 	for {
 		select {
 		case m := <-d.Recv:
@@ -45,7 +48,7 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, er
 			}
 		case <-time.After(timeout):
 			tries++
-			if tries > 2 {
+			if tries > retry {
 				return nil, fmt.Errorf("not found after %d tries", tries)
 			}
 			err = SendM(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
@@ -56,6 +59,7 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, er
 	}
 }
 
+// SendM sends message on dave's send chan with timeout.
 func SendM(d *godave.Dave, m *dave.M, timeout time.Duration) error {
 	for {
 		select {

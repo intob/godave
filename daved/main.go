@@ -129,14 +129,14 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
-		dat, err := dapi.GetDat(d, work, time.Second)
+		dat, err := dapi.GetDat(d, work, time.Second, 3)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
 		fmt.Println(string(dat.Val))
 		return
 	}
-	dapi.WaitForBootstrap(d, lw)
+	dapi.WaitForFirstDat(d, lw)
 	for m := range d.Recv {
 		if printMsg(lw, m) {
 			lw.Flush()
