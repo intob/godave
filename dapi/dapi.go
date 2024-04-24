@@ -41,11 +41,11 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*go
 		select {
 		case m := <-d.Recv:
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
-				check := godave.Check(m.Val, m.Tag, m.Nonce, m.Work)
+				check := godave.Check(m.Val, m.Nonce, m.Work)
 				if check < godave.MINWORK {
 					return nil, fmt.Errorf("invalid work: %d", check)
 				}
-				return &godave.Dat{Val: m.Val, Tag: m.Tag, Nonce: m.Nonce, Work: m.Work}, nil
+				return &godave.Dat{Val: m.Val, Nonce: m.Nonce, Work: m.Work}, nil
 			}
 		case <-time.After(timeout):
 			tries++

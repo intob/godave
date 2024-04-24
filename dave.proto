@@ -33,7 +33,6 @@ message M {
   Op op = 1;
   repeated Pd pds = 2;
   bytes val = 4;
-  bytes tag = 5;
   bytes nonce = 6;
   bytes work = 7;
 }

@@ -26,7 +26,6 @@ func main() {
 	difficulty := flag.Int("d", 3, "<DIFFICULTY> number of leading zeros")
 	dcap := flag.Uint("dc", 500000, "<DCAP> dat map capacity")
 	fcap := flag.Uint("fc", 1000000, "<FCAP> cuckoo filter capacity")
-	tag := flag.String("t", "", "<TAG> arbitrary")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 	bootstraps := make([]netip.AddrPort, 0)
@@ -96,14 +95,14 @@ func main() {
 				}
 			}
 		}()
-		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(*tag)}
+		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1))}
 		type sol struct{ work, nonce []byte }
 		solch := make(chan sol)
 		ncpu := max(runtime.NumCPU()-2, 1)
 		fmt.Printf("running on %d cores\n", ncpu)
 		for n := 0; n < ncpu; n++ {
 			go func() {
-				w, n := godave.Work(m.Val, m.Tag, *difficulty)
+				w, n := godave.Work(m.Val, *difficulty)
 				solch <- sol{w, n}
 			}()
 		}
@@ -148,7 +147,7 @@ func printMsg(w io.Writer, m *dave.M) bool {
 	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return false
 	}
-	fmt.Fprintf(w, "%s #%s %s\n", m.Op, m.Tag, m.Val)
+	fmt.Fprintf(w, "%s %s\n", m.Op, m.Val)
 	return true
 }
 
