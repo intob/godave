@@ -21,7 +21,7 @@ func main() {
 	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
 	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
 	difficulty := flag.Int("d", 3, "<DIFFICULTY> number of leading zeros")
-	dcap := flag.Uint("dc", 1000000, "<DCAP> dat map capacity")
+	dcap := flag.Uint("dc", 500000, "<DCAP> dat map capacity")
 	fcap := flag.Uint("fc", 1000000, "<FCAP> cuckoo filter capacity")
 	tag := flag.String("t", "", "<TAG> arbitrary")
 	verbose := flag.Bool("v", false, "verbose logging")
