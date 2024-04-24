@@ -149,10 +149,20 @@ func Weight(work []byte, t time.Time) float64 {
 	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
 }
 
+func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
+	port := make([]byte, 8)
+	binary.BigEndian.PutUint32(port, pd.Port)
+	h.Reset()
+	h.Write(port)
+	h.Write(pd.Ip)
+	return h.Sum(nil)
+}
+
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log io.Writer, cap int) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTimer(EPOCH)
+	pdh := fnv.New64a()
 	for {
 		select {
 		case <-et.C: // PERIODICALLY
@@ -195,7 +205,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 						m := marshal(&dave.M{Op: dave.Op_DAT, Tag: rd.Tag, Val: rd.Val, Nonce: rd.Nonce, Work: rd.Work})
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 							wraddr(c, m, addrPortFrom(rp))
-							fmt.Fprintf(log, "sent random dat %x to %x\n", rd.Work, pdfp(rp))
+							fmt.Fprintf(log, "sent random dat %x to %x\n", rd.Work, Pdfp(pdh, rp))
 						}
 						break
 					}
@@ -205,7 +215,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			for pid, p := range prs {
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
-					fmt.Fprintf(log, "removed peer %x\n", pdfp(p.pd))
+					fmt.Fprintf(log, "removed peer %x\n", Pdfp(pdh, p.pd))
 				} else if time.Since(p.seen) > EPOCH {
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
@@ -236,7 +246,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
-				fmt.Fprintf(log, "peer added: %x\n", pdfp(pd))
+				fmt.Fprintf(log, "peer added: %x\n", Pdfp(pdh, pd))
 			}
 			prs[pktpid].seen = time.Now()
 			m := pkt.msg
@@ -247,7 +257,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						fmt.Fprintf(log, "peer added: gossip %x\n", pdfp(pd))
+						fmt.Fprintf(log, "peer added: gossip %x\n", Pdfp(pdh, pd))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
@@ -396,15 +406,6 @@ func pdfrom(addrport netip.AddrPort) *dave.Pd {
 
 func pdstr(p *dave.Pd) string {
 	return strings.TrimLeft(hex.EncodeToString(p.Ip), "0") + ":" + strconv.Itoa(int(p.Port))
-}
-
-func pdfp(pd *dave.Pd) []byte {
-	port := make([]byte, 8)
-	binary.BigEndian.PutUint32(port, pd.Port)
-	h := fnv.New64a()
-	h.Write(port)
-	h.Write(pd.Ip)
-	return h.Sum(nil)
 }
 
 func id(v []byte) uint64 {

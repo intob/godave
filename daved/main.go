@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"flag"
 	"fmt"
+	"hash/fnv"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -49,25 +51,27 @@ func main() {
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
-	var log *os.File
+	var dlf *os.File
 	if *verbose {
-		log = os.Stdout
+		dlf = os.Stdout
 	} else {
-		log, err = os.Open(os.DevNull)
+		dlf, err = os.Open(os.DevNull)
 		if err != nil {
 			panic(err)
 		}
 	}
-	defer log.Close()
+	defer dlf.Close()
+	dlw := bufio.NewWriter(dlf)
 	d, err := godave.NewDave(&godave.Cfg{
 		Listen:     laddr,
 		Bootstraps: bootstraps,
 		DatCap:     *dcap,
 		FilterCap:  *fcap,
-		Log:        bufio.NewWriter(log)})
+		Log:        dlw})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
+	lw := bufio.NewWriter(os.Stdout)
 	var action string
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
@@ -77,10 +81,15 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: set <VAL>")
 		}
-		go func() {
-			setDat(d, *difficulty, []byte(flag.Arg(1)), []byte(*tag))
-			os.Exit(0)
-		}()
+		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Tag: []byte(*tag)}
+		m.Work, m.Nonce = godave.Work(m.Val, m.Tag, *difficulty) // Only 1 core?!
+		err := dapi.SendM(d, m, time.Second)
+		if err != nil {
+			exit(1, "failed to set dat: %v", err)
+		}
+		printMsg(os.Stdout, m)
+		fmt.Printf("\n%x\n", m.Work)
+		return
 	case "get":
 		if flag.NArg() < 2 {
 			exit(1, "correct usage is get <WORK>")
@@ -94,40 +103,31 @@ func main() {
 			exit(1, "failed: %v", err)
 		}
 		fmt.Println(string(dat.Val))
-		os.Exit(0)
-	}
-	for m := range d.Recv {
-		printMsg(m)
-	}
-}
-
-func setDat(d *godave.Dave, difficulty int, val, tag []byte) {
-	m := &dave.M{Op: dave.Op_SET, Val: val, Tag: tag}
-	work, nonce := godave.Work(m.Val, m.Tag, difficulty)
-	m.Work = work
-	m.Nonce = nonce
-	err := dapi.SendM(d, m, time.Second)
-	if err != nil {
-		exit(1, "failed to set dat: %v", err)
-	}
-	printMsg(m)
-}
-
-func printMsg(m *dave.M) {
-	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return
 	}
-	fmt.Printf("%s ", m.Op)
-	if m.Op == dave.Op_SET {
-		fmt.Printf("%x ", m.Work)
+	fph := fnv.New64a()
+	for bm := range d.Recv {
+		if bm.Op == dave.Op_DAT {
+			break
+		}
+		if bm.Op == dave.Op_PEER && len(bm.Pds) > 0 {
+			fmt.Printf("%s %x, ", bm.Op, godave.Pdfp(fph, bm.Pds[0]))
+		}
 	}
-	if len(m.Tag) > 0 {
-		fmt.Printf("#%s ", m.Tag)
+	fmt.Println()
+	for m := range d.Recv {
+		if printMsg(lw, m) {
+			lw.Flush()
+		}
 	}
-	if len(m.Val) > 0 {
-		fmt.Printf("%s ", m.Val)
+}
+
+func printMsg(w io.Writer, m *dave.M) bool {
+	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
+		return false
 	}
-	fmt.Print("\n")
+	fmt.Fprintf(w, "%s #%s %s\n", m.Op, m.Tag, m.Val)
+	return true
 }
 
 func readHosts(fname string) ([]netip.AddrPort, error) {
