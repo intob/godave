@@ -192,7 +192,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
-						m := marshal(&dave.M{Op: dave.Op_RAND, Tag: rd.Tag, Val: rd.Val, Nonce: rd.Nonce, Work: rd.Work})
+						m := marshal(&dave.M{Op: dave.Op_DAT, Tag: rd.Tag, Val: rd.Val, Nonce: rd.Nonce, Work: rd.Work})
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 							wraddr(c, m, addrPortFrom(rp))
 							fmt.Fprintf(log, "sent random dat %x to %x\n", rd.Work, pdfp(rp))
@@ -274,9 +274,6 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			case dave.Op_DAT: // STORE DAT
 				store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
 				fmt.Fprintf(log, "stored: %x\n", m.Work)
-			case dave.Op_RAND: // STORE RAND DAT
-				store(dats, &Dat{m.Val, m.Tag, m.Nonce, m.Work, time.Now()})
-				fmt.Fprintf(log, "stored rand: %x\n", m.Work)
 			}
 		}
 	}
@@ -334,7 +331,7 @@ func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sy
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		fmt.Fprint(log, "dropped: too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET || m.Op == dave.Op_RAND {
+	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET {
 		if !f.InsertUnique(m.Work) {
 			fmt.Fprint(log, "dropped: filter collision: work\n")
 			return nil

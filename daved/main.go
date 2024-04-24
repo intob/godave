@@ -114,7 +114,7 @@ func setDat(d *godave.Dave, difficulty int, val, tag []byte) {
 }
 
 func printMsg(m *dave.M) {
-	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER || m.Op == dave.Op_RAND {
+	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return
 	}
 	fmt.Printf("%s ", m.Op)

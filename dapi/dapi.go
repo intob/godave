@@ -19,7 +19,7 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration) (*godave.Dat, er
 	for {
 		select {
 		case m := <-d.Recv:
-			if (m.Op == dave.Op_DAT || m.Op == dave.Op_RAND) && bytes.Equal(m.Work, work) {
+			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
 				check := godave.Check(m.Val, m.Tag, m.Nonce, m.Work)
 				if check < godave.MINWORK {
 					return nil, fmt.Errorf("invalid work: %d", check)

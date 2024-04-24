@@ -27,7 +27,6 @@ enum Op {
   SET = 2;
   GET = 3;
   DAT = 4;
-  RAND = 5;
 }
 
 message M {
