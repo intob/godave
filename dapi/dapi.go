@@ -1,11 +1,11 @@
 package dapi
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"time"
 
 	"github.com/intob/dave/godave"
@@ -14,7 +14,7 @@ import (
 
 // WaitForFirstDat logs the peer collection process, until we receive a DAT,
 // expected after godave.SHARE_DELAY.
-func WaitForFirstDat(d *godave.Dave, w *bufio.Writer) {
+func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 	fph := fnv.New64a()
 	for bm := range d.Recv {
 		if bm.Op == dave.Op_DAT {
@@ -22,11 +22,11 @@ func WaitForFirstDat(d *godave.Dave, w *bufio.Writer) {
 		}
 		if bm.Op == dave.Op_PEER && len(bm.Pds) > 0 {
 			fmt.Fprintf(w, "%s %x, ", bm.Op, godave.Pdfp(fph, bm.Pds[0]))
-			w.Flush()
+		} else {
+			fmt.Fprintf(w, "%s, ", bm.Op)
 		}
 	}
 	fmt.Fprint(w, "\n")
-	w.Flush()
 }
 
 // GetDat is a helper to get with timeout & retry.

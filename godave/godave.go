@@ -97,7 +97,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Fprintf(cfg.Log, "listening %s\n", conn.LocalAddr())
+	fmt.Fprintf(cfg.Log, "dave listening %s\n", conn.LocalAddr())
 	boot := make(map[string]*peer)
 	for _, bap := range cfg.Bootstraps {
 		bp := pdfrom(bap)
