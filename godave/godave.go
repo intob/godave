@@ -366,6 +366,8 @@ func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sy
 		if check < MINWORK {
 			fmt.Fprintf(log, "dropped: invalid work: %s, %d, %x\n", m.Op, check, m.Work)
 			return nil
+		} else {
+			fmt.Fprintf(log, "%s w:%x t:%s\n", m.Op, m.Work, Btt(m.Time))
 		}
 	}
 	if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
