@@ -144,6 +144,10 @@ func Check(val, time, nonce, work []byte) int {
 	return nzero(work)
 }
 
+func Weight(work []byte, t time.Time) float64 {
+	return float64(nzero(work)) * (1 / float64(time.Since(t).Milliseconds()))
+}
+
 func Ttb(t time.Time) []byte {
 	milli := t.UnixNano() / 1000000
 	bytes := make([]byte, 8)
@@ -157,10 +161,6 @@ func Btt(b []byte) time.Time {
 	}
 	milli := int64(binary.BigEndian.Uint64(b))
 	return time.Unix(0, milli*1000000)
-}
-
-func Weight(work []byte, t time.Time) float64 {
-	return float64(nzero(work)) * (1 / time.Since(t).Seconds())
 }
 
 func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
