@@ -101,9 +101,10 @@ func main() {
 		solch := make(chan sol)
 		ncpu := max(runtime.NumCPU()-2, 1)
 		fmt.Printf("running on %d cores\n", ncpu)
+		m.Time = godave.Ttb(time.Now())
 		for n := 0; n < ncpu; n++ {
 			go func() {
-				w, n := godave.Work(m.Val, godave.Ttb(time.Now()), *difficulty)
+				w, n := godave.Work(m.Val, m.Time, *difficulty)
 				solch <- sol{w, n}
 			}()
 		}
