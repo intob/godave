@@ -181,6 +181,6 @@ func readHosts(fname string) ([]netip.AddrPort, error) {
 }
 
 func exit(code int, msg string, args ...any) {
-	fmt.Printf(msg, args...)
+	fmt.Printf(msg+"\n", args...)
 	os.Exit(code)
 }
