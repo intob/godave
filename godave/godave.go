@@ -219,7 +219,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.Val, Time: Ttb(rd.Ti), Nonce: rd.Nonce, Work: rd.Work})
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 							wraddr(c, m, addrPortFrom(rp))
-							l(log, "sent random dat %x to %x\n", rd.Work, Pdfp(pdh, rp))
+							l(log, "sent rand to %x %s\n", Pdfp(pdh, rp), rd.Val)
 						}
 						break
 					}
