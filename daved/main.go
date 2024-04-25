@@ -102,7 +102,7 @@ func main() {
 		fmt.Printf("running on %d cores\n", ncpu)
 		for n := 0; n < ncpu; n++ {
 			go func() {
-				w, n := godave.Work(m.Val, *difficulty)
+				w, n := godave.Work(m.Val, godave.Ttb(time.Now()), *difficulty)
 				solch <- sol{w, n}
 			}()
 		}

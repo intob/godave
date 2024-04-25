@@ -71,7 +71,7 @@ type Cfg struct {
 
 type Dat struct {
 	Val, Nonce, Work []byte
-	Added            time.Time
+	Ti               time.Time
 }
 
 type peer struct {
@@ -112,11 +112,12 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{send, recv}, nil
 }
 
-func Work(val []byte, difficulty int) (work, nonce []byte) {
+func Work(val, time []byte, difficulty int) (work, nonce []byte) {
 	zeros := make([]byte, difficulty)
 	nonce = make([]byte, 32)
 	h := sha256.New()
 	h.Write(val)
+	h.Write(time)
 	load := h.Sum(nil)
 	for {
 		crand.Read(nonce)
@@ -130,9 +131,10 @@ func Work(val []byte, difficulty int) (work, nonce []byte) {
 	}
 }
 
-func Check(val, nonce, work []byte) int {
+func Check(val, time, nonce, work []byte) int {
 	h := sha256.New()
 	h.Write(val)
+	h.Write(time)
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
@@ -141,6 +143,21 @@ func Check(val, nonce, work []byte) int {
 		return -1
 	}
 	return nzero(work)
+}
+
+func Ttb(t time.Time) []byte {
+	milli := t.UnixNano() / 1000000
+	bytes := make([]byte, 8)
+	binary.BigEndian.PutUint64(bytes, uint64(milli))
+	return bytes
+}
+
+func Btt(b []byte) time.Time {
+	if len(b) != 8 {
+		return time.Time{}
+	}
+	milli := int64(binary.BigEndian.Uint64(b))
+	return time.Unix(0, milli*1000000)
 }
 
 func Weight(work []byte, t time.Time) float64 {
@@ -171,7 +188,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				var minw float64
 				var l uint64
 				for k, d := range dats {
-					w := Weight(d.Work, d.Added)
+					w := Weight(d.Work, d.Ti)
 					if len(newdats) >= cap-1 { // BEYOND CAP, REPLACE BY WEIGHT
 						if w > minw {
 							delete(newdats, l)
@@ -200,7 +217,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
-						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.Val, Nonce: rd.Nonce, Work: rd.Work})
+						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.Val, Time: Ttb(rd.Ti), Nonce: rd.Nonce, Work: rd.Work})
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 							wraddr(c, m, addrPortFrom(rp))
 							fmt.Fprintf(log, "sent random dat %x to %x\n", rd.Work, Pdfp(pdh, rp))
@@ -229,7 +246,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				case dave.Op_GET:
 					loc, ok := dats[id(m.Work)]
 					if ok {
-						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Nonce: loc.Nonce, Work: loc.Work}
+						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Time: Ttb(loc.Ti), Nonce: loc.Nonce, Work: loc.Work}
 					} else {
 						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 							wraddr(c, marshal(m), addrPortFrom(rp))
@@ -262,7 +279,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				randpds := randpds(prs, []*dave.Pd{pd}, NPEER, shareable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
-				dats[id(m.Work)] = Dat{m.Val, m.Nonce, m.Work, time.Now()}
+				dats[id(m.Work)] = Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(fp))
@@ -272,7 +289,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				d, ok := dats[id(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Time: Ttb(d.Ti), Nonce: d.Nonce, Work: m.Work}), addrPortFrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
@@ -280,7 +297,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				if store(dats, &Dat{m.Val, m.Nonce, m.Work, time.Now()}) {
+				if store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}) {
 					fmt.Fprintf(log, "stored: %x\n", m.Work)
 				}
 			}
@@ -345,7 +362,7 @@ func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sy
 			fmt.Fprint(log, "dropped: filter collision: work\n")
 			return nil
 		}
-		check := Check(m.Val, m.Nonce, m.Work)
+		check := Check(m.Val, m.Time, m.Nonce, m.Work)
 		if check < MINWORK {
 			fmt.Fprintf(log, "dropped: invalid work: %s, %d, %x\n", m.Op, check, m.Work)
 			return nil
@@ -358,7 +375,7 @@ func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sy
 			m.Pds = append(m.Pds, pdfrom(raddr))
 		}
 	}
-	copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Nonce: m.Nonce, Work: m.Work}
+	copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Time: m.Time, Nonce: m.Nonce, Work: m.Work}
 	for i, pd := range m.Pds {
 		copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
 	}

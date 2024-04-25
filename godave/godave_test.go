@@ -12,7 +12,7 @@ func TestWeight(t *testing.T) {
 }
 
 func testWeightDifficulty(dif int) {
-	work, _ := Work([]byte("test"), dif)
+	work, _ := Work([]byte("test"), Ttb(time.Now()), dif)
 	ws := Weight(work, time.Now().Add(-time.Second))
 	wm := Weight(work, time.Now().Add(-time.Minute))
 	wh := Weight(work, time.Now().Add(-time.Hour))
