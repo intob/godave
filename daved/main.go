@@ -71,6 +71,7 @@ func main() {
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
+	dlw.Flush()
 	lw := bufio.NewWriter(os.Stdout)
 	var action string
 	if flag.NArg() > 0 {
