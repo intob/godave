@@ -230,7 +230,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
 					l(log, "removed peer %x\n", Pdfp(pdh, p.pd))
-				} else if time.Since(p.seen) > EPOCH {
+				} else if time.Since(p.seen) > EPOCH { // SEND GETPEER
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrPortFrom(p.pd))
 				}
 			}
