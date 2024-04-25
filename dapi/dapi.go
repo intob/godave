@@ -37,6 +37,7 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*go
 		return nil, err
 	}
 	var tries uint
+	t := time.NewTicker(timeout)
 	for {
 		select {
 		case m := <-d.Recv:
@@ -47,7 +48,7 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*go
 				}
 				return &godave.Dat{Val: m.Val, Nonce: m.Nonce, Work: m.Work}, nil
 			}
-		case <-time.After(timeout):
+		case <-t.C:
 			tries++
 			if tries > retry {
 				return nil, fmt.Errorf("not found after %d tries", tries)

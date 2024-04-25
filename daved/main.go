@@ -130,7 +130,7 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
-		dat, err := dapi.GetDat(d, work, time.Second, 3)
+		dat, err := dapi.GetDat(d, work, 240*time.Millisecond, 2)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
@@ -149,7 +149,11 @@ func printMsg(w io.Writer, m *dave.M) bool {
 	if m.Op == dave.Op_GETPEER || m.Op == dave.Op_PEER {
 		return false
 	}
-	fmt.Fprintf(w, "%s %s\n", m.Op, m.Val)
+	if m.Op == dave.Op_DAT {
+		fmt.Fprintf(w, "%s %v %s\n", m.Op, godave.Weight(m.Work, godave.Btt(m.Time)), m.Val)
+	} else {
+		fmt.Fprintf(w, "%s %s\n", m.Op, m.Val)
+	}
 	return true
 }
 
