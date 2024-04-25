@@ -51,27 +51,32 @@ func main() {
 	if err != nil {
 		exit(1, "failed to resolve UDP address: %v", err)
 	}
-	var dlf *os.File
-	if *verbose {
-		dlf = os.Stdout
-	} else {
-		dlf, err = os.Open(os.DevNull)
-		if err != nil {
-			panic(err)
-		}
-	}
-	defer dlf.Close()
-	dlw := bufio.NewWriter(dlf)
+	lch := make(chan string, 4)
 	d, err := godave.NewDave(&godave.Cfg{
 		Listen:     laddr,
 		Bootstraps: bootstraps,
 		DatCap:     *dcap,
 		FilterCap:  *fcap,
-		Log:        dlw})
+		Log:        lch})
 	if err != nil {
 		exit(1, "failed to make dave: %v", err)
 	}
-	dlw.Flush()
+	go func(lch <-chan string) {
+		var dlf *os.File
+		if *verbose {
+			dlf = os.Stdout
+		} else {
+			dlf, err = os.Open(os.DevNull)
+			if err != nil {
+				panic(err)
+			}
+		}
+		defer dlf.Close()
+		dlw := bufio.NewWriter(dlf)
+		for l := range lch {
+			dlw.Write([]byte(l))
+		}
+	}(lch)
 	lw := bufio.NewWriter(os.Stdout)
 	var action string
 	if flag.NArg() > 0 {
