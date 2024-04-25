@@ -18,7 +18,7 @@ func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 	fph := fnv.New64a()
 	var pc uint32
 	for bm := range d.Recv {
-		if bm.Op == dave.Op_DAT {
+		if bm.Op == dave.Op_DAT || bm.Op == dave.Op_SET {
 			break
 		}
 		if len(bm.Pds) > 0 {
