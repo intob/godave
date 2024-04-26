@@ -22,9 +22,9 @@
 // versions:
 // 	protoc-gen-go v1.33.0
 // 	protoc        v5.26.1
-// source: tree.proto
+// source: can.proto
 
-package tree
+package can
 
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
@@ -40,32 +40,31 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-type Tree struct {
+type Can struct {
 	state         protoimpl.MessageState
 	sizeCache     protoimpl.SizeCache
 	unknownFields protoimpl.UnknownFields
 
-	Trees []*Tree `protobuf:"bytes,1,rep,name=trees,proto3" json:"trees,omitempty"`
-	Work  []byte  `protobuf:"bytes,2,opt,name=work,proto3" json:"work,omitempty"`
+	Dats [][]byte `protobuf:"bytes,1,rep,name=dats,proto3" json:"dats,omitempty"`
 }
 
-func (x *Tree) Reset() {
-	*x = Tree{}
+func (x *Can) Reset() {
+	*x = Can{}
 	if protoimpl.UnsafeEnabled {
-		mi := &file_tree_proto_msgTypes[0]
+		mi := &file_can_proto_msgTypes[0]
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		ms.StoreMessageInfo(mi)
 	}
 }
 
-func (x *Tree) String() string {
+func (x *Can) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Tree) ProtoMessage() {}
+func (*Can) ProtoMessage() {}
 
-func (x *Tree) ProtoReflect() protoreflect.Message {
-	mi := &file_tree_proto_msgTypes[0]
+func (x *Can) ProtoReflect() protoreflect.Message {
+	mi := &file_can_proto_msgTypes[0]
 	if protoimpl.UnsafeEnabled && x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -76,69 +75,59 @@ func (x *Tree) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Tree.ProtoReflect.Descriptor instead.
-func (*Tree) Descriptor() ([]byte, []int) {
-	return file_tree_proto_rawDescGZIP(), []int{0}
+// Deprecated: Use Can.ProtoReflect.Descriptor instead.
+func (*Can) Descriptor() ([]byte, []int) {
+	return file_can_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *Tree) GetTrees() []*Tree {
+func (x *Can) GetDats() [][]byte {
 	if x != nil {
-		return x.Trees
+		return x.Dats
 	}
 	return nil
 }
 
-func (x *Tree) GetWork() []byte {
-	if x != nil {
-		return x.Work
-	}
-	return nil
-}
+var File_can_proto protoreflect.FileDescriptor
 
-var File_tree_proto protoreflect.FileDescriptor
-
-var file_tree_proto_rawDesc = []byte{
-	0x0a, 0x0a, 0x74, 0x72, 0x65, 0x65, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x37, 0x0a, 0x04,
-	0x54, 0x72, 0x65, 0x65, 0x12, 0x1b, 0x0a, 0x05, 0x74, 0x72, 0x65, 0x65, 0x73, 0x18, 0x01, 0x20,
-	0x03, 0x28, 0x0b, 0x32, 0x05, 0x2e, 0x54, 0x72, 0x65, 0x65, 0x52, 0x05, 0x74, 0x72, 0x65, 0x65,
-	0x73, 0x12, 0x12, 0x0a, 0x04, 0x77, 0x6f, 0x72, 0x6b, 0x18, 0x02, 0x20, 0x01, 0x28, 0x0c, 0x52,
-	0x04, 0x77, 0x6f, 0x72, 0x6b, 0x42, 0x08, 0x5a, 0x06, 0x2e, 0x2f, 0x74, 0x72, 0x65, 0x65, 0x62,
+var file_can_proto_rawDesc = []byte{
+	0x0a, 0x09, 0x63, 0x61, 0x6e, 0x2e, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x22, 0x19, 0x0a, 0x03, 0x43,
+	0x61, 0x6e, 0x12, 0x12, 0x0a, 0x04, 0x64, 0x61, 0x74, 0x73, 0x18, 0x01, 0x20, 0x03, 0x28, 0x0c,
+	0x52, 0x04, 0x64, 0x61, 0x74, 0x73, 0x42, 0x07, 0x5a, 0x05, 0x2e, 0x2f, 0x63, 0x61, 0x6e, 0x62,
 	0x06, 0x70, 0x72, 0x6f, 0x74, 0x6f, 0x33,
 }
 
 var (
-	file_tree_proto_rawDescOnce sync.Once
-	file_tree_proto_rawDescData = file_tree_proto_rawDesc
+	file_can_proto_rawDescOnce sync.Once
+	file_can_proto_rawDescData = file_can_proto_rawDesc
 )
 
-func file_tree_proto_rawDescGZIP() []byte {
-	file_tree_proto_rawDescOnce.Do(func() {
-		file_tree_proto_rawDescData = protoimpl.X.CompressGZIP(file_tree_proto_rawDescData)
+func file_can_proto_rawDescGZIP() []byte {
+	file_can_proto_rawDescOnce.Do(func() {
+		file_can_proto_rawDescData = protoimpl.X.CompressGZIP(file_can_proto_rawDescData)
 	})
-	return file_tree_proto_rawDescData
+	return file_can_proto_rawDescData
 }
 
-var file_tree_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
-var file_tree_proto_goTypes = []interface{}{
-	(*Tree)(nil), // 0: Tree
+var file_can_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
+var file_can_proto_goTypes = []interface{}{
+	(*Can)(nil), // 0: Can
 }
-var file_tree_proto_depIdxs = []int32{
-	0, // 0: Tree.trees:type_name -> Tree
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+var file_can_proto_depIdxs = []int32{
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
-func init() { file_tree_proto_init() }
-func file_tree_proto_init() {
-	if File_tree_proto != nil {
+func init() { file_can_proto_init() }
+func file_can_proto_init() {
+	if File_can_proto != nil {
 		return
 	}
 	if !protoimpl.UnsafeEnabled {
-		file_tree_proto_msgTypes[0].Exporter = func(v interface{}, i int) interface{} {
-			switch v := v.(*Tree); i {
+		file_can_proto_msgTypes[0].Exporter = func(v interface{}, i int) interface{} {
+			switch v := v.(*Can); i {
 			case 0:
 				return &v.state
 			case 1:
@@ -154,18 +143,18 @@ func file_tree_proto_init() {
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: file_tree_proto_rawDesc,
+			RawDescriptor: file_can_proto_rawDesc,
 			NumEnums:      0,
 			NumMessages:   1,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_tree_proto_goTypes,
-		DependencyIndexes: file_tree_proto_depIdxs,
-		MessageInfos:      file_tree_proto_msgTypes,
+		GoTypes:           file_can_proto_goTypes,
+		DependencyIndexes: file_can_proto_depIdxs,
+		MessageInfos:      file_can_proto_msgTypes,
 	}.Build()
-	File_tree_proto = out.File
-	file_tree_proto_rawDesc = nil
-	file_tree_proto_goTypes = nil
-	file_tree_proto_depIdxs = nil
+	File_can_proto = out.File
+	file_can_proto_rawDesc = nil
+	file_can_proto_goTypes = nil
+	file_can_proto_depIdxs = nil
 }

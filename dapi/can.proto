@@ -19,9 +19,8 @@
 // SOFTWARE.
 
 syntax = "proto3";
-option go_package = "./tree";
+option go_package = "./can";
 
-message Tree {
-    repeated Tree trees = 1;
-    bytes work = 2;
+message Can {
+    repeated bytes dats = 1;
 }

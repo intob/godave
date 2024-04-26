@@ -8,8 +8,10 @@ import (
 	"io"
 	"time"
 
+	"github.com/intob/dave/dapi/can"
 	"github.com/intob/dave/godave"
 	"github.com/intob/dave/godave/dave"
+	"google.golang.org/protobuf/proto"
 )
 
 // WaitForFirstDat logs the peer collection process, until we receive a DAT,
@@ -72,4 +74,39 @@ func SendM(d *godave.Dave, m *dave.M, timeout time.Duration) error {
 			return errors.New("timeout")
 		}
 	}
+}
+
+func Walk(d *godave.Dave, work []byte, timeout time.Duration, retry uint) ([]*can.Can, []*godave.Dat, error) {
+	dat, err := GetDat(d, work, timeout, retry)
+	if err != nil {
+		return nil, nil, err
+	}
+	c := &can.Can{}
+	err = proto.Unmarshal(dat.Val, c)
+	if err != nil {
+		return nil, []*godave.Dat{dat}, err
+	}
+	wc := make([]*can.Can, 0)
+	wd := make([]*godave.Dat, 0)
+	for _, cd := range c.GetDats() {
+		cdc, cdd, _ := Walk(d, cd, timeout, retry)
+		if len(cdc) > 0 {
+			wc = append(wc, cdc...)
+		}
+		if len(cdd) > 0 {
+			wd = append(wd, cdd...)
+		}
+	}
+	return wc, wd, nil
+}
+
+func PutCan(d *godave.Dave, c *can.Can) error {
+	cb, err := proto.Marshal(c)
+	if err != nil {
+		return err
+	}
+	t := time.Now()
+	m := &dave.M{Op: dave.Op_SET, Val: cb, Time: godave.Ttb(t)}
+	m.Work, m.Nonce = godave.Work(m.Val, m.Time, 3)
+	return SendM(d, m, time.Second)
 }
