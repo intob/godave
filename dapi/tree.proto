@@ -19,26 +19,9 @@
 // SOFTWARE.
 
 syntax = "proto3";
-option go_package = "./godave/dave";
+option go_package = "./tree";
 
-enum Op {
-    GETPEER = 0;
-    PEER = 1;
-    SET = 2;
-    GET = 3;
-    DAT = 4;
-}
-
-message M {
-    Op op = 1;
-    repeated Pd pds = 2;
-    bytes val = 3;
-    bytes time = 4;
-    bytes nonce = 5;
-    bytes work = 6;
-}
-
-message Pd {
-    bytes ip = 1;
-    uint32 port = 2;
+message Tree {
+    repeated Tree trees = 1;
+    bytes work = 2;
 }
