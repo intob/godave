@@ -83,7 +83,7 @@ func TestMakeCans(t *testing.T) {
 	ch := Read(f, 1200)
 	chunkchan := PrepChunks(ch, 2)
 	datchan := SendDats(d, chunkchan)
-	canchan := MakeCans(d, 2, datchan, 32, 1200)
+	canchan := MakeCans(d, 2, datchan)
 	to := time.After(time.Minute)
 	for {
 		select {
@@ -130,5 +130,5 @@ func testCan(d *godave.Dave, canHash []byte) {
 }
 
 func pl() {
-	fmt.Print("-------------------------------------------------------------§\n")
+	fmt.Print("--------------------------------------------------------------------------§\n")
 }

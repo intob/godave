@@ -16,6 +16,9 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+const NDAT = 38
+const SIZE = 1234
+
 // WaitForFirstDat logs the peer collection process, until we receive a DAT,
 // expected after godave.SHARE_DELAY.
 func WaitForFirstDat(d *godave.Dave, w io.Writer) {
@@ -177,21 +180,21 @@ func SendDats(d *godave.Dave, mch <-chan *dave.M) <-chan *dave.M {
 	return out
 }
 
-func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M, ndat, valsize int) <-chan *dave.M {
+func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M) <-chan *dave.M {
 	out := make(chan *dave.M, 1)
 	go func() {
-		c := &can.Can{Dats: make([][]byte, 0, ndat)}
+		c := &can.Can{Dats: make([][]byte, 0, NDAT)}
 		for {
 			m, ok := <-mch
 			if ok {
 				c.Dats = append(c.Dats, m.Work)
 			}
-			if len(c.Dats) > 0 && (!ok || len(c.Dats) >= ndat) {
+			if len(c.Dats) > 0 && (!ok || len(c.Dats) >= NDAT) {
 				cb, err := proto.Marshal(c)
 				if err != nil {
 					panic(err)
 				}
-				if len(cb) > valsize {
+				if len(cb) > SIZE {
 					panic("err: can is too big")
 				}
 				cm := &dave.M{Op: dave.Op_SET, Val: cb, Time: godave.Ttb(time.Now())}
@@ -205,7 +208,7 @@ func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M, ndat, valsize 
 					panic(err)
 				}
 				out <- cm
-				c.Dats = make([][]byte, 0, ndat)
+				c.Dats = make([][]byte, 0, NDAT)
 			}
 			if !ok {
 				break
