@@ -8,7 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/intob/dave/dapi/can"
 	"github.com/intob/dave/godave"
+	"google.golang.org/protobuf/proto"
 )
 
 /*
@@ -64,8 +66,7 @@ func makeDave() *godave.Dave {
 	}
 	log := make(chan string, 1)
 	go func() {
-		for l := range log {
-			fmt.Println(l)
+		for range log {
 		}
 	}()
 	d, err := godave.NewDave(&godave.Cfg{Listen: laddr, Bootstraps: []netip.AddrPort{ap}, DatCap: 500000, FilterCap: 1000000, Log: log})
@@ -88,7 +89,10 @@ func TestMakeCans(t *testing.T) {
 		select {
 		case canmsg, ok := <-canchan:
 			if ok {
-				fmt.Printf("canmsg: %x\n", canmsg.Work)
+				pl()
+				fmt.Printf("CANMSG: %x\n", canmsg.Work)
+				pl()
+				testCan(d, canmsg.Work)
 			} else {
 				return
 			}
@@ -96,4 +100,35 @@ func TestMakeCans(t *testing.T) {
 			t.Fatalf("timeout")
 		}
 	}
+}
+
+func testCan(d *godave.Dave, canHash []byte) {
+	dat, err := GetDat(d, canHash)
+	if err != nil {
+		panic(err)
+	}
+	c := &can.Can{}
+	err = proto.Unmarshal(dat.Val, c)
+	if err != nil {
+		panic(err)
+	}
+	for _, dat := range c.Dats {
+		d, err := GetDat(d, dat)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("%f %x\n", godave.Weight(d.Work, d.Ti), d.Work)
+	}
+	pl()
+	for _, dat := range c.Dats {
+		d, err := GetDat(d, dat)
+		if err != nil {
+			panic(err)
+		}
+		fmt.Printf("%s", d.Val)
+	}
+}
+
+func pl() {
+	fmt.Print("-------------------------------------------------------------§\n")
 }

@@ -34,14 +34,13 @@ func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 	fmt.Fprint(w, "\n")
 }
 
-// GetDat is a helper to get with timeout & retry.
-func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*godave.Dat, error) {
-	err := SendM(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
+func GetDat(d *godave.Dave, work []byte) (*godave.Dat, error) {
+	err := SendM(d, &dave.M{Op: dave.Op_GET, Work: work})
 	if err != nil {
 		return nil, err
 	}
 	var tries uint
-	t := time.NewTicker(timeout)
+	t := time.NewTicker(300 * time.Millisecond)
 	for {
 		select {
 		case m := <-d.Recv:
@@ -50,14 +49,14 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*go
 				if check < godave.MINWORK {
 					return nil, fmt.Errorf("invalid work: %d", check)
 				}
-				return &godave.Dat{Val: m.Val, Nonce: m.Nonce, Work: m.Work}, nil
+				return &godave.Dat{Val: m.Val, Nonce: m.Nonce, Work: m.Work, Ti: godave.Btt(m.Time)}, nil
 			}
 		case <-t.C:
 			tries++
-			if tries > retry {
+			if tries > 2 {
 				return nil, fmt.Errorf("not found after %d tries", tries)
 			}
-			err = SendM(d, &dave.M{Op: dave.Op_GET, Work: work}, timeout)
+			err = SendM(d, &dave.M{Op: dave.Op_GET, Work: work})
 			if err != nil {
 				return nil, err
 			}
@@ -66,20 +65,21 @@ func GetDat(d *godave.Dave, work []byte, timeout time.Duration, retry uint) (*go
 }
 
 // SendM sends message on dave's send chan with timeout.
-func SendM(d *godave.Dave, m *dave.M, timeout time.Duration) error {
+func SendM(d *godave.Dave, m *dave.M) error {
+	to := time.After(300 * time.Millisecond)
 	for {
 		select {
 		case d.Send <- m:
 			return nil
 		case <-d.Recv:
-		case <-time.After(timeout):
+		case <-to:
 			return errors.New("timeout")
 		}
 	}
 }
 
-func Walk(d *godave.Dave, work []byte, timeout time.Duration, retry uint) ([]*can.Can, []*godave.Dat, error) {
-	dat, err := GetDat(d, work, timeout, retry)
+func Walk(d *godave.Dave, work []byte) ([]*can.Can, []*godave.Dat, error) {
+	dat, err := GetDat(d, work)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -91,7 +91,7 @@ func Walk(d *godave.Dave, work []byte, timeout time.Duration, retry uint) ([]*ca
 	wc := make([]*can.Can, 0)
 	wd := make([]*godave.Dat, 0)
 	for _, cd := range c.GetDats() {
-		cdc, cdd, _ := Walk(d, cd, timeout, retry)
+		cdc, cdd, _ := Walk(d, cd)
 		if len(cdc) > 0 {
 			wc = append(wc, cdc...)
 		}
@@ -140,12 +140,11 @@ func PrepChunks(chunks <-chan []byte, difficulty int) <-chan *dave.M {
 			type sol struct{ work, nonce []byte }
 			solch := make(chan sol)
 			ncpu := max(runtime.NumCPU()-2, 1)
-			fmt.Printf("running on %d cores\n", ncpu)
 			for n := 0; n < ncpu; n++ {
-				go func() {
-					w, n := godave.Work(m.Val, m.Time, difficulty)
+				go func(c, t []byte, d int) {
+					w, n := godave.Work(c, t, d)
 					solch <- sol{w, n}
-				}()
+				}(c, m.Time, difficulty)
 			}
 			s := <-solch
 			m.Work = s.work
@@ -162,7 +161,12 @@ func SendDats(d *godave.Dave, mch <-chan *dave.M) <-chan *dave.M {
 	out := make(chan *dave.M, 1)
 	go func() {
 		for m := range mch {
-			err := SendM(d, m, time.Second)
+			err := SendM(d, m)
+			if err != nil {
+				panic(err)
+			}
+			time.Sleep(time.Second)
+			_, err = GetDat(d, m.Work)
 			if err != nil {
 				panic(err)
 			}
@@ -193,7 +197,11 @@ func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M, ndat, valsize 
 				}
 				cm := &dave.M{Op: dave.Op_SET, Val: cb, Time: godave.Ttb(time.Now())}
 				cm.Work, cm.Nonce = godave.Work(cb, cm.Time, difficulty)
-				err = SendM(d, cm, time.Second)
+				check := godave.Check(cm.Val, cm.Time, cm.Nonce, cm.Work)
+				if check < godave.MINWORK {
+					panic(fmt.Sprintf("make cans: invalid work: %d", check))
+				}
+				err = SendM(d, cm)
 				if err != nil {
 					panic(err)
 				}

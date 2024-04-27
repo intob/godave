@@ -111,12 +111,12 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{send, recv}, nil
 }
 
-func Work(val, time []byte, difficulty int) (work, nonce []byte) {
+func Work(val, ti []byte, difficulty int) (work, nonce []byte) {
 	zeros := make([]byte, difficulty)
 	nonce = make([]byte, 32)
 	h := sha256.New()
 	h.Write(val)
-	h.Write(time)
+	h.Write(ti)
 	load := h.Sum(nil)
 	for {
 		crand.Read(nonce)
@@ -130,10 +130,16 @@ func Work(val, time []byte, difficulty int) (work, nonce []byte) {
 	}
 }
 
-func Check(val, time, nonce, work []byte) int {
+func Check(val, ti, nonce, work []byte) int {
+	if len(ti) != 8 {
+		return -2
+	}
+	if Btt(ti).After(time.Now()) {
+		return -3
+	}
 	h := sha256.New()
 	h.Write(val)
-	h.Write(time)
+	h.Write(ti)
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
@@ -238,7 +244,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 			if m != nil {
 				switch m.Op {
 				case dave.Op_SET:
-					store(dats, &Dat{m.Val, m.Nonce, m.Work, time.Now()})
+					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
 					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
 						wraddr(c, marshal(m), addrPortFrom(rp))
 					}

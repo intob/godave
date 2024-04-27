@@ -77,7 +77,6 @@ func main() {
 			dlw.Write([]byte(l))
 		}
 	}(lch)
-	lw := bufio.NewWriter(os.Stdout)
 	var action string
 	if flag.NArg() > 0 {
 		action = flag.Arg(0)
@@ -89,24 +88,23 @@ func main() {
 		}
 		done := make(chan struct{})
 		go func() {
-			tim := time.NewTicker(time.Second)
+			ti := time.NewTicker(time.Second)
 			t := time.Now()
 			for {
 				select {
 				case <-done:
 					fmt.Print("\n")
 					return
-				case <-tim.C:
+				case <-ti.C:
 					fmt.Printf("\rworking for %s\033[0K", jfmt.FmtDuration(time.Since(t)))
 				}
 			}
 		}()
-		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1))}
+		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Time: godave.Ttb(time.Now())}
 		type sol struct{ work, nonce []byte }
 		solch := make(chan sol)
 		ncpu := max(runtime.NumCPU()-2, 1)
 		fmt.Printf("running on %d cores\n", ncpu)
-		m.Time = godave.Ttb(time.Now())
 		for n := 0; n < ncpu; n++ {
 			go func() {
 				w, n := godave.Work(m.Val, m.Time, *difficulty)
@@ -117,7 +115,7 @@ func main() {
 		m.Work = s.work
 		m.Nonce = s.nonce
 		done <- struct{}{}
-		err := dapi.SendM(d, m, time.Second)
+		err := dapi.SendM(d, m)
 		if err != nil {
 			fmt.Printf("failed to set dat: %v\n", err)
 		}
@@ -135,7 +133,7 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
-		dat, err := dapi.GetDat(d, work, 240*time.Millisecond, 2)
+		dat, err := dapi.GetDat(d, work)
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
@@ -143,10 +141,7 @@ func main() {
 		return
 	}
 	dapi.WaitForFirstDat(d, os.Stdout)
-	for m := range d.Recv {
-		if printMsg(lw, m) {
-			lw.Flush()
-		}
+	for range d.Recv {
 	}
 }
 
