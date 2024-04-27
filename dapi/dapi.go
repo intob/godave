@@ -165,7 +165,6 @@ func SendDats(d *godave.Dave, mch <-chan *dave.M) <-chan *dave.M {
 			if err != nil {
 				panic(err)
 			}
-			time.Sleep(time.Second)
 			_, err = GetDat(d, m.Work)
 			if err != nil {
 				panic(err)
