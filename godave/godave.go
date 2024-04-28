@@ -49,12 +49,12 @@ const (
 	MTU             = 1500
 	NPEER           = 2
 	SHARE_DELAY     = time.Minute
-	SHARE_TOLERANCE = 100
-	DROP_TOLERANCE  = 1000
+	SHARE_TOLERANCE = 10000
+	DROP_TOLERANCE  = 50000
 	DISTANCE        = 9
 	FANOUT          = 2
 	MINWORK         = 2
-	PRUNE           = 256
+	PRUNE           = 50000
 )
 
 type Dave struct {
