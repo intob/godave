@@ -1,7 +1,6 @@
 .vscode/launch.json
 go.work
 run.sh
-update*.sh
-restart.sh
-hostnames*
+update_*.sh
+hostnames_*
 daved
