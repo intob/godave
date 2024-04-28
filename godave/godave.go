@@ -49,8 +49,8 @@ const (
 	MTU             = 1500
 	NPEER           = 2
 	SHARE_DELAY     = time.Minute
-	SHARE_TOLERANCE = 6
-	DROP_TOLERANCE  = 30
+	SHARE_TOLERANCE = 100
+	DROP_TOLERANCE  = 1000
 	DISTANCE        = 9
 	FANOUT          = 2
 	MINWORK         = 2
