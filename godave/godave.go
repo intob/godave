@@ -45,15 +45,16 @@ import (
 )
 
 const (
-	EPOCH       = 63856961 * time.Nanosecond
-	MTU         = 1500
-	NPEER       = 2
-	SHARE_DELAY = time.Minute
-	TOLERANCE   = 9
-	DISTANCE    = 9
-	FANOUT      = 2
-	MINWORK     = 2
-	PRUNE       = 256
+	EPOCH           = 63856961 * time.Nanosecond
+	MTU             = 1500
+	NPEER           = 2
+	SHARE_DELAY     = time.Minute
+	SHARE_TOLERANCE = 6
+	DROP_TOLERANCE  = 30
+	DISTANCE        = 9
+	FANOUT          = 2
+	MINWORK         = 2
+	PRUNE           = 256
 )
 
 type Dave struct {
@@ -233,7 +234,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				}
 			}
 			for pid, p := range prs {
-				if !p.bootstrap && time.Since(p.seen) > EPOCH*TOLERANCE { // KICK UNRESPONSIVE PEER
+				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP_TOLERANCE { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
 					l(log, "removed peer %x\n", Pdfp(pdh, p.pd))
 				} else if time.Since(p.seen) > EPOCH { // SEND GETPEER
@@ -412,7 +413,7 @@ func randpds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*
 }
 
 func shareable(k *peer) bool {
-	return k.bootstrap || time.Since(k.seen) < EPOCH && time.Since(k.added) > SHARE_DELAY
+	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE_TOLERANCE && time.Since(k.added) > SHARE_DELAY
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
