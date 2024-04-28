@@ -136,7 +136,7 @@ func main() {
 		if err != nil {
 			exit(1, "failed: %v", err)
 		}
-		fmt.Println(string(dat.Val))
+		fmt.Println(string(dat.V))
 		return
 	}
 	dapi.WaitForFirstDat(d, os.Stdout)

@@ -33,6 +33,7 @@ import (
 	mrand "math/rand"
 	"net"
 	"net/netip"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -70,8 +71,8 @@ type Cfg struct {
 }
 
 type Dat struct {
-	Val, Nonce, Work []byte
-	Ti               time.Time
+	V, N, W []byte // Val, Nonce, Work
+	Ti      time.Time
 }
 
 type peer struct {
@@ -194,7 +195,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				var minw float64
 				var ld uint64
 				for k, d := range dats {
-					w := Weight(d.Work, d.Ti)
+					w := Weight(d.W, d.Ti)
 					if len(newdats) >= cap-1 { // BEYOND CAP, REPLACE BY WEIGHT
 						if w > minw {
 							delete(newdats, ld)
@@ -215,7 +216,9 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					newpeers[k] = p
 				}
 				prs = newpeers
-				lg(log, "/d got %d peers, %d dats\n", len(newpeers), len(newdats))
+				memstat := &runtime.MemStats{}
+				runtime.ReadMemStats(memstat)
+				lg(log, "/d got %d peers, %d dats, %dMB mem alloc\n", len(newpeers), len(newdats), memstat.Alloc/1024/1024)
 			}
 			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO FANOUT PEERS
 				rdati := mrand.Intn(len(dats))
@@ -223,10 +226,10 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
-						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.Val, Time: Ttb(rd.Ti), Nonce: rd.Nonce, Work: rd.Work})
+						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.V, Time: Ttb(rd.Ti), Nonce: rd.N, Work: rd.W})
 						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, m, addrfrom(rp))
-							lg(log, "/d sent rand to %x %s\n", Pdfp(pdh, rp), rd.Val)
+							lg(log, "/d sent rand to %x %s\n", Pdfp(pdh, rp), rd.V)
 						}
 						break
 					}
@@ -253,7 +256,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				case dave.Op_GET:
 					loc, ok := dats[id(m.Work)]
 					if ok {
-						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Time: Ttb(loc.Ti), Nonce: loc.Nonce, Work: loc.Work}
+						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.V, Time: Ttb(loc.Ti), Nonce: loc.N, Work: loc.W}
 					} else {
 						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, marshal(m), addrfrom(rp))
@@ -296,7 +299,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				d, ok := dats[id(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Time: Ttb(d.Ti), Nonce: d.Nonce, Work: m.Work}), addrfrom(mp))
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: m.Work}), addrfrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
@@ -461,9 +464,9 @@ func nzero(key []byte) int {
 }
 
 func store(dats map[uint64]Dat, dat *Dat) bool {
-	_, ok := dats[id(dat.Work)]
+	_, ok := dats[id(dat.W)]
 	if !ok {
-		dats[id(dat.Work)] = *dat
+		dats[id(dat.W)] = *dat
 	}
 	return !ok
 }
