@@ -20,32 +20,31 @@ import (
 )
 
 func main() {
+	bootstraps := []netip.AddrPort{
+		netip.MustParseAddrPort("54.195.136.26:1618"),
+		netip.MustParseAddrPort("3.255.246.69:1618"),
+		netip.MustParseAddrPort("3.250.242.160:1618"),
+	}
+	g := flag.Bool("g", false, "genesis, don't bootstrap")
 	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
-	bapref := flag.String("b", "", "<BAP> bootstrap address:port")
-	bfile := flag.String("bf", "", "<BFILE> bootstrap file of address:port\\n")
+	bap := flag.String("b", "", "<BAP> bootstrap address:port")
 	difficulty := flag.Int("d", 3, "<DIFFICULTY> number of leading zeros")
 	dcap := flag.Uint("dc", 500000, "<DCAP> dat map capacity")
 	fcap := flag.Uint("fc", 1000000, "<FCAP> cuckoo filter capacity")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
-	bootstraps := make([]netip.AddrPort, 0)
-	bap := *bapref
-	if bap != "" {
-		if strings.HasPrefix(bap, ":") {
-			bap = "[::1]" + bap
+	if *g {
+		bootstraps = []netip.AddrPort{}
+	}
+	if *bap != "" {
+		if strings.HasPrefix(*bap, ":") {
+			*bap = "[::1]" + *bap
 		}
-		addr, err := netip.ParseAddrPort(bap)
+		addr, err := netip.ParseAddrPort(*bap)
 		if err != nil {
-			exit(1, "failed to parse -p=%q: %v", bap, err)
+			exit(1, "failed to parse -p=%q: %v", *bap, err)
 		}
 		bootstraps = append(bootstraps, addr)
-	}
-	if *bfile != "" {
-		bh, err := readHosts(*bfile)
-		if err != nil {
-			exit(1, "failed to read file %q: %v", *bfile, err)
-		}
-		bootstraps = append(bootstraps, bh...)
 	}
 	laddr, err := net.ResolveUDPAddr("udp", *lap)
 	if err != nil {
@@ -155,33 +154,6 @@ func printMsg(w io.Writer, m *dave.M) bool {
 		fmt.Fprintf(w, "%s %s\n", m.Op, m.Val)
 	}
 	return true
-}
-
-func readHosts(fname string) ([]netip.AddrPort, error) {
-	ans := make([]netip.AddrPort, 0)
-	f, err := os.Open(fname)
-	if err != nil {
-		return ans, err
-	}
-	defer f.Close()
-	s := bufio.NewScanner(f)
-	for s.Scan() {
-		l := s.Text()
-		if l != "" && !strings.HasPrefix(l, "#") {
-			l = strings.ReplaceAll(l, "\t", " ")
-			fields := strings.Split(l, " ")
-			if len(fields) == 0 {
-				continue
-			}
-			ap, err := netip.ParseAddrPort(fields[0])
-			if err == nil {
-				ans = append(ans, ap)
-			} else {
-				fmt.Println(err)
-			}
-		}
-	}
-	return ans, nil
 }
 
 func exit(code int, msg string, args ...any) {
