@@ -52,7 +52,7 @@ func GetDat(d *godave.Dave, work []byte) (*godave.Dat, error) {
 				if check < godave.MINWORK {
 					return nil, fmt.Errorf("invalid work: %d", check)
 				}
-				return &godave.Dat{Val: m.Val, Nonce: m.Nonce, Work: m.Work, Ti: godave.Btt(m.Time)}, nil
+				return &godave.Dat{V: m.Val, N: m.Nonce, W: m.Work, Ti: godave.Btt(m.Time)}, nil
 			}
 		case <-t.C:
 			tries++
@@ -87,7 +87,7 @@ func Walk(d *godave.Dave, work []byte) ([]*can.Can, []*godave.Dat, error) {
 		return nil, nil, err
 	}
 	c := &can.Can{}
-	err = proto.Unmarshal(dat.Val, c)
+	err = proto.Unmarshal(dat.V, c)
 	if err != nil {
 		return nil, []*godave.Dat{dat}, err
 	}

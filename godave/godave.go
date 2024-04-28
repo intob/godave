@@ -361,7 +361,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
 	if !f.InsertUnique(h.Sum(nil)) {
-		lg(log, "/rdpkt dropped: filter collision: IP-OP\n")
+		lg(log, "/rdpkt dropped: filter collision: IP-OP %s\n", m.Op)
 		return nil
 	}
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
