@@ -48,13 +48,13 @@ const (
 	EPOCH    = 63856961 * time.Nanosecond
 	MTU      = 1500
 	NPEER    = 2
-	DELAY    = 10 * time.Second
-	SHARE    = 6
-	DROP     = 36
+	DELAY    = 100
+	SHARE    = 21
+	DROP     = 618
 	DISTANCE = 9
 	FANOUT   = 2
 	MINWORK  = 2
-	PRUNE    = 256
+	PRUNE    = 128
 )
 
 type Dave struct {
@@ -414,7 +414,7 @@ func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) b
 }
 
 func usable(k *peer) bool {
-	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE && time.Since(k.added) > DELAY
+	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE && time.Since(k.added) > EPOCH*DELAY
 }
 
 func addrfrom(pd *dave.Pd) netip.AddrPort {
