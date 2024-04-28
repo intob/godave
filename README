@@ -29,13 +29,17 @@ SOFTWARE.
 
 1.      Constants
 
-EPOCH           127713921ns
+EPOCH           63856961ns
 MTU             1500
-NPEER           3               Limit to prevent Eclipse attack.
-SHARE_DELAY     1m              Limit to prevent churn & Sybil attack, we can
+NPEER           2               Limit to prevent Eclipse attack.
+DELAY           1m              Limit to prevent churn & Sybil attack, we can
                                 increase if necessary.
-TOLERANCE       3               Low tolerance minimises message loss.
-DISTANCE        6               Higher value increases reliability of initial
+SHARE           6               Number of EPOCHs until silent or protocol-
+                                deviating peers are no-longer advertised.
+DROP            36              Number of EPOCHs until silent or protocol-
+                                deviating peers are deleted from the peer
+                                table.
+DISTANCE        9               Higher value increases reliability of initial
                                 propagation, but more addresses leave less
                                 space for value (~1200B with 6).
 FANOUT          2               Balance propagation speed, reliability &

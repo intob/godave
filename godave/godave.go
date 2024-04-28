@@ -45,16 +45,16 @@ import (
 )
 
 const (
-	EPOCH           = 63856961 * time.Nanosecond
-	MTU             = 1500
-	NPEER           = 2
-	SHARE_DELAY     = time.Minute
-	SHARE_TOLERANCE = 6
-	DROP_TOLERANCE  = 30
-	DISTANCE        = 9
-	FANOUT          = 2
-	MINWORK         = 2
-	PRUNE           = 256
+	EPOCH    = 63856961 * time.Nanosecond
+	MTU      = 1500
+	NPEER    = 2
+	DELAY    = time.Minute
+	SHARE    = 6
+	DROP     = 36
+	DISTANCE = 9
+	FANOUT   = 2
+	MINWORK  = 2
+	PRUNE    = 256
 )
 
 type Dave struct {
@@ -80,7 +80,7 @@ type peer struct {
 	bootstrap   bool
 }
 
-type packet struct {
+type pkt struct {
 	msg *dave.M
 	ip  netip.AddrPort
 }
@@ -93,11 +93,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, errors.New("FilterCap must not be 0, 1M is recommended")
 	}
 	l(cfg.Log, "creating dave: %+v\n", *cfg)
-	conn, err := net.ListenUDP("udp", cfg.Listen)
+	c, err := net.ListenUDP("udp", cfg.Listen)
 	if err != nil {
 		return nil, err
 	}
-	l(cfg.Log, "dave listening %s\n", conn.LocalAddr())
+	l(cfg.Log, "dave listening %s\n", c.LocalAddr())
 	boot := make(map[string]*peer)
 	for _, bap := range cfg.Bootstraps {
 		bp := pdfrom(bap)
@@ -105,9 +105,9 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(conn, boot, lstn(conn, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap))
+	go d(c, boot, lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap))
 	for _, bap := range cfg.Bootstraps {
-		wraddr(conn, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
+		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv}, nil
 }
@@ -179,7 +179,7 @@ func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 	return h.Sum(nil)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTimer(EPOCH)
@@ -234,7 +234,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 				}
 			}
 			for pid, p := range prs {
-				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP_TOLERANCE { // KICK UNRESPONSIVE PEER
+				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // KICK UNRESPONSIVE PEER
 					delete(prs, pid)
 					l(log, "removed peer %x\n", Pdfp(pdh, p.pd))
 				} else if time.Since(p.seen) > EPOCH { // SEND GETPEER
@@ -311,22 +311,22 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *packet, send <-chan *da
 	}
 }
 
-func lstn(conn *net.UDPConn, fcap uint, log chan<- string) <-chan *packet {
-	pkts := make(chan *packet, 1)
+func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
+	pkts := make(chan *pkt, 1)
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		f := ckoo.NewFilter(fcap)
 		rt := time.NewTimer(EPOCH)
 		h := fnv.New128a()
-		defer conn.Close()
+		defer c.Close()
 		for {
 			select {
 			case <-rt.C:
 				f.Reset()
 				rt.Reset(EPOCH)
 			default:
-				p := rdpacket(conn, f, h, &bufpool, &mpool, log)
+				p := rdpacket(c, f, h, &bufpool, &mpool, log)
 				if p != nil {
 					pkts <- p
 				}
@@ -336,10 +336,10 @@ func lstn(conn *net.UDPConn, fcap uint, log chan<- string) <-chan *packet {
 	return pkts
 }
 
-func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log chan<- string) *packet {
+func rdpacket(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log chan<- string) *pkt {
 	buf := bufpool.Get().([]byte)
 	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-	n, raddr, err := conn.ReadFromUDPAddrPort(buf)
+	n, raddr, err := c.ReadFromUDPAddrPort(buf)
 	if err != nil {
 		panic(err)
 	}
@@ -385,27 +385,27 @@ func rdpacket(conn *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sy
 	for i, pd := range m.Pds {
 		copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
 	}
-	return &packet{copy, raddr}
+	return &pkt{copy, raddr}
 }
 
-func randpds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*peer) bool) []*dave.Pd {
-	excludeMap := make(map[string]struct{}, len(exclude))
-	for _, pexcl := range exclude {
-		excludeMap[pdstr(pexcl)] = struct{}{}
+func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) bool) []*dave.Pd {
+	exclmap := make(map[string]struct{}, len(excl))
+	for _, pexcl := range excl {
+		exclmap[pdstr(pexcl)] = struct{}{}
 	}
-	candidates := make([]*dave.Pd, 0, len(peers))
-	for _, k := range peers {
+	candidates := make([]*dave.Pd, 0, len(prs))
+	for _, k := range prs {
 		if match(k) {
-			if _, ok := excludeMap[pdstr(k.pd)]; !ok {
+			if _, ok := exclmap[pdstr(k.pd)]; !ok {
 				candidates = append(candidates, k.pd)
 			}
 		}
 	}
-	if len(candidates) <= limit {
+	if len(candidates) <= lim {
 		return candidates
 	}
-	ans := make([]*dave.Pd, limit)
-	for i := 0; i < limit; i++ {
+	ans := make([]*dave.Pd, lim)
+	for i := 0; i < lim; i++ {
 		r := i + mrand.Intn(len(candidates)-i)
 		ans[i] = candidates[r]
 	}
@@ -413,7 +413,7 @@ func randpds(peers map[string]*peer, exclude []*dave.Pd, limit int, match func(*
 }
 
 func shareable(k *peer) bool {
-	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE_TOLERANCE && time.Since(k.added) > SHARE_DELAY
+	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE && time.Since(k.added) > DELAY
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
@@ -435,8 +435,8 @@ func id(v []byte) uint64 {
 	return h.Sum64()
 }
 
-func wraddr(conn *net.UDPConn, payload []byte, addr netip.AddrPort) {
-	_, err := conn.WriteToUDPAddrPort(payload, addr)
+func wraddr(c *net.UDPConn, payload []byte, addr netip.AddrPort) {
+	_, err := c.WriteToUDPAddrPort(payload, addr)
 	if err != nil {
 		panic(err)
 	}
