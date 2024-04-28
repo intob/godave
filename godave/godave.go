@@ -191,6 +191,8 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			et.Reset(EPOCH)
 			nepoch++
 			if nepoch%PRUNE == 0 { // KEEP CAP HEAVIEST DATS
+				memstat := &runtime.MemStats{}
+				runtime.ReadMemStats(memstat)
 				newdats := make(map[uint64]Dat)
 				var minw float64
 				var ld uint64
@@ -216,8 +218,6 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					newpeers[k] = p
 				}
 				prs = newpeers
-				memstat := &runtime.MemStats{}
-				runtime.ReadMemStats(memstat)
 				lg(log, "/d got %d peers, %d dats, %dMB mem alloc\n", len(newpeers), len(newdats), memstat.Alloc/1024/1024)
 			}
 			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO FANOUT PEERS
