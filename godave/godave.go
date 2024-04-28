@@ -215,7 +215,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					newpeers[k] = p
 				}
 				prs = newpeers
-				lg(log, "got %d peers, %d dats\n", len(newpeers), len(newdats))
+				lg(log, "/d got %d peers, %d dats\n", len(newpeers), len(newdats))
 			}
 			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO FANOUT PEERS
 				rdati := mrand.Intn(len(dats))
@@ -224,9 +224,9 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					if x == rdati {
 						rd := dats[s]
 						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.Val, Time: Ttb(rd.Ti), Nonce: rd.Nonce, Work: rd.Work})
-						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
+						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, m, addrfrom(rp))
-							lg(log, "sent rand to %x %s\n", Pdfp(pdh, rp), rd.Val)
+							lg(log, "/d sent rand to %x %s\n", Pdfp(pdh, rp), rd.Val)
 						}
 						break
 					}
@@ -236,7 +236,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			for pid, p := range prs {
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 					delete(prs, pid)
-					lg(log, "removed peer %x\n", Pdfp(pdh, p.pd))
+					lg(log, "/d removed peer %x\n", Pdfp(pdh, p.pd))
 				} else if time.Since(p.seen) > EPOCH { // SEND GETPEER
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
 					lg(log, "sent GETPEER to %x\n", Pdfp(pdh, p.pd))
@@ -247,7 +247,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				switch m.Op {
 				case dave.Op_SET:
 					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
-					for _, rp := range randpds(prs, nil, FANOUT, shareable) {
+					for _, rp := range randpds(prs, nil, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
 					}
 				case dave.Op_GET:
@@ -255,7 +255,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					if ok {
 						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.Val, Time: Ttb(loc.Ti), Nonce: loc.Nonce, Work: loc.Work}
 					} else {
-						for _, rp := range randpds(prs, nil, FANOUT, shareable) {
+						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, marshal(m), addrfrom(rp))
 						}
 					}
@@ -268,7 +268,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pd, added: time.Now()}
-				lg(log, "peer added: %x\n", Pdfp(pdh, pd))
+				lg(log, "/d peer added: %x\n", Pdfp(pdh, pd))
 			}
 			prs[pktpid].seen = time.Now()
 			m := pkt.msg
@@ -279,16 +279,16 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						lg(log, "peer added: gossip %x\n", Pdfp(pdh, pd))
+						lg(log, "/d peer added: gossip %x\n", Pdfp(pdh, pd))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := randpds(prs, []*dave.Pd{pd}, NPEER, shareable)
+				randpds := randpds(prs, []*dave.Pd{pd}, NPEER, usable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 			case dave.Op_SET:
 				dats[id(m.Work)] = Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}
 				if len(m.Pds) < DISTANCE {
-					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
+					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(fp))
 					}
 				}
@@ -299,13 +299,13 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.Val, Time: Ttb(d.Ti), Nonce: d.Nonce, Work: m.Work}), addrfrom(mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
-					for _, fp := range randpds(prs, m.Pds, FANOUT, shareable) {
+					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(fp))
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
 				if store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}) {
-					lg(log, "stored: %x\n", m.Work)
+					lg(log, "/d stored: %x\n", m.Work)
 				}
 			}
 		}
@@ -348,7 +348,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	defer mpool.Put(m)
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
-		lg(log, "dropped: unmarshal err\n")
+		lg(log, "/rdpkt dropped: unmarshal err\n")
 		return nil
 	}
 	h.Reset()
@@ -358,20 +358,20 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
 	if !f.InsertUnique(h.Sum(nil)) {
-		lg(log, "dropped: filter collision: IP-OP\n")
+		lg(log, "/rdpkt dropped: filter collision: IP-OP\n")
 		return nil
 	}
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-		lg(log, "dropped: too many peers\n")
+		lg(log, "/rdpkt dropped: too many peers\n")
 		return nil
 	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET {
 		if !f.InsertUnique(m.Work) {
-			lg(log, "dropped: filter collision: work\n")
+			lg(log, "/rdpkt dropped: filter collision: work\n")
 			return nil
 		}
 		check := Check(m.Val, m.Time, m.Nonce, m.Work)
 		if check < MINWORK {
-			lg(log, "dropped: invalid work: %s, %d, %x\n", m.Op, check, m.Work)
+			lg(log, "/rdpkt dropped: invalid work: %s, %d, %x\n", m.Op, check, m.Work)
 			return nil
 		}
 	}
@@ -413,7 +413,7 @@ func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) b
 	return ans
 }
 
-func shareable(k *peer) bool {
+func usable(k *peer) bool {
 	return k.bootstrap || time.Since(k.seen) < EPOCH*SHARE && time.Since(k.added) > DELAY
 }
 

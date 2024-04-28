@@ -147,7 +147,6 @@ func main() {
 		var i uint64
 		var p uint32
 		ts := time.Now()
-		tp := time.Now()
 		tick := time.NewTicker(time.Second)
 		for {
 			select {
@@ -155,9 +154,8 @@ func main() {
 				i++
 				p++
 			case <-tick.C:
-				fmt.Printf("\rhandled %s packets in %s (%.2f/s)\033[0K", jfmt.FmtCount64(i), jfmt.FmtDuration(time.Since(ts)), (float64(p) / (float64(time.Since(tp).Nanoseconds() * 1000 * 1000))))
+				fmt.Printf("\rhandled %s packets in %s (%d/s)\033[0K", jfmt.FmtCount64(i), jfmt.FmtDuration(time.Since(ts)), p)
 				p = 0
-				tp = time.Now()
 			}
 		}
 	}
