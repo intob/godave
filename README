@@ -3,8 +3,7 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-
-DHT on proof-of-work, cuckoo hashing and gossip over UDP.
+Open DHT on proof-of-work & gossip over UDP.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
@@ -26,13 +25,14 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+Dave is an open protocol for efficiently distributing packet-sized chunks of data among many nodes. We call chunks DATs. 
 
 1.      Constants
 
 EPOCH           63856961ns
 MTU             1500
 NPEER           2               Limit to prevent Eclipse attack.
-DELAY           1m              Limit to prevent churn & Sybil attack, we can
+DELAY           10s             Delay to prevent churn & Sybil attack, we can
                                 increase if necessary.
 SHARE           6               Number of EPOCHs until silent or protocol-
                                 deviating peers are no-longer advertised.

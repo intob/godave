@@ -26,11 +26,11 @@ func main() {
 		netip.MustParseAddrPort("3.250.242.160:1618"),
 	}
 	g := flag.Bool("g", false, "genesis, don't bootstrap")
-	lap := flag.String("l", "[::]:0", "<LAP> listen address:port")
-	bap := flag.String("b", "", "<BAP> bootstrap address:port")
-	difficulty := flag.Int("d", 3, "<DIFFICULTY> number of leading zeros")
-	dcap := flag.Uint("dc", 500000, "<DCAP> dat map capacity")
-	fcap := flag.Uint("fc", 1000000, "<FCAP> cuckoo filter capacity")
+	lap := flag.String("l", "[::]:0", "listen address:port")
+	bap := flag.String("b", "", "bootstrap address:port")
+	difficulty := flag.Int("d", 3, "number of leading zeros")
+	dcap := flag.Uint("dc", 500000, "dat map capacity")
+	fcap := flag.Uint("fc", 1000000, "cuckoo filter capacity")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
 	if *g {
@@ -140,7 +140,26 @@ func main() {
 		return
 	}
 	dapi.WaitForFirstDat(d, os.Stdout)
-	for range d.Recv {
+	if *verbose {
+		for range d.Recv { // dave logs enough
+		}
+	} else {
+		var i uint64
+		var p uint32
+		ts := time.Now()
+		tp := time.Now()
+		tick := time.NewTicker(time.Second)
+		for {
+			select {
+			case <-d.Recv:
+				i++
+				p++
+			case <-tick.C:
+				fmt.Printf("\rhandled %s packets in %s (%.2f/s)\033[0K", jfmt.FmtCount64(i), jfmt.FmtDuration(time.Since(ts)), (float64(p) / (float64(time.Since(tp).Nanoseconds() * 1000 * 1000))))
+				p = 0
+				tp = time.Now()
+			}
+		}
 	}
 }
 
