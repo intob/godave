@@ -45,16 +45,16 @@ import (
 )
 
 const (
-	EPOCH           = 16694 * time.Nanosecond
+	EPOCH           = 63856961 * time.Nanosecond
 	MTU             = 1500
 	NPEER           = 2
 	SHARE_DELAY     = time.Minute
-	SHARE_TOLERANCE = 10000
-	DROP_TOLERANCE  = 50000
+	SHARE_TOLERANCE = 6
+	DROP_TOLERANCE  = 30
 	DISTANCE        = 9
 	FANOUT          = 2
 	MINWORK         = 2
-	PRUNE           = 50000
+	PRUNE           = 256
 )
 
 type Dave struct {
