@@ -51,7 +51,7 @@ const (
 	NPEER    = 2
 	DELAY    = 100
 	SHARE    = 21
-	DROP     = 618
+	DROP     = 1021
 	DISTANCE = 9
 	FANOUT   = 2
 	MINWORK  = 2
