@@ -25,7 +25,6 @@ import (
 	crand "crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
@@ -34,8 +33,6 @@ import (
 	"net"
 	"net/netip"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -46,12 +43,12 @@ import (
 )
 
 const (
-	EPOCH    = 63856961 * time.Nanosecond
+	EPOCH    = 26544358 * time.Nanosecond
 	MTU      = 1500
 	NPEER    = 2
-	DELAY    = 128
-	SHARE    = 64
-	DROP     = 1024
+	DELAY    = 64
+	SHARE    = 32
+	DROP     = 512
 	DISTANCE = 9
 	FANOUT   = 2
 	MINWORK  = 2
@@ -240,7 +237,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 					delete(prs, pid)
 					lg(log, "/d removed peer %x\n", Pdfp(pdh, p.pd))
-				} else if time.Since(p.seen) > EPOCH { // SEND GETPEER
+				} else if time.Since(p.seen) > EPOCH*SHARE { // SEND GETPEER
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
 					lg(log, "sent GETPEER to %x\n", Pdfp(pdh, p.pd))
 				}
@@ -357,6 +354,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	h.Reset()
 	rab := raddr.Addr().As16()
 	h.Write(rab[:])
+	h.Write([]byte{nibble(raddr.Port())}) // allow a nibble of ports per IP for now
 	op := make([]byte, 8)
 	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
@@ -390,6 +388,10 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 		copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
 	}
 	return &pkt{copy, raddr}
+}
+
+func nibble(port uint16) byte {
+	return byte((port * 41) >> 12)
 }
 
 func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) bool) []*dave.Pd {
@@ -430,7 +432,7 @@ func pdfrom(addrport netip.AddrPort) *dave.Pd {
 }
 
 func pdstr(p *dave.Pd) string {
-	return strings.TrimLeft(hex.EncodeToString(p.Ip), "0") + ":" + strconv.Itoa(int(p.Port))
+	return fmt.Sprintf("%x:%x", p.Ip, []byte{nibble(uint16(p.Port))})
 }
 
 func id(v []byte) uint64 {
