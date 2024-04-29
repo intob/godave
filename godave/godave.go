@@ -49,9 +49,9 @@ const (
 	EPOCH    = 63856961 * time.Nanosecond
 	MTU      = 1500
 	NPEER    = 2
-	DELAY    = 100
-	SHARE    = 21
-	DROP     = 1021
+	DELAY    = 128
+	SHARE    = 64
+	DROP     = 1024
 	DISTANCE = 9
 	FANOUT   = 2
 	MINWORK  = 2
