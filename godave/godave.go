@@ -73,9 +73,9 @@ type Dat struct {
 }
 
 type peer struct {
-	pd          *dave.Pd
-	added, seen time.Time
-	bootstrap   bool
+	pd                *dave.Pd
+	added, seen, ping time.Time
+	bootstrap         bool
 }
 
 type pkt struct {
@@ -85,10 +85,11 @@ type pkt struct {
 
 func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.DatCap == 0 {
-		return nil, errors.New("DatCap must not be 0")
+		return nil, errors.New("Cfg.DatCap must not be 0")
 	}
 	if cfg.FilterCap == 0 {
-		return nil, errors.New("FilterCap must not be 0, 1M is recommended")
+		lg(cfg.Log, "Cfg.FilterCap set to default 1M")
+		cfg.FilterCap = 1000000
 	}
 	lg(cfg.Log, "creating dave: %+v\n", *cfg)
 	c, err := net.ListenUDP("udp", cfg.Listen)
@@ -237,8 +238,9 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 					delete(prs, pid)
 					lg(log, "/d/peer/removed %x\n", Pdfp(pdhfn, p.pd))
-				} else if time.Since(p.seen) > EPOCH*SHARE { // SEND GETPEER
+				} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*SHARE { // SEND GETPEER ONCE PER SHARE EPOCHS
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
+					p.ping = time.Now()
 					lg(log, "/d sent ping GETPEER to %x\n", Pdfp(pdhfn, p.pd))
 				}
 			}
