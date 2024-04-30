@@ -85,44 +85,17 @@ func main() {
 		if flag.NArg() < 2 {
 			exit(1, "missing argument: set <VAL>")
 		}
-		done := make(chan struct{})
-		go func() {
-			ti := time.NewTicker(time.Second)
-			t := time.Now()
-			for {
-				select {
-				case <-done:
-					fmt.Print("\n")
-					return
-				case <-ti.C:
-					fmt.Printf("\rworking for %s\033[0K", jfmt.FmtDuration(time.Since(t)))
-				}
-			}
-		}()
-		m := &dave.M{Op: dave.Op_SET, Val: []byte(flag.Arg(1)), Time: godave.Ttb(time.Now())}
-		type sol struct{ work, nonce []byte }
-		solch := make(chan sol)
-		ncpu := max(runtime.NumCPU()-2, 1)
-		fmt.Printf("running on %d cores\n", ncpu)
-		for n := 0; n < ncpu; n++ {
-			go func() {
-				w, n := godave.Work(m.Val, m.Time, *difficulty)
-				solch <- sol{w, n}
-			}()
+		set(d, []byte(flag.Arg(1)), *difficulty)
+		return
+	case "setfile":
+		if flag.NArg() < 2 {
+			exit(1, "missing argument: setfile <FILENAME>")
 		}
-		s := <-solch
-		m.Work = s.work
-		m.Nonce = s.nonce
-		done <- struct{}{}
-		err := dapi.SendM(d, m)
+		data, err := os.ReadFile(flag.Arg(1))
 		if err != nil {
-			fmt.Printf("failed to set dat: %v\n", err)
+			exit(2, "error reading file: %v", err)
 		}
-		printMsg(os.Stdout, m)
-		fmt.Printf("\n%x\n", m.Work)
-		if err != nil {
-			exit(1, err.Error())
-		}
+		set(d, data, *difficulty)
 		return
 	case "get":
 		if flag.NArg() < 2 {
@@ -158,6 +131,47 @@ func main() {
 				p = 0
 			}
 		}
+	}
+}
+
+func set(d *godave.Dave, val []byte, difficulty int) {
+	done := make(chan struct{})
+	go func() {
+		ti := time.NewTicker(time.Second)
+		t := time.Now()
+		for {
+			select {
+			case <-done:
+				fmt.Print("\n")
+				return
+			case <-ti.C:
+				fmt.Printf("\rworking for %s\033[0K", jfmt.FmtDuration(time.Since(t)))
+			}
+		}
+	}()
+	m := &dave.M{Op: dave.Op_SET, Val: val, Time: godave.Ttb(time.Now())}
+	type sol struct{ work, nonce []byte }
+	solch := make(chan sol)
+	ncpu := max(runtime.NumCPU()-2, 1)
+	fmt.Printf("running on %d cores\n", ncpu)
+	for n := 0; n < ncpu; n++ {
+		go func() {
+			w, n := godave.Work(m.Val, m.Time, difficulty)
+			solch <- sol{w, n}
+		}()
+	}
+	s := <-solch
+	m.Work = s.work
+	m.Nonce = s.nonce
+	done <- struct{}{}
+	err := dapi.SendM(d, m)
+	if err != nil {
+		fmt.Printf("failed to set dat: %v\n", err)
+	}
+	printMsg(os.Stdout, m)
+	fmt.Printf("\n%x\n", m.Work)
+	if err != nil {
+		exit(1, err.Error())
 	}
 }
 
