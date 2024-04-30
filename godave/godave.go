@@ -228,7 +228,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.V, Time: Ttb(rd.Ti), Nonce: rd.N, Work: rd.W})
 						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, m, addrfrom(rp))
-							lg(log, "/d sent rand to %x %s\n", Pdfp(pdhfn, rp), rd.V)
+							lg(log, "/d/rand sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
 						}
 						break
 					}
@@ -242,7 +242,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*PING { // SEND GETPEER EACH PING EPOCHS
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
 					p.ping = time.Now()
-					lg(log, "/d sent ping GETPEER to %x\n", Pdfp(pdhfn, p.pd))
+					lg(log, "/d/peer/ping sent GETPEER to %x\n", Pdfp(pdhfn, p.pd))
 				}
 			}
 		case m := <-send: // SEND PACKET
@@ -252,7 +252,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
 					for _, rp := range randpds(prs, nil, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
-						lg(log, "/d sent your %s to %x\n", m.Op, Pdfp(pdhfn, rp))
+						lg(log, "/d/send sent SET to %x\n", Pdfp(pdhfn, rp))
 					}
 				case dave.Op_GET:
 					loc, ok := dats[id(m.Work)]
@@ -261,7 +261,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					} else {
 						for _, rp := range randpds(prs, nil, FANOUT, usable) {
 							wraddr(c, marshal(m), addrfrom(rp))
-							lg(log, "/d sent your %s to %x\n", m.Op, Pdfp(pdhfn, rp))
+							lg(log, "/d/send sent GET to %x\n", Pdfp(pdhfn, rp))
 						}
 					}
 				}
@@ -273,7 +273,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			_, ok := prs[pktpid]
 			if !ok {
 				prs[pktpid] = &peer{pd: pktpd, added: time.Now()}
-				lg(log, "/d/peer/added/frompacket %x\n", Pdfp(pdhfn, pktpd))
+				lg(log, "/d/ph/pkt/peer/added from packet %x\n", Pdfp(pdhfn, pktpd))
 			}
 			prs[pktpid].seen = time.Now()
 			m := pkt.msg
@@ -284,19 +284,19 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					_, ok := prs[pid]
 					if !ok {
 						prs[pid] = &peer{pd: pd, added: time.Now(), seen: time.Now()}
-						lg(log, "/d/peer/added/fromgossip %x\n", Pdfp(pdhfn, pd))
+						lg(log, "/d/ph/peer/added from gossip %x\n", Pdfp(pdhfn, pd))
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
 				randpds := randpds(prs, []*dave.Pd{pktpd}, NPEER, usable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
-				lg(log, "/d/sent GETPEER to %x\n", Pdfp(pdhfn, pktpd))
+				lg(log, "/d/ph/getpeer sent PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_SET:
 				dats[id(m.Work)] = Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}
 				if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(fp))
-						lg(log, "/d/forward SET to %x\n", Pdfp(pdhfn, fp))
+						lg(log, "/d/ph/set forward SET to %x\n", Pdfp(pdhfn, fp))
 					}
 				}
 			case dave.Op_GET: // RETURN DAT OR FORWARD
@@ -304,12 +304,12 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				if ok {
 					for _, mp := range m.Pds {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: m.Work}), addrfrom(mp))
-						lg(log, "/d/deliver DAT to %x\n", Pdfp(pdhfn, mp))
+						lg(log, "/d/ph/get/deliver DAT to %x\n", Pdfp(pdhfn, mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
 					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(fp))
-						lg(log, "/d/forward GET to %x\n", Pdfp(pdhfn, fp))
+						lg(log, "/d/ph/get/forward GET to %x\n", Pdfp(pdhfn, fp))
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
