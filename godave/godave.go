@@ -48,7 +48,7 @@ const (
 	NPEER    = 2
 	DELAY    = 64
 	SHARE    = 8
-	PING     = 16
+	PING     = 64
 	DROP     = 512
 	DISTANCE = 9
 	FANOUT   = 2
@@ -239,7 +239,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 					delete(prs, pid)
 					lg(log, "/d/peer/removed %x\n", Pdfp(pdhfn, p.pd))
-				} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*PING { // SEND GETPEER EACH PING EPOCHS
+				} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*PING { // SEND PING
 					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
 					p.ping = time.Now()
 					lg(log, "/d/peer/ping sent GETPEER to %x\n", Pdfp(pdhfn, p.pd))
