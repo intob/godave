@@ -149,7 +149,7 @@ func set(d *godave.Dave, val []byte, difficulty int) {
 			}
 		}
 	}()
-	m := &dave.M{Op: dave.Op_SET, Val: val, Time: godave.Ttb(time.Now())}
+	m := &dave.M{Op: dave.Op_DAT, Val: val, Time: godave.Ttb(time.Now())}
 	type sol struct{ work, nonce []byte }
 	solch := make(chan sol)
 	ncpu := max(runtime.NumCPU()-2, 1)
@@ -173,6 +173,7 @@ func set(d *godave.Dave, val []byte, difficulty int) {
 	if err != nil {
 		exit(1, err.Error())
 	}
+	time.Sleep(time.Second)
 }
 
 func printMsg(w io.Writer, m *dave.M) bool {

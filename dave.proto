@@ -24,9 +24,8 @@ option go_package = "./godave/dave";
 enum Op {
     GETPEER = 0;
     PEER = 1;
-    SET = 2;
-    GET = 3;
-    DAT = 4;
+    GET = 2;
+    DAT = 3;
 }
 
 message M {

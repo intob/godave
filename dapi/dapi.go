@@ -25,7 +25,7 @@ func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 	fph := fnv.New64a()
 	var pc uint32
 	for bm := range d.Recv {
-		if bm.Op == dave.Op_DAT || bm.Op == dave.Op_SET {
+		if bm.Op == dave.Op_DAT {
 			break
 		}
 		if len(bm.Pds) > 0 {
@@ -139,7 +139,7 @@ func PrepChunks(chunks <-chan []byte, difficulty int) <-chan *dave.M {
 					}
 				}
 			}()
-			m := &dave.M{Op: dave.Op_SET, Val: c, Time: godave.Ttb(time.Now())}
+			m := &dave.M{Op: dave.Op_DAT, Val: c, Time: godave.Ttb(time.Now())}
 			type sol struct{ work, nonce []byte }
 			solch := make(chan sol)
 			ncpu := max(runtime.NumCPU()-2, 1)
@@ -197,7 +197,7 @@ func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M) <-chan *dave.M
 				if len(cb) > SIZE {
 					panic("err: can is too big")
 				}
-				cm := &dave.M{Op: dave.Op_SET, Val: cb, Time: godave.Ttb(time.Now())}
+				cm := &dave.M{Op: dave.Op_DAT, Val: cb, Time: godave.Ttb(time.Now())}
 				cm.Work, cm.Nonce = godave.Work(cb, cm.Time, difficulty)
 				check := godave.Check(cm.Val, cm.Time, cm.Nonce, cm.Work)
 				if check < godave.MINWORK {

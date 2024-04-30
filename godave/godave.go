@@ -248,11 +248,11 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 		case m := <-send: // SEND PACKET
 			if m != nil {
 				switch m.Op {
-				case dave.Op_SET:
+				case dave.Op_DAT:
 					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
 					for _, rp := range randpds(prs, nil, FANOUT, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
-						lg(log, "/d/send sent SET to %x\n", Pdfp(pdhfn, rp))
+						lg(log, "/d/send sent DAT to %x\n", Pdfp(pdhfn, rp))
 					}
 				case dave.Op_GET:
 					loc, ok := dats[id(m.Work)]
@@ -291,19 +291,11 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				randpds := randpds(prs, []*dave.Pd{pktpd}, NPEER, usable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer sent PEER to %x\n", Pdfp(pdhfn, pktpd))
-			case dave.Op_SET:
-				dats[id(m.Work)] = Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}
-				if len(m.Pds) < DISTANCE {
-					for _, fp := range randpds(prs, m.Pds, FANOUT, usable) {
-						wraddr(c, marshal(m), addrfrom(fp))
-						lg(log, "/d/ph/set forward SET to %x\n", Pdfp(pdhfn, fp))
-					}
-				}
 			case dave.Op_GET: // RETURN DAT OR FORWARD
 				d, ok := dats[id(m.Work)]
 				if ok {
 					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: m.Work}), addrfrom(mp))
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: d.W}), addrfrom(mp))
 						lg(log, "/d/ph/get/deliver DAT to %x\n", Pdfp(pdhfn, mp))
 					}
 				} else if len(m.Pds) < DISTANCE {
@@ -313,8 +305,8 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					}
 				}
 			case dave.Op_DAT: // STORE DAT
-				lg(log, "/d/ph/dat %x\n", m.Work)
 				store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
+				lg(log, "/d/ph/dat %x\n", m.Work)
 			}
 		}
 	}
@@ -374,7 +366,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/rdpkt/dropped too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT || m.Op == dave.Op_SET {
+	} else if m.Op == dave.Op_DAT {
 		if !f.InsertUnique(m.Work) {
 			lg(log, "/rdpkt/dropped filter collision: work\n")
 			return nil
@@ -384,8 +376,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 			lg(log, "/rdpkt/dropped invalid work: %s, %d, %x\n", m.Op, check, m.Work)
 			return nil
 		}
-	}
-	if m.Op == dave.Op_GET || m.Op == dave.Op_SET {
+	} else if m.Op == dave.Op_GET {
 		if len(m.Pds) == 0 {
 			m.Pds = []*dave.Pd{pdfrom(raddr)}
 		} else {

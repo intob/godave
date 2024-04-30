@@ -52,7 +52,7 @@ func TestPacket(t *testing.T) {
 	var max int
 	for i := 0; i < n; i++ {
 		m := &dave.M{
-			Op:   dave.Op_SET,
+			Op:   dave.Op_DAT,
 			Pds:  collectPds(d),
 			Val:  make([]byte, 1180), // THIS WILL HIT MTU WITH MAX DISTANCE
 			Time: Ttb(time.Now()),
