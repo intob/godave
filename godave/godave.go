@@ -314,7 +314,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				}
 			case dave.Op_DAT: // STORE DAT
 				if store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)}) {
-					lg(log, "/d/stored %x\n", m.Work)
+					lg(log, "/d/ph/dat/stored %x\n", m.Work)
 				}
 			}
 		}
