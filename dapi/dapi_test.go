@@ -108,7 +108,7 @@ func testCan(d *godave.Dave, canHash []byte) {
 		panic(err)
 	}
 	c := &can.Can{}
-	err = proto.Unmarshal(dat.Val, c)
+	err = proto.Unmarshal(dat.V, c)
 	if err != nil {
 		panic(err)
 	}
@@ -117,7 +117,7 @@ func testCan(d *godave.Dave, canHash []byte) {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("%f %x\n", godave.Weight(d.Work, d.Ti), d.Work)
+		fmt.Printf("%f %x\n", godave.Weight(d.W, d.Ti), d.W)
 	}
 	pl()
 	for _, dat := range c.Dats {
@@ -125,7 +125,7 @@ func testCan(d *godave.Dave, canHash []byte) {
 		if err != nil {
 			panic(err)
 		}
-		fmt.Printf("%s", d.Val)
+		fmt.Printf("%s", d.V)
 	}
 }
 
