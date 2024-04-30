@@ -3,7 +3,7 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-Open DHT on proof-of-work & gossip over UDP.
+Anonymized peer-to-peer distributed hash table on proof-of-work and gossip.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
@@ -25,28 +25,29 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Dave is an open protocol for efficiently distributing packet-sized chunks of data among many nodes. We call chunks DATs. 
+Dave is an open protocol, designed to simply & efficiently distribute a hash
+table in a byzantine environment. It's a peer-to-peer cache, anonymized, and
+almost instantly-consistent. Clients (webapps included, via HTTP gateway),
+may write to the network without any token or key, providing only a classic
+proof-of-work.
 
 1.      Constants
 
-EPOCH           63856961ns
-MTU             1500
+EPOCH           26544358ns
+MTU             1500            
 NPEER           2               Limit to prevent Eclipse attack.
-DELAY           10s             Delay to prevent churn & Sybil attack, we can
-                                increase if necessary.
-SHARE           6               Number of EPOCHs until silent or protocol-
+DELAY           64              Epochs until DATs are shared to new peers.
+SHARE           8               Epochs until silent or protocol-
                                 deviating peers are no-longer advertised.
-DROP            36              Number of EPOCHs until silent or protocol-
+PING            64              Epochs until silent peers are pinged. 
+DROP            512             Epochs until silent or protocol-
                                 deviating peers are deleted from the peer
                                 table.
-DISTANCE        9               Higher value increases reliability of initial
-                                propagation, but more addresses leave less
-                                space for value (~1200B with 6).
+DISTANCE        9               Maximum number of hops of a GET message.
 FANOUT          2               Balance propagation speed, reliability &
                                 network load.
-MINWORK         2               Minimum difficulty of DAT packets to accept. We
-                                can increase to 3 if necessary.
-PRUNE           256             Number of epochs between DAT pruning.
+MINWORK         2               Minimum difficulty of DATs to accept.
+PRUNE           128             Number of epochs between DAT pruning.
 
 
 2.      User-configurable Settings
@@ -63,12 +64,10 @@ DAT_CAP         1M      As large as possible for available memory. ~1304B per
 GETPEER     Packet requesting that the remote replies with NPEER random peer
             descriptors.
 PEER        Packet containing NPEER peer descriptors.
-SET         Packet containing DAT, remote should verify work, and then store.
-            If len(Peers) < DISTANCE, remote should forward to FANOUT random
-            peers, after appending remote address to message peer descriptors.
 GET         Packet requesting DAT, remote should send DAT to all peer
-            descriptors contained in packet.
-DAT         Packet containing a value, tag, nonce & PoW.
+            descriptors contained in packet, or forward to FANOUT peers if
+            DISTANCE is not yet covered.
+DAT         Packet containing a value, time, nonce, and a proof-of-work.
 
 
 3.      Message
@@ -78,9 +77,9 @@ DAT         Packet containing a value, tag, nonce & PoW.
             DESCRIPTION                             BYTE LENGTH
 Op          Operation code.                         1
 Peers       List of peers who forwarded.            20*DISTANCE
-Work        SHA256(SHA256(Val, Tag), Nonce).        0 | 32
+Work        SHA256(SHA256(Val, Time), Nonce).       0 | 32
 Nonce       Work salt.                              0 | 32
-Tag         Arbitrary metaadata.                    <= 32
+Time        Approximate time, not in future.        0 | 8
 Val         The data.                               <= 1200 for MTU=1500,
                                                     DISTANCE=7
 
@@ -104,7 +103,7 @@ descriptors. Peers are not advertised if they have not been seen recently.
 
 5.      DAT
 
-DAT is a construct representing a 1200B value, 32B arbitrary tag, 32B nonce,
+DAT is a construct representing a value, 8B timestamp, 32B nonce,
 and 32B proof-of-work. The proof-of-work allows the network to prioritise
 storage of newer keys backed by more work, and prevent spam/flooding.
 
@@ -112,52 +111,58 @@ storage of newer keys backed by more work, and prevent spam/flooding.
 5. 1.   Weight
 
 Calculated as
-        weight = difficulty * (1 / secondsSinceAdded)
+        weight = difficulty * (1 / millisecondsSinceAdded)
 where difficulty is number of leading zero bytes.
 
 
 5. 2.   Replacement by Weight
 
-Once per PRUNE epochs, a user defined number of heaviest DATs persist, and the
-remaining removed.
+Once per PRUNE epochs, a user defined number of heaviest DATs persisted,
+and the remaining are dropped.
 
 
 6.      Message Propagation
 
-6. 1.   Forward
-
-Nodes forward SET and GET messages to FANOUT nodes, until forwarded DISTANCE
-times. Each node appends the peer descriptor of the packet source to the
-message peer descriptor list.
-
-For the SET operation, if the message contains less than DISTANCE peer
-descriptors, the message is forwarded to FANOUT random peers, excluding those
-already in the message.
-
-For the GET operation, if the receiver DOES NOT have the data, and the message
-contains fewer than DISTANCE peer descriptors, the message is forwarded to
-FANOUT random peers, excluding those already in the message.
-
-For the GET operation, if the receiver DOES have the data, the receiver sends a
-DAT message with the data to all peers in the message peer descriptor list.
-Each peer can then validate the work & store the DAT.
-
-
 6. 2.   Random Push
 
-Every EPOCH, each node sends one random DAT to FANOUT random peers. This ensures
-reliable propagation, and eventual consistency.
+Every EPOCH, each node sends one random DAT to FANOUT random peers. This
+ensures reliable distribution and anonymitiy for the original sender.
+
+Propagating DATs in this way ensures that an adversary is unable to
+create a timing-attack to discern the source of a DAT, even with a broad
+view of network traffic.
+
+6. 1.   GET Message Forwarding
+
+GET messages are forwarded to FANOUT peers, until forwarded DISTANCE
+times. Each node appends a peer descriptor for the sender's remote address
+to the peer descriptor list in the message.
+
+If the receiver DOES NOT have the data, and the message contains fewer than
+DISTANCE peer descriptors, the message is forwarded to FANOUT random peers,
+excluding those already in the message.
+
+If the receiver DOES have the data, the receiver sends a DAT message with
+the data to all peers in the message's peer descriptor list. Each peer can
+then validate the work & store the DAT.
 
 
 7.      Packet Filter
 
-Dropping packets efficiently is fundamental to resilience against attack.
+Dropping packets efficiently is fundamental to resilience against DoS attack.
 
 Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a
-compact hash table, enabling fast insertions, deletions and lookups. This makes
-them well-suited for performance-critical applications like packet filtering to
-improve DoS attack resilience.
+compact hash table, enabling fast insertions, deletions and lookups. This
+makes them well-suited for performance-critical applications like packet
+filtering to improve DoS attack resilience.
 
 Packets that deviate from the protocol are detected & dropped without
 further processing.
 
+The key inserted uniquely into the cuckoo filter:
+        
+        FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
+
+The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
+once per IP-PORT per epoch. The number of ports allowed per IP address is
+limited using a 4-bit hash function.
