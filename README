@@ -165,4 +165,4 @@ The key inserted uniquely into the cuckoo filter:
 
 The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
 once per IP-PORT per epoch. The number of ports allowed per IP address is
-limited using a 4-bit hash function.
+limited using a 4-bit multiply-then-shift hash function.
