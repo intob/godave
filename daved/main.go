@@ -25,15 +25,15 @@ func main() {
 		netip.MustParseAddrPort("3.255.246.69:1618"),
 		netip.MustParseAddrPort("3.250.242.160:1618"),
 	}
-	g := flag.Bool("g", false, "genesis, don't bootstrap")
+	seed := flag.Bool("s", false, "start as seed, no bootstraps")
 	lap := flag.String("l", "[::]:0", "listen address:port")
 	bap := flag.String("b", "", "bootstrap address:port")
-	difficulty := flag.Int("d", 3, "number of leading zeros")
+	difficulty := flag.Int("d", 2, "number of leading zeros")
 	dcap := flag.Uint("dc", 500000, "dat map capacity")
 	fcap := flag.Uint("fc", 1000000, "cuckoo filter capacity")
 	verbose := flag.Bool("v", false, "verbose logging")
 	flag.Parse()
-	if *g {
+	if *seed {
 		bootstraps = []netip.AddrPort{}
 	}
 	if *bap != "" {
@@ -44,7 +44,7 @@ func main() {
 		if err != nil {
 			exit(1, "failed to parse -p=%q: %v", *bap, err)
 		}
-		bootstraps = append(bootstraps, addr)
+		bootstraps = []netip.AddrPort{addr}
 	}
 	laddr, err := net.ResolveUDPAddr("udp", *lap)
 	if err != nil {

@@ -166,3 +166,24 @@ The key inserted uniquely into the cuckoo filter:
 The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
 once per IP-PORT per epoch. The number of ports allowed per IP address is
 limited using a 4-bit multiply-then-shift hash function.
+
+8.      Usage
+This repository contains three go modules. First, godave is the protocol
+implementation in library form. Second, daved is a command-line application,
+it makes the library executable as a node. daved also allows basic interaction
+with the network directly.
+
+When daved is started without arguments, the default mode of operation is as a
+node, participating in the network. It will listen for dats, as they are
+gossipped randomly through the network, relaying them as in the protocol spec.
+
+Arguments followed by default values:
+-s                      Start as seed node. Off by default.
+-l [::]:0               Listen ip address and port (listen on everything,
+                        random available port)
+-b :1992                Bootstrap to port (local machine inferred)
+-b 3.255.246.69:1618    Bootstrap to ip:port
+-d 2                    Difficulty of poof-of-work when using set command.
+-dcap 500000            Capacity of dat map held in memory.
+-fcap 1000000           Capacity of cuckoo filter.
+-v                      Verbose logging. Grep by log path prefix.
