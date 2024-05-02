@@ -103,7 +103,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(c, boot, lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap))
+	go d(c, boot, lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap), len(cfg.Bootstraps) == 0)
 	for _, bap := range cfg.Bootstraps {
 		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
@@ -177,7 +177,7 @@ func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 	return h.Sum(nil)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int, seed bool) {
 	dats := make(map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTicker(EPOCH)
@@ -217,7 +217,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats, %.2fMB mem alloc\n", len(newpeers), len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO ONE RANDOM PEER
+			if !seed && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY SAVE BANDWIDTH
 				rdati := mrand.Intn(len(dats))
 				var x int
 				for s := range dats {
