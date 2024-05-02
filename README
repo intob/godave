@@ -37,18 +37,21 @@ such that they are no-longer available on any node.
 
 1.      Constants
 
-EPOCH           26544358ns      Base minimum period of the operation cycle.
 MTU             1500            Reasonable value to avoid packet
                                 fragmentation.
 NPEER           2               Limit to prevent Eclipse attack.
-DELAY           512             Epochs until DATs are shared to new peers.
+EPOCH           26544358ns      Base minimum period of the operation cycle.
+DELAY           512             Epochs until dats are shared to new peers.
 SHARE           8               Epochs until silent peers are no-longer
                                 advertised.
 PING            64              Epochs until silent peers are pinged. 
 DROP            512             Epochs until silent peers are dropped from the
                                 peer table.
-MINWORK         2               Minimum difficulty of DATs to accept.
-PRUNE           128             Number of epochs between DAT pruning.
+PRUNE           128             Number of epochs between dat pruning.
+SEEDSEED        1024            For seed nodes. Number of epochs between
+                                sending a random dat. Seed nodes must already
+                                send many PEER messages, but also help to
+                                seed.
 
 
 2.      User-configurable Settings
@@ -57,7 +60,7 @@ PRUNE           128             Number of epochs between DAT pruning.
 FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or
                         8M if possible.
 DAT_CAP         1M      As large as possible for available memory. ~1304B per
-                        DAT.
+                        dat.
 
 
 2.      Operation Codes
@@ -67,7 +70,6 @@ GETPEER         Packet requesting that the remote replies with NPEER random
 PEER            Packet containing NPEER peer descriptors.
 DAT             Packet containing a value, time, and output of the
                 cost function: work, nonce.
-GET             Packet requesting DAT, remote may reply.
 
 
 3.      Message

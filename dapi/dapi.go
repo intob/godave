@@ -51,7 +51,7 @@ func GetDat(d *godave.Dave, work []byte) (*godave.Dat, error) {
 		case m := <-d.Recv:
 			if m.Op == dave.Op_DAT && bytes.Equal(m.Work, work) {
 				check := godave.Check(m.Val, m.Time, m.Nonce, m.Work)
-				if check < godave.MINWORK {
+				if check < 0 {
 					return nil, fmt.Errorf("invalid work: %d", check)
 				}
 				return &godave.Dat{V: m.Val, N: m.Nonce, W: m.Work, Ti: godave.Btt(m.Time)}, nil
@@ -212,7 +212,7 @@ func MakeCans(d *godave.Dave, difficulty int, mch <-chan *dave.M) <-chan *dave.M
 				cm := &dave.M{Op: dave.Op_DAT, Val: cb, Time: godave.Ttb(time.Now())}
 				cm.Work, cm.Nonce = godave.Work(cb, cm.Time, difficulty)
 				check := godave.Check(cm.Val, cm.Time, cm.Nonce, cm.Work)
-				if check < godave.MINWORK {
+				if check < 0 {
 					panic(fmt.Sprintf("make cans: invalid work: %d", check))
 				}
 				err = SendM(d, cm)

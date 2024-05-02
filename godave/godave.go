@@ -43,15 +43,15 @@ import (
 )
 
 const (
-	EPOCH   = 65537 * time.Nanosecond
-	MTU     = 1500
-	NPEER   = 2
-	DELAY   = 4096
-	SHARE   = 1024
-	PING    = 2048
-	DROP    = 4096
-	MINWORK = 2
-	PRUNE   = 32768
+	MTU      = 1500
+	NPEER    = 2
+	EPOCH    = 65537 * time.Nanosecond
+	DELAY    = 4096
+	SHARE    = 1024
+	PING     = 2048
+	DROP     = 4096
+	PRUNE    = 32768
+	SEEDSEED = 1024
 )
 
 type Dave struct {
@@ -217,7 +217,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats, %.2fMB mem alloc\n", len(newpeers), len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if len(dats) > 0 && len(prs) > 0 && (!seed || nepoch%SHARE == 0) { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY SAVE BANDWIDTH
+			if (!seed || nepoch%SEEDSEED == 0) && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY PRIORITISE PEER MESSAGES
 				rdati := mrand.Intn(len(dats))
 				var x int
 				for s := range dats {
