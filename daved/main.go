@@ -105,6 +105,7 @@ func main() {
 		if err != nil {
 			exit(1, "invalid input <WORK>: %v", err)
 		}
+		dapi.WaitForFirstDat(d, os.Stdout)
 		dat, err := dapi.GetDat(d, work)
 		if err != nil {
 			exit(1, "failed: %v", err)
