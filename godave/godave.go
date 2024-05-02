@@ -43,13 +43,13 @@ import (
 )
 
 const (
-	EPOCH   = 26544358 * time.Nanosecond
+	EPOCH   = 65537 * time.Nanosecond
 	MTU     = 1500
 	NPEER   = 2
-	DELAY   = 512
-	SHARE   = 8
-	PING    = 64
-	DROP    = 512
+	DELAY   = 2048
+	SHARE   = 64
+	PING    = 512
+	DROP    = 1024
 	MINWORK = 2
 	PRUNE   = 128
 )
