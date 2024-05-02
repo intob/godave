@@ -46,12 +46,12 @@ const (
 	EPOCH   = 65537 * time.Nanosecond
 	MTU     = 1500
 	NPEER   = 2
-	DELAY   = 2048
-	SHARE   = 64
-	PING    = 512
-	DROP    = 1024
+	DELAY   = 4096
+	SHARE   = 1024
+	PING    = 2048
+	DROP    = 4096
 	MINWORK = 2
-	PRUNE   = 128
+	PRUNE   = 32768
 )
 
 type Dave struct {
