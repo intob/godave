@@ -72,21 +72,30 @@ DAT             Packet containing a value, time, and output of the
                 cost function: work, nonce.
 
 
-4.      Message
+4.      Types
 
-4. 1.   Message Fields
+4. 1.   M
+dave.M is the binary serialisation of an entire packet.
 
-                DESCRIPTION                             BYTE LENGTH
-Op              Operation code.                         1
-Peers           List of peers who forwarded.            20*DISTANCE
-Work            SHA256(SHA256(Val, Time), Nonce).       0 | 32
-Nonce           Work salt.                              0 | 32
-Time            Approximate time. Packets with a        0 | 8
+                DESCRIPTION                         BYTE LENGTH
+Op              Operation code.                     1
+Peers           List of peers.                      20*NPEER
+Work            SHA256(SHA256(Val, Time), Salt).    0 | 32
+Salt            Random bytes used to solve work.    0 | 32
+Time            Approximate time. Packets with a    0 | 8
                 future time are dropped.
-Val             The data.                               <= 1200 for MTU=1500,
-                                                        DISTANCE=7
+Val             The data.                           0 | <= 1388 when
+                                                    NPEER=2
 
-4. 2.   Wire Format
+
+4. 2.   Dat
+godave.Dat is a container for Value, Time, Salt, and Work.
+
+The proof of work allows the network to prioritise storage of newer keys
+backed by more work. See 6.
+
+
+4. 3.   Wire Format
 
 A message is serialized into binary using protobuf. See protobuf spec
 dave.proto.
@@ -104,38 +113,32 @@ replies to a GETPEER message with a PEER message with up to NPEER peer
 descriptors. Peers are not advertised if they have not been seen recently.
 
 
-6.      DAT
 
-DAT is a construct representing a value, 8B timestamp, 32B nonce,
-and 32B proof-of-work. The proof-of-work allows the network to prioritise
-storage of newer keys backed by more work, and prevent spam/flooding.
-
-
-7.      Weight
+6.      Weight
 
 weight = difficulty * (1 / ageMilliseconds)
 
 Where difficulty is number of leading zero bytes, age is calculated from the
-time.
+given time and current time.
 
 
-8.      Replacement by Weight
+7.      Replacement by Weight
 
-Once per PRUNE epochs, a user defined number of heaviest DATs persisted,
+Once per PRUNE epochs, a user defined number of heaviest dats persisted,
 and the remaining are dropped.
 
 
-9.      Send One Random DAT
+8.      Send One Random Dat
 
-Every EPOCH, each node sends one random DAT to one random peer. This
+Every EPOCH, each node sends one random dat to one random peer. This
 ensures reliable distribution and sender anonymitiy.
 
-Propagating DATs in this way ensures that an adversary is unable to
-create a timing-attack to discern the source of a DAT, even with a broad
+Propagating dats in this way ensures that an adversary is unable to
+create a timing-attack to discern the source of a dat, even with a broad
 view of network traffic.
 
 
-10.      Packet Filter
+9.      Packet Filter
 
 Dropping packets efficiently is fundamental to resilience against DoS attack.
 
@@ -158,7 +161,7 @@ once per IP-PORT per epoch. The number of ports allowed per IP address is
 limited using a 4-bit multiply-then-shift hash function.
 
 
-8.      Usage of daved
+10.      Usage of daved
 This repository contains three go modules. First, godave is the protocol
 implementation in library form. Second, daved is a command-line application,
 it makes the library executable as a node. daved also allows basic interaction
