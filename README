@@ -163,7 +163,7 @@ once per IP-PORT per epoch. The number of ports allowed per IP address is
 limited using a 4-bit multiply-then-shift hash function.
 
 
-8.      Usage
+8.      Usage of daved
 This repository contains three go modules. First, godave is the protocol
 implementation in library form. Second, daved is a command-line application,
 it makes the library executable as a node. daved also allows basic interaction
@@ -183,3 +183,14 @@ Arguments followed by default values:
 -dcap 500000            Capacity of dat map held in memory.
 -fcap 1000000           Capacity of cuckoo filter.
 -v                      Verbose logging, grep by log path prefix.
+-h                      Output only hash when 
+
+Try:
+daved
+daved -v | grep /d/pr
+
+Or:
+daved set hello_dave
+A hash will be returned after the work & broadcast, with default difficulty.
+
+daved get <HASH>
