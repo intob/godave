@@ -217,7 +217,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats, %.2fMB mem alloc\n", len(newpeers), len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if !seed && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY SAVE BANDWIDTH
+			if len(dats) > 0 && len(prs) > 0 && (!seed || nepoch%SHARE == 0) { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY SAVE BANDWIDTH
 				rdati := mrand.Intn(len(dats))
 				var x int
 				for s := range dats {
