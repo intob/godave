@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"math/rand"
 	mrand "math/rand"
 	"runtime"
 	"time"
@@ -76,7 +75,7 @@ func SendShaGet(d *godave.Dave, work []byte) error {
 	crand.Read(rv)
 	nonce := make([]byte, 32)
 	crand.Read(nonce)
-	mt := time.Now().Add(-time.Duration(rand.Int63n(4*60*1000)+120*1000) * time.Millisecond)
+	mt := time.Now().Add(-time.Duration(mrand.Int63n(4*60*1000)+120*1000) * time.Millisecond)
 	return SendM(d, &dave.M{Op: dave.Op_DAT, Work: work, Val: rv, Time: godave.Ttb(mt)})
 }
 
