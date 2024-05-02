@@ -43,17 +43,15 @@ import (
 )
 
 const (
-	EPOCH    = 26544358 * time.Nanosecond
-	MTU      = 1500
-	NPEER    = 2
-	DELAY    = 64
-	SHARE    = 8
-	PING     = 64
-	DROP     = 512
-	DISTANCE = 9
-	FANOUT   = 2
-	MINWORK  = 2
-	PRUNE    = 128
+	EPOCH   = 26544358 * time.Nanosecond
+	MTU     = 1500
+	NPEER   = 2
+	DELAY   = 512
+	SHARE   = 8
+	PING    = 64
+	DROP    = 512
+	MINWORK = 2
+	PRUNE   = 128
 )
 
 type Dave struct {
@@ -252,7 +250,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				switch m.Op {
 				case dave.Op_DAT:
 					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
-					for _, rp := range randpds(prs, nil, FANOUT, usable) {
+					for _, rp := range randpds(prs, nil, 1, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
 					}
@@ -261,7 +259,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					if ok {
 						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.V, Time: Ttb(loc.Ti), Nonce: loc.N, Work: loc.W}
 					} else {
-						for _, rp := range randpds(prs, nil, FANOUT, usable) {
+						for _, rp := range randpds(prs, nil, 1, usable) {
 							wraddr(c, marshal(m), addrfrom(rp))
 							lg(log, "/d/send GET to %x\n", Pdfp(pdhfn, rp))
 						}

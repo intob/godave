@@ -25,27 +25,28 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+
 Dave is an open protocol, designed to simply & efficiently distribute a hash
-table in a byzantine environment. It's a peer-to-peer cache, anonymized, and
+table in a byzantine environment. A peer-to-peer cache, anonymised, and
 almost instantly-consistent. Clients (webapps included, via HTTP gateway),
 may write to the network without any token or key, providing only a classic
-proof-of-work.
+hashcash style proof-of-work. Packets with fields value, time, and a time-
+bound proof-of-work (nonce, work) are gossiped, until their weight has decayed
+such that they are no-longer available on any node.
+
 
 1.      Constants
 
-EPOCH           26544358ns
-MTU             1500            
+EPOCH           26544358ns      Base minimum period of the operation cycle.
+MTU             1500            Reasonable value to avoid packet
+                                fragmentation.
 NPEER           2               Limit to prevent Eclipse attack.
-DELAY           64              Epochs until DATs are shared to new peers.
-SHARE           8               Epochs until silent or protocol-
-                                deviating peers are no-longer advertised.
+DELAY           512             Epochs until DATs are shared to new peers.
+SHARE           8               Epochs until silent peers are no-longer
+                                advertised.
 PING            64              Epochs until silent peers are pinged. 
-DROP            512             Epochs until silent or protocol-
-                                deviating peers are deleted from the peer
-                                table.
-DISTANCE        9               Maximum number of hops of a GET message.
-FANOUT          2               Balance propagation speed, reliability &
-                                network load.
+DROP            512             Epochs until silent peers are dropped from the
+                                peer table.
 MINWORK         2               Minimum difficulty of DATs to accept.
 PRUNE           128             Number of epochs between DAT pruning.
 
@@ -61,27 +62,27 @@ DAT_CAP         1M      As large as possible for available memory. ~1304B per
 
 2.      Operation Codes
 
-GETPEER     Packet requesting that the remote replies with NPEER random peer
-            descriptors.
-PEER        Packet containing NPEER peer descriptors.
-GET         Packet requesting DAT, remote should send DAT to all peer
-            descriptors contained in packet, or forward to FANOUT peers if
-            DISTANCE is not yet covered.
-DAT         Packet containing a value, time, nonce, and a proof-of-work.
+GETPEER         Packet requesting that the remote replies with NPEER random
+                peer descriptors.
+PEER            Packet containing NPEER peer descriptors.
+DAT             Packet containing a value, time, and output of the
+                cost function: work, nonce.
+GET             Packet requesting DAT, remote may reply.
 
 
 3.      Message
 
 3. 1.   Message Fields
 
-            DESCRIPTION                             BYTE LENGTH
-Op          Operation code.                         1
-Peers       List of peers who forwarded.            20*DISTANCE
-Work        SHA256(SHA256(Val, Time), Nonce).       0 | 32
-Nonce       Work salt.                              0 | 32
-Time        Approximate time, not in future.        0 | 8
-Val         The data.                               <= 1200 for MTU=1500,
-                                                    DISTANCE=7
+                DESCRIPTION                             BYTE LENGTH
+Op              Operation code.                         1
+Peers           List of peers who forwarded.            20*DISTANCE
+Work            SHA256(SHA256(Val, Time), Nonce).       0 | 32
+Nonce           Work salt.                              0 | 32
+Time            Approximate time. Packets with a        0 | 8
+                future time are dropped.
+Val             The data.                               <= 1200 for MTU=1500,
+                                                        DISTANCE=7
 
 3. 2.   Wire Format
 
@@ -108,11 +109,12 @@ and 32B proof-of-work. The proof-of-work allows the network to prioritise
 storage of newer keys backed by more work, and prevent spam/flooding.
 
 
-5. 1.   Weight
+5.      Weight
 
-Calculated as
-        weight = difficulty * (1 / millisecondsSinceAdded)
-where difficulty is number of leading zero bytes.
+weight = difficulty * (1 / ageMilliseconds)
+
+Where difficulty is number of leading zero bytes, age is calculated from the
+time.
 
 
 5. 2.   Replacement by Weight
@@ -121,30 +123,19 @@ Once per PRUNE epochs, a user defined number of heaviest DATs persisted,
 and the remaining are dropped.
 
 
-6.      Message Propagation
+6.      Send One Random DAT
 
-6. 2.   Random Push
-
-Every EPOCH, each node sends one random DAT to FANOUT random peers. This
-ensures reliable distribution and anonymitiy for the original sender.
+Every EPOCH, each node sends one random DAT to one random peer. This
+ensures reliable distribution and sender anonymitiy.
 
 Propagating DATs in this way ensures that an adversary is unable to
 create a timing-attack to discern the source of a DAT, even with a broad
 view of network traffic.
 
-6. 1.   GET Message Forwarding
+6.      GET Message
 
-GET messages are forwarded to FANOUT peers, until forwarded DISTANCE
-times. Each node appends a peer descriptor for the sender's remote address
-to the peer descriptor list in the message.
-
-If the receiver DOES NOT have the data, and the message contains fewer than
-DISTANCE peer descriptors, the message is forwarded to FANOUT random peers,
-excluding those already in the message.
-
-If the receiver DOES have the data, the receiver sends a DAT message with
-the data to all peers in the message's peer descriptor list. Each peer can
-then validate the work & store the DAT.
+If the receiver has the dat, the receiver replies to the remote with a DAT
+message.
 
 
 7.      Packet Filter
@@ -161,11 +152,14 @@ further processing.
 
 The key inserted uniquely into the cuckoo filter:
         
-        FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
+FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
+
+Failing unique insertion, the packet is dropped.
 
 The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
 once per IP-PORT per epoch. The number of ports allowed per IP address is
 limited using a 4-bit multiply-then-shift hash function.
+
 
 8.      Usage
 This repository contains three go modules. First, godave is the protocol

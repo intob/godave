@@ -70,7 +70,7 @@ func collectPds(d *Dave) []*dave.Pd {
 	pds := make([]*dave.Pd, 0)
 	for m := range d.Recv {
 		pds = append(pds, m.Pds...)
-		if len(pds) >= DISTANCE {
+		if len(pds) >= 2 {
 			break
 		}
 	}
