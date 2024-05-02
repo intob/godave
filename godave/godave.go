@@ -186,9 +186,9 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 	pdhfn := fnv.New64a()
 	for {
 		select {
-		case <-et.C: // PERIODICALLY
+		case <-et.C: // PERIODICALLY PER EPOCH
 			nepoch++
-			if nepoch%PRUNE == 0 { // KEEP CAP HEAVIEST DATS
+			if nepoch%PRUNE == 0 { // PRUNING MEMORY, KEEP <=CAP HEAVIEST DATS
 				memstat := &runtime.MemStats{}
 				runtime.ReadMemStats(memstat)
 				newdats := make(map[uint64]Dat)
@@ -219,14 +219,14 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats, %.2fMB mem alloc\n", len(newpeers), len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO FANOUT PEERS
+			if len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO ONE RANDOM PEER
 				rdati := mrand.Intn(len(dats))
 				var x int
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
 						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.V, Time: Ttb(rd.Ti), Nonce: rd.N, Work: rd.W})
-						for _, rp := range randpds(prs, nil, FANOUT, usable) {
+						for _, rp := range randpds(prs, nil, 1, usable) {
 							wraddr(c, m, addrfrom(rp))
 							lg(log, "/d/rand sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
 						}
@@ -235,14 +235,16 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					x++
 				}
 			}
-			for pid, p := range prs {
-				if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
-					delete(prs, pid)
-					lg(log, "/d/peer/remove %x\n", Pdfp(pdhfn, p.pd))
-				} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*PING { // SEND PING
-					wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
-					p.ping = time.Now()
-					lg(log, "/d/peer/ping sent GETPEER to %x\n", Pdfp(pdhfn, p.pd))
+			if nepoch%SHARE == 0 { // ONCE PER SHARE EPOCHS, RELATIVELY SHORT CYCLE
+				for pid, p := range prs {
+					if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
+						delete(prs, pid)
+						lg(log, "/d/peer/remove %x\n", Pdfp(pdhfn, p.pd))
+					} else if time.Since(p.seen) > EPOCH*SHARE && time.Since(p.ping) > EPOCH*PING { // SEND PING
+						wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), addrfrom(p.pd))
+						p.ping = time.Now()
+						lg(log, "/d/peer/ping sent GETPEER to %x\n", Pdfp(pdhfn, p.pd))
+					}
 				}
 			}
 		case m := <-send: // SEND PACKET
