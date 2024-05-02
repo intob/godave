@@ -63,7 +63,7 @@ DAT_CAP         1M      As large as possible for available memory. ~1304B per
                         dat.
 
 
-2.      Operation Codes
+3.      Operation Codes
 
 GETPEER         Packet requesting that the remote replies with NPEER random
                 peer descriptors.
@@ -72,9 +72,9 @@ DAT             Packet containing a value, time, and output of the
                 cost function: work, nonce.
 
 
-3.      Message
+4.      Message
 
-3. 1.   Message Fields
+4. 1.   Message Fields
 
                 DESCRIPTION                             BYTE LENGTH
 Op              Operation code.                         1
@@ -86,7 +86,7 @@ Time            Approximate time. Packets with a        0 | 8
 Val             The data.                               <= 1200 for MTU=1500,
                                                         DISTANCE=7
 
-3. 2.   Wire Format
+4. 2.   Wire Format
 
 A message is serialized into binary using protobuf. See protobuf spec
 dave.proto.
@@ -96,7 +96,7 @@ Transpiling Protobuf Spec for Go:
 protoc --go_out=. dave.proto
 
 
-4.      Peer Discovery & Liveness
+5.      Peer Discovery & Liveness
 
 The protocol ensures a cohesive network by combining liveness and peer
 discovery into a single pair of direct messages (GETPEER & PEER). A node
@@ -104,14 +104,14 @@ replies to a GETPEER message with a PEER message with up to NPEER peer
 descriptors. Peers are not advertised if they have not been seen recently.
 
 
-5.      DAT
+6.      DAT
 
 DAT is a construct representing a value, 8B timestamp, 32B nonce,
 and 32B proof-of-work. The proof-of-work allows the network to prioritise
 storage of newer keys backed by more work, and prevent spam/flooding.
 
 
-5.      Weight
+7.      Weight
 
 weight = difficulty * (1 / ageMilliseconds)
 
@@ -119,13 +119,13 @@ Where difficulty is number of leading zero bytes, age is calculated from the
 time.
 
 
-5. 2.   Replacement by Weight
+8.      Replacement by Weight
 
 Once per PRUNE epochs, a user defined number of heaviest DATs persisted,
 and the remaining are dropped.
 
 
-6.      Send One Random DAT
+9.      Send One Random DAT
 
 Every EPOCH, each node sends one random DAT to one random peer. This
 ensures reliable distribution and sender anonymitiy.
@@ -134,13 +134,8 @@ Propagating DATs in this way ensures that an adversary is unable to
 create a timing-attack to discern the source of a DAT, even with a broad
 view of network traffic.
 
-6.      GET Message
 
-If the receiver has the dat, the receiver replies to the remote with a DAT
-message.
-
-
-7.      Packet Filter
+10.      Packet Filter
 
 Dropping packets efficiently is fundamental to resilience against DoS attack.
 
@@ -173,16 +168,16 @@ When daved is started without arguments, the default mode of operation is as a
 node, participating in the network. It will listen for dats, as they are
 gossipped randomly through the network, relaying them as in the protocol spec.
 
-Arguments followed by default values:
--s                      Start as seed node. Off by default.
--l [::]:0               Listen ip address and port (listen on everything,
-                        random available port)
+Arguments, followed by default values:
+-l [::]:0               Listen ip address and port (listen on every interface,
+                        on a random available port)
 -b :1992                Bootstrap to port (local machine inferred)
 -b 3.255.246.69:1618    Bootstrap to ip:port
--d 2                    Difficulty of poof-of-work when using set command.
+-s                      Start as seed node. Off by default.
 -dcap 500000            Capacity of dat map held in memory.
 -fcap 1000000           Capacity of cuckoo filter.
 -v                      Verbose logging, grep by log path prefix.
+-d 2                    Difficulty of poof-of-work when using set command.
 -h                      Output only hash when 
 
 Try:
