@@ -186,4 +186,4 @@ Arguments followed by default values:
 -d 2                    Difficulty of poof-of-work when using set command.
 -dcap 500000            Capacity of dat map held in memory.
 -fcap 1000000           Capacity of cuckoo filter.
--v                      Verbose logging. Grep by log path prefix.
+-v                      Verbose logging, grep by log path prefix.
