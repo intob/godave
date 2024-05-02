@@ -254,16 +254,8 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
 					}
-				case dave.Op_GET:
-					loc, ok := dats[id(m.Work)]
-					if ok {
-						recv <- &dave.M{Op: dave.Op_DAT, Val: loc.V, Time: Ttb(loc.Ti), Nonce: loc.N, Work: loc.W}
-					} else {
-						for _, rp := range randpds(prs, nil, 1, usable) {
-							wraddr(c, marshal(m), addrfrom(rp))
-							lg(log, "/d/send GET to %x\n", Pdfp(pdhfn, rp))
-						}
-					}
+				default:
+					panic("unsupported operation")
 				}
 			}
 		case pkt := <-pch: // HANDLE INCOMING PACKET
@@ -291,15 +283,17 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				randpds := randpds(prs, []*dave.Pd{pktpd}, NPEER, usable)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
-			case dave.Op_GET: // RETURN DAT IF AVAILABLE, TODO: CONSIDER TIMING ATTACK
-				d, ok := dats[id(m.Work)]
-				if ok {
-					for _, mp := range m.Pds {
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: d.W}), addrfrom(mp))
-						lg(log, "/d/ph/get/reply with DAT to %x\n", Pdfp(pdhfn, mp))
+			case dave.Op_DAT: // CHECK WORK, THEN STORE DAT OR SERVE SHAGET
+				check := Check(m.Val, m.Time, m.Nonce, m.Work)
+				if check == -1 { // BYTES DON'T MATCH, MAYBE IT'S A SHAGET
+					d, ok := dats[id(m.Work)]
+					if ok {
+						for _, mp := range m.Pds { // USE IP ADDRESS ADDED BY PACKET FILTER
+							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: d.W}), addrfrom(mp))
+							lg(log, "/d/ph/shaget/reply with DAT to %x\n", Pdfp(pdhfn, mp))
+						}
 					}
 				}
-			case dave.Op_DAT: // STORE DAT
 				store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
 				lg(log, "/d/ph/dat/store %x\n", m.Work)
 			}
@@ -366,12 +360,6 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 			lg(log, "/rdpkt/drop/filter/work collision\n")
 			return nil
 		}
-		check := Check(m.Val, m.Time, m.Nonce, m.Work)
-		if check < MINWORK {
-			lg(log, "/rdpkt/drop/work invalid: %s, %d, %x\n", m.Op, check, m.Work)
-			return nil
-		}
-	} else if m.Op == dave.Op_GET {
 		if len(m.Pds) == 0 {
 			m.Pds = []*dave.Pd{pdfrom(raddr)}
 		} else {

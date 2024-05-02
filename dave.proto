@@ -25,7 +25,6 @@ enum Op {
     GETPEER = 0;
     PEER = 1;
     DAT = 2;
-    GET = 3;
 }
 
 message M {

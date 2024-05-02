@@ -2,10 +2,13 @@ package dapi
 
 import (
 	"bytes"
+	crand "crypto/rand"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math/rand"
+	mrand "math/rand"
 	"runtime"
 	"time"
 
@@ -38,12 +41,12 @@ func WaitForFirstDat(d *godave.Dave, w io.Writer) {
 }
 
 func GetDat(d *godave.Dave, work []byte) (*godave.Dat, error) {
-	err := SendM(d, &dave.M{Op: dave.Op_GET, Work: work})
+	err := SendShaGet(d, work)
 	if err != nil {
 		return nil, err
 	}
 	var tries uint
-	t := time.NewTicker(300 * time.Millisecond)
+	tick := time.NewTicker(300 * time.Millisecond)
 	for {
 		select {
 		case m := <-d.Recv:
@@ -54,17 +57,27 @@ func GetDat(d *godave.Dave, work []byte) (*godave.Dat, error) {
 				}
 				return &godave.Dat{V: m.Val, N: m.Nonce, W: m.Work, Ti: godave.Btt(m.Time)}, nil
 			}
-		case <-t.C:
+		case <-tick.C:
 			tries++
 			if tries > 2 {
 				return nil, fmt.Errorf("not found after %d tries", tries)
 			}
-			err = SendM(d, &dave.M{Op: dave.Op_GET, Work: work})
+			err := SendShaGet(d, work)
 			if err != nil {
 				return nil, err
 			}
 		}
 	}
+}
+
+// Sends a randomised DAT message to a random peer. The work is invalid, but the hash correct.
+func SendShaGet(d *godave.Dave, work []byte) error {
+	rv := make([]byte, mrand.Intn(1200))
+	crand.Read(rv)
+	nonce := make([]byte, 32)
+	crand.Read(nonce)
+	mt := time.Now().Add(-time.Duration(rand.Int63n(4*60*1000)+120*1000) * time.Millisecond)
+	return SendM(d, &dave.M{Op: dave.Op_DAT, Work: work, Val: rv, Time: godave.Ttb(mt)})
 }
 
 // SendM sends message on dave's send chan with timeout.
