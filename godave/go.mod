@@ -8,3 +8,5 @@ require (
 )
 
 require github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
+
+replace github.com/intob/dave/godave/dave => ./dave
