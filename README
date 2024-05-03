@@ -69,7 +69,7 @@ GETPEER         Packet requesting that the remote replies with NPEER random
                 peer descriptors.
 PEER            Packet containing NPEER peer descriptors.
 DAT             Packet containing a value, time, and output of the
-                cost function: work, nonce.
+                cost function: work, salt. 
 
 
 4.      Types
@@ -114,18 +114,18 @@ descriptors. Peers are not advertised if they have not been seen recently.
 
 
 
-6.      Weight
+6.      Mass
 
-weight = difficulty * (1 / ageMilliseconds)
+mass = difficulty * (1 / ageMilliseconds)
 
 Where difficulty is number of leading zero bytes, age is calculated from the
 given time and current time.
 
 
-7.      Replacement by Weight
+7.      Replacement by Mass 
 
-Once per PRUNE epochs, a user defined number of heaviest dats persisted,
-and the remaining are dropped.
+Once per PRUNE epochs, a user defined number of heaviest dats are kept, and
+the remaining dropped.
 
 
 8.      Send One Random Dat
@@ -155,6 +155,10 @@ The key inserted uniquely into the cuckoo filter:
 FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
 
 Failing unique insertion, the packet is dropped.
+
+Additionally, if the message is of OP_CODE DAT, the work is also inserted
+uniquely into the filter. Failing unique insertion, the packet would also
+be dropped.
 
 The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
 once per IP-PORT per epoch. The number of ports allowed per IP address is

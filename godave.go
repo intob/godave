@@ -67,7 +67,7 @@ type Cfg struct {
 }
 
 type Dat struct {
-	V, N, W []byte // Val, Nonce, Work
+	V, S, W []byte // Val, Salt, Work
 	Ti      time.Time
 }
 
@@ -223,7 +223,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				for s := range dats {
 					if x == rdati {
 						rd := dats[s]
-						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.V, Time: Ttb(rd.Ti), Nonce: rd.N, Work: rd.W})
+						m := marshal(&dave.M{Op: dave.Op_DAT, Val: rd.V, Time: Ttb(rd.Ti), Salt: rd.S, Work: rd.W})
 						for _, rp := range randpds(prs, nil, 1, usable) {
 							wraddr(c, m, addrfrom(rp))
 							lg(log, "/d/rand sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
@@ -249,7 +249,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			if m != nil {
 				switch m.Op {
 				case dave.Op_DAT:
-					store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
+					store(dats, &Dat{m.Val, m.Salt, m.Work, Btt(m.Time)})
 					for _, rp := range randpds(prs, nil, 1, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
@@ -284,17 +284,17 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // CHECK WORK, THEN STORE DAT OR SERVE SHAGET
-				check := Check(m.Val, m.Time, m.Nonce, m.Work)
+				check := Check(m.Val, m.Time, m.Salt, m.Work)
 				if check == -1 { // BYTES DON'T MATCH, MAYBE IT'S A SHAGET
 					d, ok := dats[id(m.Work)]
 					if ok {
 						for _, mp := range m.Pds { // USE IP ADDRESS ADDED BY PACKET FILTER
-							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Nonce: d.N, Work: d.W}), addrfrom(mp))
+							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Salt: d.S, Work: d.W}), addrfrom(mp))
 							lg(log, "/d/ph/shaget/reply with DAT to %x\n", Pdfp(pdhfn, mp))
 						}
 					}
 				}
-				store(dats, &Dat{m.Val, m.Nonce, m.Work, Btt(m.Time)})
+				store(dats, &Dat{m.Val, m.Salt, m.Work, Btt(m.Time)})
 				lg(log, "/d/ph/dat/store %x\n", m.Work)
 			}
 		}
@@ -360,17 +360,13 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 			lg(log, "/rdpkt/drop/filter/work collision\n")
 			return nil
 		}
-		if len(m.Pds) == 0 {
-			m.Pds = []*dave.Pd{pdfrom(raddr)}
-		} else {
-			m.Pds = append(m.Pds, pdfrom(raddr))
-		}
+		m.Pds = append(m.Pds, pdfrom(raddr))
 	}
-	copy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Time: m.Time, Nonce: m.Nonce, Work: m.Work}
+	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Time: m.Time, Salt: m.Salt, Work: m.Work}
 	for i, pd := range m.Pds {
-		copy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
+		cpy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
 	}
-	return &pkt{copy, raddr}
+	return &pkt{cpy, raddr}
 }
 
 func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) bool) []*dave.Pd {

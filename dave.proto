@@ -32,7 +32,7 @@ message M {
     repeated Pd pds = 2;
     bytes val = 3;
     bytes time = 4;
-    bytes nonce = 5;
+    bytes salt = 5;
     bytes work = 6;
 }
 
