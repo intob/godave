@@ -46,12 +46,14 @@ const (
 	MTU      = 1500
 	NPEER    = 2
 	EPOCH    = 65537 * time.Nanosecond
-	DELAY    = 4096
-	SHARE    = 1024
-	PING     = 2048
-	DROP     = 4096
+	DELAY    = 5039
+	SHARE    = 257
+	PING     = 719
+	DROP     = 1597
 	PRUNE    = 32768
-	SEEDSEED = 1024
+	SEED     = 2
+	LEECH    = 3
+	SEEDSEED = 911
 )
 
 type Dave struct {
@@ -285,10 +287,8 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				if check == -1 { // BYTES DON'T MATCH, MAYBE IT'S A SHAGET
 					d, ok := dats[id(m.Work)]
 					if ok {
-						for _, mp := range m.Pds { // USE IP ADDRESS ADDED BY PACKET FILTER
-							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Salt: d.S, Work: d.W}), addrfrom(mp))
-							lg(log, "/d/ph/shaget/reply with DAT to %x\n", Pdfp(pdhfn, mp))
-						}
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, Val: d.V, Time: Ttb(d.Ti), Salt: d.S, Work: d.W}), pkt.ip)
+						lg(log, "/d/ph/shaget/reply with DAT\n")
 					}
 				}
 				store(dats, &Dat{m.Val, m.Salt, m.Work, Btt(m.Time)})
@@ -352,12 +352,6 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/rdpkt/drop/npeer too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT {
-		if !f.InsertUnique(m.Work) {
-			lg(log, "/rdpkt/drop/filter/work collision\n")
-			return nil
-		}
-		m.Pds = append(m.Pds, pdfrom(raddr))
 	}
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), Val: m.Val, Time: m.Time, Salt: m.Salt, Work: m.Work}
 	for i, pd := range m.Pds {
@@ -441,12 +435,8 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func store(dats map[uint64]Dat, dat *Dat) bool {
-	_, ok := dats[id(dat.W)]
-	if !ok {
-		dats[id(dat.W)] = *dat
-	}
-	return !ok
+func store(dats map[uint64]Dat, dat *Dat) {
+	dats[id(dat.W)] = *dat
 }
 
 func lg(ch chan<- string, msg string, args ...any) {

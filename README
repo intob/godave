@@ -7,69 +7,46 @@ Anonymised peer-to-peer distributed hash table on proof-of-work and gossip.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+Dave is an open protocol, designed to simply & efficiently distribute a hash table in a byzantine environment.
 
-Dave is an open protocol, designed to simply & efficiently distribute a hash
-table in a byzantine environment. A peer-to-peer cache, anonymised, and
-almost instantly-consistent. Clients (webapps included, via HTTP gateway),
-may write to the network without any token or key, providing only a classic
-hashcash style proof-of-work. Packets with fields value, time, and a time-
-bound proof-of-work (nonce, work) are gossiped, until their weight has decayed
-such that they are no-longer available on any node.
+A peer-to-peer cache, anonymised, and almost instantly-consistent.
+
+Clients (webapps included, via HTTP gateway), may write to the network without any token or key, providing only a classic hashcash style proof-of-work.
+
+Packets with fields value, time, and a time-bound proof-of-work (nonce, work) are gossiped, until their weight has decayed, such that they are no-longer available on any node.
 
 
 1.      Constants
 
-MTU             1500            Reasonable value to avoid packet
-                                fragmentation.
+MTU             1500            Reasonable value to avoid packet fragmentation.
 NPEER           2               Limit to prevent Eclipse attack.
 EPOCH           26544358ns      Base minimum period of the operation cycle.
 DELAY           512             Epochs until dats are shared to new peers.
-SHARE           8               Epochs until silent peers are no-longer
-                                advertised.
-PING            64              Epochs until silent peers are pinged. 
-DROP            512             Epochs until silent peers are dropped from the
-                                peer table.
+SHARE           8               Epochs until silent peers are no-longer advertised.
+PING            64              Epochs until silent peers are pinged.
+DROP            512             Epochs until silent peers are dropped from the peer table.
 PRUNE           128             Number of epochs between dat pruning.
-SEEDSEED        1024            For seed nodes. Number of epochs between
-                                sending a random dat. Seed nodes must already
-                                send many PEER messages, but also help to
-                                seed.
+SEEDSEED        1024            For seed nodes. Number of epochs between sending a random dat. Seed nodes must already send many PEER messages, but also help to seed.
 
 
 2.      User-configurable Settings
 
                 SUGGESTED VALUE
-FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or
-                        8M if possible.
-DAT_CAP         1M      As large as possible for available memory. ~1304B per
-                        dat.
+FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or 8M if possible.
+DAT_CAP         1M      As large as possible for available memory. ~1304B per dat.
 
 
 3.      Operation Codes
 
-GETPEER         Packet requesting that the remote replies with NPEER random
-                peer descriptors.
+GETPEER         Packet requesting that the remote replies with NPEER random peer descriptors.
 PEER            Packet containing NPEER peer descriptors.
-DAT             Packet containing a value, time, and output of the
-                cost function: work, salt. 
+DAT             Packet containing a value, time, and output of the cost function: work, salt. 
 
 
 4.      Types
@@ -79,26 +56,22 @@ dave.M is the binary serialisation of an entire packet.
 
                 DESCRIPTION                         BYTE LENGTH
 Op              Operation code.                     1
-Peers           List of peers.                      20*NPEER
+Peers           List of peers.                      2*NPEER
 Work            SHA256(SHA256(Val, Time), Salt).    0 | 32
 Salt            Random bytes used to solve work.    0 | 32
-Time            Approximate time. Packets with a    0 | 8
-                future time are dropped.
-Val             The data.                           0 | <= 1388 when
-                                                    NPEER=2
+Time            Big-endian unix milliseconds.       0 | 8
+Val             The data.                           0 | <= 1388 when NPEER=2
 
 
 4. 2.   Dat
 godave.Dat is a container for Value, Time, Salt, and Work.
 
-The proof of work allows the network to prioritise storage of newer keys
-backed by more work. See 6.
+The proof of work allows the network to prioritise storage of newer keys backed by more work. See 6.
 
 
 4. 3.   Wire Format
 
-A message is serialized into binary using protobuf. See protobuf spec
-dave.proto.
+A message is serialized into binary using protobuf. See protobuf spec dave.proto.
 
 Transpiling Protobuf Spec for Go:
 #!/bin/bash
@@ -107,10 +80,11 @@ protoc --go_out=. dave.proto
 
 5.      Peer Discovery & Liveness
 
-The protocol ensures a cohesive network by combining liveness and peer
-discovery into a single pair of direct messages (GETPEER & PEER). A node
-replies to a GETPEER message with a PEER message with up to NPEER peer
-descriptors. Peers are not advertised if they have not been seen recently.
+The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER).
+
+A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
+
+Peers are not advertised if they have not been seen recently.
 
 
 
@@ -118,37 +92,30 @@ descriptors. Peers are not advertised if they have not been seen recently.
 
 mass = difficulty * (1 / ageMilliseconds)
 
-Where difficulty is number of leading zero bytes, age is calculated from the
-given time and current time.
+Where difficulty is number of leading zero bytes, age is calculated from the given time and current time.
 
 
 7.      Replacement by Mass 
 
-Once per PRUNE epochs, a user defined number of heaviest dats are kept, and
-the remaining dropped.
+Once per PRUNE epochs, a user defined number of heaviest dats are kept, and the remaining dropped.
 
 
 8.      Send One Random Dat
 
-Every EPOCH, each node sends one random dat to one random peer. This
-ensures reliable distribution and sender anonymitiy.
+Every EPOCH, each node sends one random dat to one random peer. This ensures reliable distribution and sender anonymitiy.
 
-Propagating dats in this way ensures that an adversary is unable to
-create a timing-attack to discern the source of a dat, even with a broad
-view of network traffic.
+Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
 
 
 9.      Packet Filter
 
 Dropping packets efficiently is fundamental to resilience against DoS attack.
 
-Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a
-compact hash table, enabling fast insertions, deletions and lookups. This
-makes them well-suited for performance-critical applications like packet
-filtering to improve DoS attack resilience.
+Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling fast insertions, deletions and lookups.
 
-Packets that deviate from the protocol are detected & dropped without
-further processing.
+This makes them well-suited for performance-critical applications like packet filtering to improve DoS attack resilience.
+
+Packets that deviate from the protocol are detected & dropped without further processing.
 
 The key inserted uniquely into the cuckoo filter:
         
@@ -156,11 +123,7 @@ FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
 
 Failing unique insertion, the packet is dropped.
 
-Additionally, if the message is of OP_CODE DAT, the work is also inserted
-uniquely into the filter. Failing unique insertion, the packet would also
-be dropped.
+The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent once per IP-PORT per epoch.
 
-The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent
-once per IP-PORT per epoch. The number of ports allowed per IP address is
-limited using a 4-bit multiply-then-shift hash function.
+The number of ports allowed per IP address is limited using a 4-bit multiply-then-shift hash function.
 
