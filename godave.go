@@ -110,31 +110,28 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{send, recv}, nil
 }
 
-func Work(val, ti []byte, difficulty int) (work, nonce []byte) {
+func Work(val, ti []byte, difficulty int) (work, salt []byte) {
 	zeros := make([]byte, difficulty)
-	nonce = make([]byte, 32)
+	salt = make([]byte, 32)
 	h := sha256.New()
 	h.Write(val)
 	h.Write(ti)
 	load := h.Sum(nil)
 	for {
-		crand.Read(nonce)
+		crand.Read(salt)
 		h.Reset()
 		h.Write(load)
-		h.Write(nonce)
+		h.Write(salt)
 		work = h.Sum(nil)
 		if bytes.HasPrefix(work, zeros) {
-			return work, nonce
+			return work, salt
 		}
 	}
 }
 
-func Check(val, ti, nonce, work []byte) int {
-	if len(ti) != 8 {
+func Check(val, ti, salt, work []byte) int {
+	if len(ti) != 8 || Btt(ti).After(time.Now()) {
 		return -2
-	}
-	if Btt(ti).After(time.Now()) {
-		return -3
 	}
 	h := sha256.New()
 	h.Write(val)
@@ -142,14 +139,14 @@ func Check(val, ti, nonce, work []byte) int {
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
-	h.Write(nonce)
+	h.Write(salt)
 	if !bytes.Equal(h.Sum(nil), work) {
 		return -1
 	}
 	return nzero(work)
 }
 
-func Weight(work []byte, t time.Time) float64 {
+func Mass(work []byte, t time.Time) float64 {
 	return float64(nzero(work)) * (1 / float64(time.Since(t).Milliseconds()))
 }
 
@@ -190,21 +187,21 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				memstat := &runtime.MemStats{}
 				runtime.ReadMemStats(memstat)
 				newdats := make(map[uint64]Dat)
-				var minw float64
+				var minmass float64
 				var ld uint64
 				for k, d := range dats {
-					w := Weight(d.W, d.Ti)
+					mass := Mass(d.W, d.Ti)
 					if len(newdats) >= cap-1 { // BEYOND CAP, REPLACE BY WEIGHT
-						if w > minw {
+						if mass > minmass {
 							delete(newdats, ld)
-							lg(log, "/d/prune/delete %d with weight %f\n", ld, minw)
+							lg(log, "/d/prune/delete %d with weight %f\n", ld, minmass)
 							newdats[k] = d
 							ld = k
-							minw = w
+							minmass = mass
 						}
 					} else {
-						if w < minw {
-							minw = w
+						if mass < minmass {
+							minmass = mass
 						}
 						newdats[k] = d
 					}
