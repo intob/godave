@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/intob/dave/godave/dave"
+	"github.com/intob/godave/dave"
 )
 
 func TestWeight(t *testing.T) {

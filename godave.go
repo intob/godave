@@ -36,7 +36,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/intob/dave/godave/dave"
+	"github.com/intob/godave/dave"
 	ckoo "github.com/seiflotfy/cuckoofilter"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"

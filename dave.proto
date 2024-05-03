@@ -19,7 +19,7 @@
 // SOFTWARE.
 
 syntax = "proto3";
-option go_package = "./godave/dave";
+option go_package = "./dave";
 
 enum Op {
     GETPEER = 0;

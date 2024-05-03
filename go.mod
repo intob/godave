@@ -1,16 +1,9 @@
-module github.com/intob/dave
+module github.com/intob/godave
 
 go 1.22.1
 
-
 require (
-    github.com/intob/dave/godave v0.0.0
-    github.com/intob/dave/dapi v0.0.0
-    github.com/intob/dave/daved v0.0.0
-)
-
-replace (
-    github.com/intob/dave/godave => ./godave
-    github.com/intob/dave/dapi => ./dapi
-    github.com/intob/dave/daved => ./daved
+	github.com/dgryski/go-metro v0.0.0-20200812162917-85c65e2d0165 // indirect
+	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
+	google.golang.org/protobuf v1.34.0 // indirect
 )
