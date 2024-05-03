@@ -3,7 +3,7 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-Anonymized peer-to-peer distributed hash table on proof-of-work and gossip.
+Anonymised peer-to-peer distributed hash table on proof-of-work and gossip.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
