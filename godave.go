@@ -28,18 +28,17 @@ import (
 )
 
 const (
-	MTU      = 1500
-	NPEER    = 2
-	NASK     = 3
-	EPOCH    = 65537 * time.Nanosecond
-	DELAY    = 5039
-	OPEN     = 257
-	PING     = 719
-	DROP     = 1597
-	PRUNE    = 32768
-	SEED     = 2
-	PULL     = 3
-	SEEDSEED = 911
+	MTU   = 1500
+	NPEER = 2
+	NASK  = 3
+	EPOCH = 65537 * time.Nanosecond
+	DELAY = 5039
+	OPEN  = 257
+	PING  = 719
+	DROP  = 1597
+	PRUNE = 32768
+	SEED  = 2
+	PULL  = 53
 )
 
 type Dave struct {
@@ -63,6 +62,7 @@ type peer struct {
 	pd                *dave.Pd
 	added, seen, ping time.Time
 	bootstrap         bool
+	trust             float64
 }
 
 type pkt struct {
@@ -209,7 +209,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if ((seed && nepoch%SEEDSEED == 0) || (!seed && nepoch%SEED == 0)) && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY PRIORITISE PEER MESSAGES
+			if nepoch%SEED == 0 && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER
 				rshardtop := uint64(len(dats))
 				rshardpos := mrand.Uint64() % (rshardtop + 1)
 				var cshardpos uint64
@@ -224,7 +224,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 								m := marshal(&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W})
 								for _, rp := range randpds(prs, nil, 1, usable) {
 									wraddr(c, m, addrfrom(rp))
-									lg(log, "/d/rand/seed sent to %x %s\n", Pdfp(pdhfn, rp), dat.V)
+									lg(log, "/d/rand/seed sent to %x %x\n", Pdfp(pdhfn, rp), dat.W)
 								}
 								break outerseed
 							}
@@ -234,31 +234,16 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					cshardpos++
 				}
 			}
-			if nepoch%PULL == 0 && len(dats) > 0 && len(prs) > 0 {
-				rshardtop := uint64(len(dats))
-				rshardpos := mrand.Uint64() % (rshardtop + 1)
-				var cshardpos uint64
-			outerpull:
-				for _, shard := range dats {
-					if cshardpos == rshardpos {
-						rdattop := uint64(len(shard))
-						rdatpos := mrand.Uint64() % (rdattop + 1)
-						var cdatpos uint64
-						for _, dat := range shard {
-							if cdatpos == rdatpos {
-								for _, rp := range randpds(prs, nil, 1, usable) {
-									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: dat.W}), addrfrom(rp))
-									lg(log, "/d/rand/pull sent to %x %s\n", Pdfp(pdhfn, rp), dat.V)
-								}
-								break outerpull
-							}
-							cdatpos++
-						}
+			if nepoch%PULL == 0 { // GET RANDOM DAT
+				rd := rnd(dats)
+				if rd != nil {
+					for _, rp := range randpds(prs, nil, 1, usable) {
+						wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
+						lg(log, "/d/rand/pull sent get %x to %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
-					cshardpos++
 				}
 			}
-			if nepoch%OPEN == 0 { // ONCE PER SHARE EPOCHS, RELATIVELY SHORT CYCLE
+			if nepoch%OPEN == 0 { // ONCE PER OPEN EPOCHS, RELATIVELY SHORT CYCLE
 				for pid, p := range prs {
 					if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 						delete(prs, pid)
@@ -275,7 +260,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				switch m.Op {
 				case dave.Op_DAT:
 					store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-					for _, rp := range randpds(prs, nil, 1, usable) {
+					for _, rp := range randpds(prs, nil, NPEER, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
 					}
@@ -307,12 +292,13 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			recv <- pkt.msg
 			pktpd := pdfrom(pkt.ip)
 			pktpid := pdstr(pktpd)
-			_, ok := prs[pktpid]
+			p, ok := prs[pktpid]
 			if !ok {
-				prs[pktpid] = &peer{pd: pktpd, added: time.Now()}
+				p = &peer{pd: pktpd, added: time.Now()}
+				prs[pktpid] = p
 				lg(log, "/d/ph/peer/add from packet %x\n", Pdfp(pdhfn, pktpd))
 			}
-			prs[pktpid].seen = time.Now()
+			p.seen = time.Now()
 			m := pkt.msg
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
@@ -329,8 +315,11 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // STORE DAT
-				err := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-				lg(log, "/d/ph/dat/store %x %v\n", m.W, err)
+				novel, _ := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
+				if novel {
+					p.trust += Mass(m.W, Btt(m.T))
+				}
+				lg(log, "/d/ph/dat/store %x novel: %v from: %x trust: %f\n", m.W, novel, Pdfp(pdhfn, p.pd), p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := id(m.W)
 				if err == nil {
@@ -348,18 +337,48 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 	}
 }
 
-func store(dats map[uint64]map[uint64]Dat, d *Dat) error {
+func rnd(dats map[uint64]map[uint64]Dat) *Dat {
+	if len(dats) == 0 {
+		return nil
+	}
+	rshardtop := uint64(len(dats))
+	rshardpos := mrand.Uint64() % (rshardtop + 1)
+	var cshardpos uint64
+	for _, shard := range dats {
+		if cshardpos == rshardpos {
+			rdattop := uint64(len(shard))
+			rdatpos := mrand.Uint64() % (rdattop + 1)
+			var cdatpos uint64
+			for _, dat := range shard {
+				if cdatpos == rdatpos {
+					return &dat
+				}
+				cdatpos++
+			}
+		}
+		cshardpos++
+	}
+	return nil
+}
+
+func store(dats map[uint64]map[uint64]Dat, d *Dat) (bool, error) {
 	shardi, dati, err := id(d.W)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, ok := dats[shardi]
+	shard, ok := dats[shardi]
 	if !ok {
 		dats[shardi] = make(map[uint64]Dat)
+		dats[shardi][dati] = *d
+		return true, nil
+	} else {
+		_, ok := shard[dati]
+		if !ok {
+			shard[dati] = *d
+			return true, nil
+		}
+		return false, nil
 	}
-
-	dats[shardi][dati] = *d
-	return nil
 }
 
 func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
