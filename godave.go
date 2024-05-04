@@ -209,32 +209,24 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if nepoch%SEED == 0 && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER
-				rshardtop := uint64(len(dats))
-				rshardpos := mrand.Uint64() % (rshardtop + 1)
-				var cshardpos uint64
-			outerseed:
-				for _, shard := range dats {
-					if cshardpos == rshardpos {
-						rdattop := uint64(len(shard))
-						rdatpos := mrand.Uint64() % (rdattop + 1)
-						var cdatpos uint64
-						for _, dat := range shard {
-							if cdatpos == rdatpos {
-								m := marshal(&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W})
-								for _, rp := range randpds(prs, nil, 1, usable) {
-									wraddr(c, m, addrfrom(rp))
-									lg(log, "/d/rand/seed sent to %x %x\n", Pdfp(pdhfn, rp), dat.W)
-								}
-								break outerseed
-							}
-							cdatpos++
+			if nepoch%SEED == 0 && len(dats) > 0 && len(prs) > 0 { // SEND NEW OR RANDOM DAT TO RANDOM PEER
+				select {
+				case msend := <-send:
+					for _, rp := range randpds(prs, nil, NPEER, usable) {
+						wraddr(c, marshal(msend), addrfrom(rp))
+						lg(log, "/d/send/sent %x to %x\n", msend.W, Pdfp(pdhfn, rp))
+					}
+				default:
+					rd := rnd(dats)
+					if rd != nil {
+						for _, rp := range randpds(prs, nil, 1, usable) {
+							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
+							lg(log, "/d/rand/seed sent to %x %x\n", Pdfp(pdhfn, rp), rd.W)
 						}
 					}
-					cshardpos++
 				}
 			}
-			if nepoch%PULL == 0 { // GET RANDOM DAT
+			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range randpds(prs, nil, 1, usable) {
