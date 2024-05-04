@@ -219,13 +219,32 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 							m := marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W})
 							for _, rp := range randpds(prs, nil, 1, usable) {
 								wraddr(c, m, addrfrom(rp))
-								lg(log, "/d/rand sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
+								lg(log, "/d/rand/seed sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
 							}
 							break
 						}
 						x++
 					}
 				}
+			}
+			if nepoch%PULL == 0 && len(dats) > 0 && len(prs) > 0 {
+				rshard := uint8(mrand.Intn(256))
+				if len(dats[rshard]) > 0 {
+					rindex := mrand.Intn(len(dats[rshard]))
+					var x int
+					for s := range dats[rshard] {
+						if x == rindex {
+							rd := dats[rshard][s]
+							for _, rp := range randpds(prs, nil, 1, usable) {
+								wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
+								lg(log, "/d/rand/pull sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
+							}
+							break
+						}
+						x++
+					}
+				}
+
 			}
 			if nepoch%OPEN == 0 { // ONCE PER SHARE EPOCHS, RELATIVELY SHORT CYCLE
 				for pid, p := range prs {
@@ -247,6 +266,23 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					for _, rp := range randpds(prs, nil, 1, usable) {
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
+					}
+				case dave.Op_GET:
+					var found bool
+					var d Dat
+					shard, ok := dats[uint8(m.W[31])]
+					if ok { // GOT SHARD
+						d, found = shard[id(m.W)]
+					}
+					if found {
+						recv <- &dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}
+						lg(log, "/d/send/get found locally %x\n", d.W)
+					} else {
+						for _, rp := range randpds(prs, nil, NPEER, usable) {
+							wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
+							lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
+						}
+
 					}
 				default:
 					panic("unsupported operation")
@@ -280,6 +316,15 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			case dave.Op_DAT: // STORE DAT
 				store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
 				lg(log, "/d/ph/dat/store %x\n", m.W)
+			case dave.Op_GET: // REPLY WITH DAT
+				shard, ok := dats[uint8(m.W[31])]
+				if ok { // GOT SHARD
+					d, ok := shard[id(m.W)]
+					if ok { // GOT DAT
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}), pkt.ip)
+						lg(log, "/d/ph/get/reply sent %x\n", d.W)
+					}
+				}
 			}
 		}
 	}
