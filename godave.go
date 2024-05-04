@@ -32,10 +32,10 @@ const (
 	NPEER = 2
 	NASK  = 3
 	EPOCH = 65537 * time.Nanosecond
-	DELAY = 5039
+	DELAY = 1993
 	OPEN  = 257
 	PING  = 719
-	DROP  = 1597
+	DROP  = 106033
 	PRUNE = 32768
 	SEED  = 2
 	PULL  = 53
