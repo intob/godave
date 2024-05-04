@@ -30,6 +30,7 @@ import (
 const (
 	MTU      = 1500
 	NPEER    = 2
+	NASK     = 3
 	EPOCH    = 65537 * time.Nanosecond
 	DELAY    = 5039
 	OPEN     = 257
@@ -162,7 +163,7 @@ func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 }
 
 func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int, seed bool) {
-	dats := make(map[uint8]map[uint64]Dat)
+	dats := make(map[uint64]map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTicker(EPOCH)
 	pdhfn := fnv.New64a()
@@ -173,7 +174,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			if nepoch%PRUNE == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
 				memstat := &runtime.MemStats{}
 				runtime.ReadMemStats(memstat)
-				newdats := make(map[uint8]map[uint64]Dat)
+				newdats := make(map[uint64]map[uint64]Dat)
 				var minmass float64
 				var ld, count uint64
 				for shardid, shard := range dats {
@@ -209,42 +210,53 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
 			if ((seed && nepoch%SEEDSEED == 0) || (!seed && nepoch%SEED == 0)) && len(dats) > 0 && len(prs) > 0 { // SEND RANDOM DAT TO RANDOM PEER, SEEDS MAY PRIORITISE PEER MESSAGES
-				rshard := uint8(mrand.Intn(256))
-				if len(dats[rshard]) > 0 {
-					rindex := mrand.Intn(len(dats[rshard]))
-					var x int
-					for s := range dats[rshard] {
-						if x == rindex {
-							rd := dats[rshard][s]
-							m := marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W})
-							for _, rp := range randpds(prs, nil, 1, usable) {
-								wraddr(c, m, addrfrom(rp))
-								lg(log, "/d/rand/seed sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
+				rshardtop := uint64(len(dats))
+				rshardpos := mrand.Uint64() % (rshardtop + 1)
+				var cshardpos uint64
+			outerseed:
+				for _, shard := range dats {
+					if cshardpos == rshardpos {
+						rdattop := uint64(len(shard))
+						rdatpos := mrand.Uint64() % (rdattop + 1)
+						var cdatpos uint64
+						for _, dat := range shard {
+							if cdatpos == rdatpos {
+								m := marshal(&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W})
+								for _, rp := range randpds(prs, nil, 1, usable) {
+									wraddr(c, m, addrfrom(rp))
+									lg(log, "/d/rand/seed sent to %x %s\n", Pdfp(pdhfn, rp), dat.V)
+								}
+								break outerseed
 							}
-							break
+							cdatpos++
 						}
-						x++
 					}
+					cshardpos++
 				}
 			}
 			if nepoch%PULL == 0 && len(dats) > 0 && len(prs) > 0 {
-				rshard := uint8(mrand.Intn(256))
-				if len(dats[rshard]) > 0 {
-					rindex := mrand.Intn(len(dats[rshard]))
-					var x int
-					for s := range dats[rshard] {
-						if x == rindex {
-							rd := dats[rshard][s]
-							for _, rp := range randpds(prs, nil, 1, usable) {
-								wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
-								lg(log, "/d/rand/pull sent to %x %s\n", Pdfp(pdhfn, rp), rd.V)
+				rshardtop := uint64(len(dats))
+				rshardpos := mrand.Uint64() % (rshardtop + 1)
+				var cshardpos uint64
+			outerpull:
+				for _, shard := range dats {
+					if cshardpos == rshardpos {
+						rdattop := uint64(len(shard))
+						rdatpos := mrand.Uint64() % (rdattop + 1)
+						var cdatpos uint64
+						for _, dat := range shard {
+							if cdatpos == rdatpos {
+								for _, rp := range randpds(prs, nil, 1, usable) {
+									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: dat.W}), addrfrom(rp))
+									lg(log, "/d/rand/pull sent to %x %s\n", Pdfp(pdhfn, rp), dat.V)
+								}
+								break outerpull
 							}
-							break
+							cdatpos++
 						}
-						x++
 					}
+					cshardpos++
 				}
-
 			}
 			if nepoch%OPEN == 0 { // ONCE PER SHARE EPOCHS, RELATIVELY SHORT CYCLE
 				for pid, p := range prs {
@@ -268,21 +280,24 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
 					}
 				case dave.Op_GET:
-					var found bool
-					var d Dat
-					shard, ok := dats[uint8(m.W[31])]
-					if ok { // GOT SHARD
-						d, found = shard[id(m.W)]
-					}
-					if found {
-						recv <- &dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}
-						lg(log, "/d/send/get found locally %x\n", d.W)
-					} else {
-						for _, rp := range randpds(prs, nil, NPEER, usable) {
-							wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
-							lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
+					shardi, dati, err := id(m.W)
+					if err == nil {
+						var found bool
+						shard, ok := dats[shardi]
+						if ok {
+							dat, ok := shard[dati]
+							if ok {
+								found = true
+								recv <- &dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}
+								lg(log, "/d/send/get found locally %x\n", dat.W)
+							}
 						}
-
+						if !found {
+							for _, rp := range randpds(prs, nil, NASK, usable) {
+								wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
+								lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
+							}
+						}
 					}
 				default:
 					panic("unsupported operation")
@@ -314,15 +329,18 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // STORE DAT
-				store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-				lg(log, "/d/ph/dat/store %x\n", m.W)
+				err := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
+				lg(log, "/d/ph/dat/store %x %v\n", m.W, err)
 			case dave.Op_GET: // REPLY WITH DAT
-				shard, ok := dats[uint8(m.W[31])]
-				if ok { // GOT SHARD
-					d, ok := shard[id(m.W)]
-					if ok { // GOT DAT
-						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}), pkt.ip)
-						lg(log, "/d/ph/get/reply sent %x\n", d.W)
+				shardi, dati, err := id(m.W)
+				if err == nil {
+					shard, ok := dats[shardi]
+					if ok { // GOT SHARD
+						dat, ok := shard[dati]
+						if ok { // GOT DAT
+							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}), pkt.ip)
+							lg(log, "/d/ph/get/reply sent %x\n", dat.W)
+						}
 					}
 				}
 			}
@@ -330,12 +348,18 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 	}
 }
 
-func store(dats map[uint8]map[uint64]Dat, d *Dat) {
-	_, ok := dats[uint8(d.W[31])]
-	if !ok {
-		dats[uint8(d.W[31])] = make(map[uint64]Dat)
+func store(dats map[uint64]map[uint64]Dat, d *Dat) error {
+	shardi, dati, err := id(d.W)
+	if err != nil {
+		return err
 	}
-	dats[uint8(d.W[31])][id(d.W)] = *d
+	_, ok := dats[shardi]
+	if !ok {
+		dats[shardi] = make(map[uint64]Dat)
+	}
+
+	dats[shardi][dati] = *d
+	return nil
 }
 
 func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
@@ -448,10 +472,17 @@ func hash4(port uint16) byte { // 4-bit hash
 	return byte((port * 41) >> 12)
 }
 
-func id(v []byte) uint64 {
+func id(v []byte) (shardi uint64, dati uint64, err error) {
+	if len(v) != 32 {
+		return 0, 0, errors.New("value is not of length 32 bytes")
+	}
 	h := fnv.New64a()
-	h.Write(v)
-	return h.Sum64()
+	h.Write(v[:16])
+	shardi = h.Sum64()
+	h.Reset()
+	h.Write(v[16:])
+	dati = h.Sum64()
+	return
 }
 
 func wraddr(c *net.UDPConn, payload []byte, addr netip.AddrPort) {
