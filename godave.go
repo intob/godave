@@ -212,14 +212,14 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			if nepoch%SEED == 0 && len(dats) > 0 && len(prs) > 0 { // SEND NEW OR RANDOM DAT TO RANDOM PEER
 				select {
 				case msend := <-send:
-					for _, rp := range randpds(prs, nil, NPEER, usable) {
+					for _, rp := range randpds(prs, nil, NPEER, usable, log) {
 						wraddr(c, marshal(msend), addrfrom(rp))
 						lg(log, "/d/send/sent %x to %x\n", msend.W, Pdfp(pdhfn, rp))
 					}
 				default:
 					rd := rnd(dats)
 					if rd != nil {
-						for _, rp := range randpds(prs, nil, 1, usable) {
+						for _, rp := range randpds(prs, nil, 1, usable, log) {
 							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
 							lg(log, "/d/rand/seed sent to %x %x\n", Pdfp(pdhfn, rp), rd.W)
 						}
@@ -229,7 +229,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, usable) {
+					for _, rp := range randpds(prs, nil, 1, usable, log) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/rand/pull sent get %x to %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
@@ -252,7 +252,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 				switch m.Op {
 				case dave.Op_DAT:
 					store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-					for _, rp := range randpds(prs, nil, NPEER, usable) {
+					for _, rp := range randpds(prs, nil, NPEER, usable, log) {
 						wraddr(c, marshal(m), addrfrom(rp))
 						lg(log, "/d/send DAT to %x\n", Pdfp(pdhfn, rp))
 					}
@@ -270,7 +270,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 							}
 						}
 						if !found {
-							for _, rp := range randpds(prs, nil, NASK, usable) {
+							for _, rp := range randpds(prs, nil, NASK, usable, log) {
 								wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 								lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
 							}
@@ -303,7 +303,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := randpds(prs, []*dave.Pd{pktpd}, NPEER, usable)
+				randpds := randpds(prs, []*dave.Pd{pktpd}, NPEER, usable, log)
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // STORE DAT
@@ -438,14 +438,22 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 	return &pkt{cpy, raddr}
 }
 
-func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) bool) []*dave.Pd {
+func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) bool, log chan<- string) []*dave.Pd {
 	exclmap := make(map[string]struct{}, len(excl))
 	for _, pexcl := range excl {
 		exclmap[pdstr(pexcl)] = struct{}{}
 	}
+	var legend *peer
+	for _, p := range prs {
+		if legend == nil || p.trust > legend.trust {
+			legend = p
+		}
+	}
+	lg(log, "/randpds/legend %x %f\n", Pdfp(fnv.New64a(), legend.pd), legend.trust)
+	rndtrust := mrand.Float64() * legend.trust // CALCULATE RANDOM TRUST THRESHOLD
 	candidates := make([]*dave.Pd, 0, len(prs))
 	for _, k := range prs {
-		if match(k) {
+		if match(k) && k.trust >= rndtrust {
 			if _, ok := exclmap[pdstr(k.pd)]; !ok {
 				candidates = append(candidates, k.pd)
 			}
