@@ -13,6 +13,8 @@ The above copyright notice and this permission notice shall be included in all c
 
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
+
+
 Dave is an open protocol, designed to simply & efficiently distribute a hash table in a byzantine environment.
 
 A peer-to-peer cache, anonymised, and almost instantly-consistent.
@@ -22,31 +24,40 @@ Clients (webapps included, via HTTP gateway), may write to the network without a
 Packets with fields value, time, and a time-bound proof-of-work (nonce, work) are gossiped, until their weight has decayed, such that they are no-longer available on any node.
 
 
+
 1.      Constants
 
-MTU             1500            Reasonable value to avoid packet fragmentation.
-NPEER           2               Limit to prevent Eclipse attack.
-EPOCH           26544358ns      Base minimum period of the operation cycle.
-DELAY           512             Epochs until dats are shared to new peers.
-SHARE           8               Epochs until silent peers are no-longer advertised.
-PING            64              Epochs until silent peers are pinged.
-DROP            512             Epochs until silent peers are dropped from the peer table.
-PRUNE           128             Number of epochs between dat pruning.
-SEEDSEED        1024            For seed nodes. Number of epochs between sending a random dat. Seed nodes must already send many PEER messages, but also help to seed.
+MTU         1500        Packet size, reasonable value to avoid packet fragmentation.
+NPEER       2           Number of peers to share in PEER message. Limit to prevent Eclipse attack.
+PROBE       1000        Inverse of probability that an untrusted peer will be randomly selected.
+EPOCH       65537ns     Base minimum period of the operation cycle.
+DELAY       1993        Epochs until dats are shared to new peers.
+OPEN        257         Epochs until silent peers are no-longer advertised.
+PING        719         Epochs until silent peers are pinged.
+DROP        106033      Epochs until silent peers are dropped from the peer table.
+PRUNE       32768       Number of epochs between dat pruning.
+SEED        2           Number of epochs between sending a random dat. 
+PULL        53          Number of epochs between sending a random get. 
+
 
 
 2.      User-configurable Settings
 
-                SUGGESTED VALUE
-FILTER_CAP      1M      Allocates around 1MB. Should be increased to 2, 4 or 8M if possible.
-DAT_CAP         1M      As large as possible for available memory. ~1304B per dat.
+Listen      UDP listening address.
+Bootstraps  A slice of seed node ip-port addresses.
+DatCap      As large as possible for available memory.
+FilterCap   1M allocates around 1MB of memory. Allocate more if possible, to reduce false-positive rate.
+Log         A string channel for sending log messages.
+
 
 
 3.      Operation Codes
 
-GETPEER         Packet requesting that the remote replies with NPEER random peer descriptors.
-PEER            Packet containing NPEER peer descriptors.
-DAT             Packet containing a value, time, and output of the cost function: work, salt. 
+GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
+PEER        Packet containing NPEER peer descriptors.
+DAT         Packet containing a value, time, and output of the cost function: work, salt.
+GET         Packet containing the work hash, remote should reply with a message of op-code DAT, if possible.
+
 
 
 4.      Types
@@ -54,19 +65,22 @@ DAT             Packet containing a value, time, and output of the cost function
 4. 1.   M
 dave.M is the binary serialisation of an entire packet.
 
-                DESCRIPTION                         BYTE LENGTH
-Op              Operation code.                     1
-Peers           List of peers.                      2*NPEER
-Work            SHA256(SHA256(Val, Time), Salt).    0 | 32
-Salt            Random bytes used to solve work.    0 | 32
-Time            Big-endian unix milliseconds.       0 | 8
-Val             The data.                           0 | <= 1388 when NPEER=2
+FIELD       DESCRIPTION                                 BYTE LENGTH
+
+Op          Operation code.                             1
+Peers       List of peers.                              20*NPEER
+Work        BLAKE2B256(BLAKE2B256(Val, Time), Salt).    0 | 32
+Salt        Random bytes used to solve work.            0 | 32
+Time        Little-endian unix milliseconds.            0 | 8
+Val         The data.                                   0 | <= 1388 when NPEER=2
+
 
 
 4. 2.   Dat
 godave.Dat is a container for Value, Time, Salt, and Work.
 
 The proof of work allows the network to prioritise storage of newer keys backed by more work. See 6.
+
 
 
 4. 3.   Wire Format
@@ -78,13 +92,14 @@ Transpiling Protobuf Spec for Go:
 protoc --go_out=. dave.proto
 
 
+
 5.      Peer Discovery & Liveness
 
 The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER).
 
 A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
 
-Peers are not advertised if they have not been seen recently.
+Peers are not advertised if they have not been seen within the last OPEN epochs.
 
 
 
@@ -95,25 +110,31 @@ mass = difficulty * (1 / ageMilliseconds)
 Where difficulty is number of leading zero bytes, age is calculated from the given time and current time.
 
 
+
 7.      Replacement by Mass 
 
 Once per PRUNE epochs, a user defined number of heaviest dats are kept, and the remaining dropped.
 
 
-8.      Send One Random Dat
 
-Every EPOCH, each node sends one random dat to one random peer. This ensures reliable distribution and sender anonymitiy.
+8.      Random Dat
+
+Every SEED EPOCH, each node sends one random dat to one random peer. This ensures reliable distribution and sender anonymitiy.
 
 Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
+
+
+9.      Random Get
+
+Every PULL EPOCH, send a message with op-code GET, and a randomly selected work hash that we already have. This further improves anonymity, at the cost of wasted bandwidth.
+
 
 
 9.      Packet Filter
 
 Dropping packets efficiently is fundamental to resilience against DoS attack.
 
-Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling fast insertions, deletions and lookups.
-
-This makes them well-suited for performance-critical applications like packet filtering to improve DoS attack resilience.
+Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling fast insertions, deletions and lookups. This makes them well-suited for performance-critical applications.
 
 Packets that deviate from the protocol are detected & dropped without further processing.
 

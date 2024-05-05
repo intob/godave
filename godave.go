@@ -8,7 +8,6 @@ package godave
 import (
 	"bytes"
 	crand "crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -22,7 +21,8 @@ import (
 	"time"
 
 	"github.com/intob/godave/dave"
-	ckoo "github.com/seiflotfy/cuckoofilter"
+	ckoo "github.com/panmari/cuckoofilter"
+	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
 )
@@ -30,7 +30,7 @@ import (
 const (
 	MTU   = 1500
 	NPEER = 2
-	NASK  = 3
+	PROBE = 1000
 	EPOCH = 65537 * time.Nanosecond
 	DELAY = 1993
 	OPEN  = 257
@@ -91,17 +91,23 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(c, boot, lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap), len(cfg.Bootstraps) == 0)
+	go d(c, boot, lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log, int(cfg.DatCap))
 	for _, bap := range cfg.Bootstraps {
 		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), bap)
 	}
 	return &Dave{send, recv}, nil
 }
 
-func Work(val, ti []byte, difficulty int) (work, salt []byte) {
-	zeros := make([]byte, difficulty)
+func Work(val, ti []byte, d int) (work, salt []byte) {
+	if d < 0 || d > 32 {
+		return nil, nil
+	}
+	zeros := make([]byte, d)
 	salt = make([]byte, 32)
-	h := sha256.New()
+	h, err := blake2b.New256(nil)
+	if err != nil {
+		return nil, nil
+	}
 	h.Write(val)
 	h.Write(ti)
 	load := h.Sum(nil)
@@ -121,7 +127,10 @@ func Check(val, ti, salt, work []byte) int {
 	if len(ti) != 8 || Btt(ti).After(time.Now()) {
 		return -2
 	}
-	h := sha256.New()
+	h, err := blake2b.New256(nil)
+	if err != nil {
+		return -3
+	}
 	h.Write(val)
 	h.Write(ti)
 	load := h.Sum(nil)
@@ -141,7 +150,7 @@ func Mass(work []byte, t time.Time) float64 {
 func Ttb(t time.Time) []byte {
 	milli := t.UnixNano() / 1000000
 	bytes := make([]byte, 8)
-	binary.BigEndian.PutUint64(bytes, uint64(milli))
+	binary.LittleEndian.PutUint64(bytes, uint64(milli))
 	return bytes
 }
 
@@ -149,20 +158,20 @@ func Btt(b []byte) time.Time {
 	if len(b) != 8 {
 		return time.Time{}
 	}
-	milli := int64(binary.BigEndian.Uint64(b))
+	milli := int64(binary.LittleEndian.Uint64(b))
 	return time.Unix(0, milli*1000000)
 }
 
 func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 	port := make([]byte, 8)
-	binary.BigEndian.PutUint32(port, pd.Port)
+	binary.LittleEndian.PutUint32(port, pd.Port)
 	h.Reset()
 	h.Write(port)
 	h.Write(pd.Ip)
 	return h.Sum(nil)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int, seed bool) {
+func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string, cap int) {
 	dats := make(map[uint64]map[uint64]Dat)
 	var nepoch uint64
 	et := time.NewTicker(EPOCH)
@@ -270,7 +279,7 @@ func d(c *net.UDPConn, prs map[string]*peer, pch <-chan *pkt, send <-chan *dave.
 							}
 						}
 						if !found {
-							for _, rp := range randpds(prs, nil, NASK, usable, log) {
+							for _, rp := range randpds(prs, nil, 1, usable, log) {
 								wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 								lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
 							}
@@ -378,18 +387,17 @@ func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
 	go func() {
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
+		keypool := sync.Pool{New: func() any { return make([]byte, 16 /*addr*/ +8 /*op-code*/ +1 /*port*/) }}
 		f := ckoo.NewFilter(fcap)
-		rt := time.NewTimer(EPOCH)
-		h := fnv.New128a()
+		rtick := time.NewTicker(SEED * EPOCH)
 		defer c.Close()
 		for {
 			select {
-			case <-rt.C:
+			case <-rtick.C:
 				f.Reset()
-				rt.Reset(EPOCH)
 				lg(log, "/lstn/filter/reset\n")
 			default:
-				p := rdpkt(c, f, h, &bufpool, &mpool, log)
+				p := rdpkt(c, f, &bufpool, &mpool, &keypool, log)
 				if p != nil {
 					pkts <- p
 				}
@@ -399,7 +407,7 @@ func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Pool, log chan<- string) *pkt {
+func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool, keypool *sync.Pool, log chan<- string) *pkt {
 	buf := bufpool.Get().([]byte)
 	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
@@ -413,17 +421,19 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, h hash.Hash, bufpool, mpool *sync.Poo
 		lg(log, "/rdpkt/drop unmarshal err\n")
 		return nil
 	}
-	h.Reset()
-	rab := raddr.Addr().As16()
-	h.Write(rab[:])
-	h.Write([]byte{hash4(raddr.Port())}) // allow nibble of ports per IP for now
+	key := keypool.Get().([]byte)
+	defer keypool.Put(key) //lint:ignore SA6002 slice is already a reference
+	rb := raddr.Addr().As16()
+	copy(key[:16], rb[:])
 	op := make([]byte, 8)
-	binary.BigEndian.PutUint32(op, uint32(m.Op.Number()))
-	h.Write(op)
-	if !f.InsertUnique(h.Sum(nil)) {
-		lg(log, "/rdpkt/drop/filter collision: IP-HASH4(PORT)-OP %s\n", m.Op)
+	binary.LittleEndian.PutUint32(op, uint32(m.Op.Number()))
+	copy(key[16:24], op)
+	key[24] = hash4(raddr.Port()) // allow nibble of ports per IP for now
+	if f.Lookup(key) {
+		lg(log, "/rdpkt/drop/filter collision %x\n", key)
 		return nil
 	}
+	f.Insert(key)
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/rdpkt/drop/npeer too many peers\n")
 		return nil
@@ -450,10 +460,11 @@ func randpds(prs map[string]*peer, excl []*dave.Pd, lim int, match func(*peer) b
 		}
 	}
 	lg(log, "/randpds/legend %x %f\n", Pdfp(fnv.New64a(), legend.pd), legend.trust)
+	probe := mrand.Intn(PROBE)
 	rndtrust := mrand.Float64() * legend.trust // CALCULATE RANDOM TRUST THRESHOLD
 	candidates := make([]*dave.Pd, 0, len(prs))
 	for _, k := range prs {
-		if match(k) && k.trust >= rndtrust {
+		if match(k) && (probe == 1 || k.trust >= rndtrust) {
 			if _, ok := exclmap[pdstr(k.pd)]; !ok {
 				candidates = append(candidates, k.pd)
 			}

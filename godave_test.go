@@ -10,18 +10,18 @@ import (
 	"github.com/intob/godave/dave"
 )
 
-func TestWeight(t *testing.T) {
-	testWeightDifficulty(2)
-	testWeightDifficulty(3)
+func TestMass(t *testing.T) {
+	testMassDifficulty(2)
+	testMassDifficulty(3)
 }
 
-func testWeightDifficulty(dif int) {
+func testMassDifficulty(dif int) {
 	work, _ := Work([]byte("test"), Ttb(time.Now()), dif)
-	ws := Weight(work, time.Now().Add(-time.Second))
-	wm := Weight(work, time.Now().Add(-time.Minute))
-	wh := Weight(work, time.Now().Add(-time.Hour))
-	wd := Weight(work, time.Now().Add(-24*time.Hour))
-	zero := Weight(work, time.Time{})
+	ws := Mass(work, time.Now().Add(-time.Second))
+	wm := Mass(work, time.Now().Add(-time.Minute))
+	wh := Mass(work, time.Now().Add(-time.Hour))
+	wd := Mass(work, time.Now().Add(-24*time.Hour))
+	zero := Mass(work, time.Time{})
 	fmt.Printf("second: %v\nminute: %v\nhour: %v\nday: %v\nzero: %v\n", ws, wm, wh, wd, zero)
 }
 
@@ -52,12 +52,12 @@ func TestPacket(t *testing.T) {
 	var max int
 	for i := 0; i < n; i++ {
 		m := &dave.M{
-			Op:   dave.Op_DAT,
-			Pds:  collectPds(d),
-			Val:  make([]byte, 1180), // THIS WILL HIT MTU WITH MAX DISTANCE
-			Time: Ttb(time.Now()),
+			Op:  dave.Op_DAT,
+			Pds: collectPds(d),
+			V:   make([]byte, 1180), // THIS WILL HIT MTU WITH MAX DISTANCE
+			T:   Ttb(time.Now()),
 		}
-		m.Work, m.Nonce = Work(m.Val, m.Time, 0)
+		m.W, m.S = Work(m.V, m.T, 0)
 		l := len(marshal(m))
 		if l > max {
 			max = l
