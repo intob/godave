@@ -219,10 +219,45 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 		select {
 		case <-et.C:
 			nepoch++
-			if PRUNE%nepoch == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
-				prune(dats, dcap, prs, log)
+			if nepoch%PRUNE == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
+				memstat := &runtime.MemStats{}
+				runtime.ReadMemStats(memstat)
+				newdats := make(map[uint64]map[uint64]Dat)
+				var minmass float64
+				var ld, count uint64
+				for shardid, shard := range dats {
+					for key, dat := range shard {
+						count++
+						mass := Mass(dat.W, dat.Ti)
+						if len(shard) >= dcap-1 { // BEYOND CAP, REPLACE BY MASS
+							if mass > minmass {
+								delete(newdats[shardid], ld)
+								lg(log, "/d/prune/delete %d with weight %f\n", ld, minmass)
+								newdats[shardid][key] = dat
+								ld = key
+								minmass = mass
+							}
+						} else {
+							if mass < minmass {
+								minmass = mass
+							}
+							_, ok := newdats[shardid]
+							if !ok {
+								newdats[shardid] = make(map[uint64]Dat)
+							}
+							newdats[shardid][key] = dat
+						}
+					}
+				}
+				dats = newdats
+				newpeers := make(map[string]*peer)
+				for k, p := range prs {
+					newpeers[k] = p
+				}
+				prs = newpeers
+				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if SEED%nepoch == 0 && len(dats) > 0 && len(prs) > 0 { // RANDOM DAT TO RANDOM PEER
+			if nepoch%SEED == 0 { // RANDOM DAT TO RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range randpds(prs, nil, 1, usable) {
@@ -231,16 +266,16 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 					}
 				}
 			}
-			if PULL%nepoch == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
+			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range randpds(prs, nil, 1, usable) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
-						lg(log, "/d/rand/pull sent %x to %x\n", Pdfp(pdhfn, rp), rd.W)
+						lg(log, "/d/pull sent to %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
 				}
 			}
-			if PING%nepoch == 0 { // ONCE PER PING EPOCHS, RELATIVELY SHORT CYCLE
+			if nepoch%PING == 0 { // ONCE PER PING EPOCHS, RELATIVELY SHORT CYCLE
 				for pid, p := range prs {
 					if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 						delete(prs, pid)
@@ -260,7 +295,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 					go func(rpds []*dave.Pd) {
 						for _, rp := range rpds {
 							wraddr(c, marshal(m), addrfrom(rp))
-							lg(log, "/d/send/dat sent to %x\n", Pdfp(pdhfn, rp))
+							lg(log, "/d/send/dat sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
 						}
 					}(randpds(prs, nil, FANOUT, usable))
 				case dave.Op_GET:
@@ -339,45 +374,6 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 			}
 		}
 	}
-}
-
-func prune(dats map[uint64]map[uint64]Dat, dcap int, prs map[string]*peer, log chan<- string) {
-	memstat := &runtime.MemStats{}
-	runtime.ReadMemStats(memstat)
-	newdats := make(map[uint64]map[uint64]Dat)
-	var minmass float64
-	var ld, count uint64
-	for shardid, shard := range dats {
-		for key, dat := range shard {
-			count++
-			mass := Mass(dat.W, dat.Ti)
-			if len(shard) >= dcap-1 { // BEYOND CAP, REPLACE BY MASS
-				if mass > minmass {
-					delete(newdats[shardid], ld)
-					lg(log, "/d/prune/delete %d with weight %f\n", ld, minmass)
-					newdats[shardid][key] = dat
-					ld = key
-					minmass = mass
-				}
-			} else {
-				if mass < minmass {
-					minmass = mass
-				}
-				_, ok := newdats[shardid]
-				if !ok {
-					newdats[shardid] = make(map[uint64]Dat)
-				}
-				newdats[shardid][key] = dat
-			}
-		}
-	}
-	dats = newdats
-	newpeers := make(map[string]*peer)
-	for k, p := range prs {
-		newpeers[k] = p
-	}
-	prs = newpeers
-	lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 }
 
 func rnd(dats map[uint64]map[uint64]Dat) *Dat {
