@@ -315,7 +315,10 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/ph/getpeer/reply with PEER to %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // FORWARD ON RECV CHAN AND STORE
-				recv <- pkt.msg
+				select {
+				case recv <- pkt.msg:
+				default:
+				}
 				novel, _ := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
 				if novel {
 					p.trust += Mass(m.W, Btt(m.T))
