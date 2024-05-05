@@ -31,7 +31,7 @@ const (
 	MTU    = 1500
 	FANOUT = 64
 	NPEER  = 2
-	PROBE  = 1000
+	PROBE  = 1920
 	EPOCH  = 65537 * time.Nanosecond
 	DELAY  = 1993
 	PING   = 5039
