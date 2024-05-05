@@ -48,14 +48,14 @@ func makeDave() *Dave {
 
 func TestPacket(t *testing.T) {
 	const n = 100
-	d := makeDave()
+	//d := makeDave()
 	var max int
 	for i := 0; i < n; i++ {
 		m := &dave.M{
-			Op:  dave.Op_DAT,
-			Pds: collectPds(d),
-			V:   make([]byte, 1180), // THIS WILL HIT MTU WITH MAX DISTANCE
-			T:   Ttb(time.Now()),
+			Op: dave.Op_DAT,
+			//Pds: collectPds(d),
+			V: make([]byte, 1180), // THIS WILL HIT MTU WITH MAX DISTANCE
+			T: Ttb(time.Now()),
 		}
 		m.W, m.S = Work(m.V, m.T, 0)
 		l := len(marshal(m))
@@ -64,15 +64,4 @@ func TestPacket(t *testing.T) {
 		}
 	}
 	fmt.Printf("largest packet of %d: %d, MTU: %d", n, max, MTU)
-}
-
-func collectPds(d *Dave) []*dave.Pd {
-	pds := make([]*dave.Pd, 0)
-	for m := range d.Recv {
-		pds = append(pds, m.Pds...)
-		if len(pds) >= 2 {
-			break
-		}
-	}
-	return pds
 }
