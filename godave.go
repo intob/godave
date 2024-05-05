@@ -29,14 +29,15 @@ import (
 
 const (
 	MTU    = 1500
-	FANOUT = 64
+	FANOUT = 3
+	ROUNDS = 9
 	NPEER  = 2
 	PROBE  = 1920
 	EPOCH  = 65537 * time.Nanosecond
 	DELAY  = 1993
-	PING   = 5039
-	DROP   = 106033
-	PRUNE  = 32768
+	PING   = 8191
+	DROP   = 524287
+	PRUNE  = 131071
 	SEED   = 2
 	PULL   = 53
 )
@@ -88,7 +89,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		bp := pdfrom(bap)
 		boot[pdstr(bp)] = &peer{pd: bp, added: time.Now(), seen: time.Now(), bootstrap: true}
 	}
-	send := make(chan *dave.M, 1)
+	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	go d(c, boot, int(cfg.DatCap), lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log)
 	for _, bap := range cfg.Bootstraps {
@@ -97,17 +98,21 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{Recv: recv, send: send}, nil
 }
 
-func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
-	c := make(chan *Dat)
+func (d *Dave) Get(work []byte, timeout time.Duration, pass chan<- *dave.M) <-chan *Dat {
+	c := make(chan *Dat, 1)
 	go func() {
 		defer close(c)
+		sendy := time.NewTicker(EPOCH * SEED)
 		to := time.NewTimer(timeout)
-		sendy := time.NewTicker(PING)
 		for {
 			select {
 			case <-to.C:
 				return
 			case m := <-d.Recv:
+				select {
+				case pass <- m:
+				default:
+				}
 				if bytes.Equal(m.W, work) {
 					c <- &Dat{m.V, m.S, m.W, Btt(m.T)}
 					return
@@ -123,7 +128,9 @@ func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 func (d *Dave) Set(dat Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		d.send <- &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
+		for i := 0; i < ROUNDS; i++ {
+			d.send <- &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
+		}
 		done <- struct{}{}
 		close(done)
 	}()
@@ -212,27 +219,19 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 		select {
 		case <-et.C:
 			nepoch++
-			if nepoch%PRUNE == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
+			if PRUNE%nepoch == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
 				prune(dats, dcap, prs, log)
 			}
-			if nepoch%SEED == 0 && len(dats) > 0 && len(prs) > 0 { // SEND NEW OR RANDOM DAT TO RANDOM PEER
-				select {
-				case msend := <-send:
-					for _, rp := range randpds(prs, nil, NPEER, usable) {
-						wraddr(c, marshal(msend), addrfrom(rp))
-						lg(log, "/d/send/sent %x to %x\n", msend.W, Pdfp(pdhfn, rp))
-					}
-				default:
-					rd := rnd(dats)
-					if rd != nil {
-						for _, rp := range randpds(prs, nil, 1, usable) {
-							wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
-							lg(log, "/d/rand/seed sent to %x %x\n", Pdfp(pdhfn, rp), rd.W)
-						}
+			if SEED%nepoch == 0 && len(dats) > 0 && len(prs) > 0 { // RANDOM DAT TO RANDOM PEER
+				rd := rnd(dats)
+				if rd != nil {
+					for _, rp := range randpds(prs, nil, 1, usable) {
+						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
+						lg(log, "/d/seed sent to %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
 				}
 			}
-			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
+			if PULL%nepoch == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range randpds(prs, nil, 1, usable) {
@@ -241,7 +240,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 					}
 				}
 			}
-			if nepoch%PING == 0 { // ONCE PER PING EPOCHS, RELATIVELY SHORT CYCLE
+			if PING%nepoch == 0 { // ONCE PER PING EPOCHS, RELATIVELY SHORT CYCLE
 				for pid, p := range prs {
 					if !p.bootstrap && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 						delete(prs, pid)
@@ -258,13 +257,12 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 				switch m.Op {
 				case dave.Op_DAT:
 					store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-					go func() {
-						for _, rp := range randpds(prs, nil, FANOUT, usable) {
+					go func(rpds []*dave.Pd) {
+						for _, rp := range rpds {
 							wraddr(c, marshal(m), addrfrom(rp))
 							lg(log, "/d/send/dat sent to %x\n", Pdfp(pdhfn, rp))
-							time.Sleep(PULL * EPOCH)
 						}
-					}()
+					}(randpds(prs, nil, FANOUT, usable))
 				case dave.Op_GET:
 					shardi, dati, err := id(m.W)
 					if err == nil {
@@ -279,13 +277,12 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 							}
 						}
 						if !found {
-							go func() {
-								for _, rp := range randpds(prs, nil, FANOUT, usable) {
+							go func(rpds []*dave.Pd) {
+								for _, rp := range rpds {
 									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 									lg(log, "/d/send/get sent to %x %x\n", Pdfp(pdhfn, rp), m.W)
-									time.Sleep(PULL * EPOCH)
 								}
-							}()
+							}(randpds(prs, nil, FANOUT, usable))
 						}
 					}
 				default:
@@ -459,7 +456,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 	defer mpool.Put(m)
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
-		lg(log, "/rdpkt/drop unmarshal err\n")
+		lg(log, "/lstn/rdpkt/drop unmarshal err\n")
 		return nil
 	}
 	h := fnv.New128a()
@@ -471,18 +468,17 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 	h.Write(addr[:])
 	sum := h.Sum(nil)
 	if f.Lookup(sum) {
-		lg(log, "/rdpkt/drop/filter collision %s %x\n", m.Op, sum)
+		lg(log, "/lstn/rdpkt/drop/filter collision %s %x\n", m.Op, sum)
 		return nil
 	}
 	f.Insert(sum)
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
-		lg(log, "/rdpkt/drop/npeer too many peers\n")
+		lg(log, "/lstn/rdpkt/drop/npeer too many peers\n")
 		return nil
 	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < 0 {
-		lg(log, "/rdpkt/drop/workcheck invalid\n")
+		lg(log, "/lstn/rdpkt/drop/workcheck invalid\n")
 		return nil
 	}
-	lg(log, "ok %s", m.Op)
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), V: m.V, T: m.T, S: m.S, W: m.W}
 	for i, pd := range m.Pds {
 		cpy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
