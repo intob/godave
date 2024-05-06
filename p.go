@@ -40,7 +40,7 @@ const (
 	DROP      = 524287
 	PRUNE     = 60649
 	SEED      = 3
-	EDGE      = 28657
+	EDGE      = 131071
 	PULL      = 32993
 )
 
