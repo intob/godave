@@ -34,7 +34,7 @@ const (
 	NPEER  = 2
 	PROBE  = 256
 	EPOCH  = 65537 * time.Nanosecond
-	DELAY  = 1993
+	DELAY  = 28657
 	PING   = 8191
 	DROP   = 524287
 	PRUNE  = 131071
