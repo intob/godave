@@ -32,14 +32,14 @@ const (
 	FANOUT = 3
 	ROUNDS = 9
 	NPEER  = 2
-	PROBE  = 1920
+	PROBE  = 256
 	EPOCH  = 65537 * time.Nanosecond
 	DELAY  = 1993
 	PING   = 8191
 	DROP   = 524287
 	PRUNE  = 131071
 	SEED   = 2
-	PULL   = 53
+	PULL   = 127
 )
 
 type Dave struct {
@@ -426,7 +426,7 @@ func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		f := ckoo.NewFilter(fcap)
-		rtick := time.NewTicker(EPOCH)
+		rtick := time.NewTicker(SEED * EPOCH)
 		defer c.Close()
 		for {
 			select {
@@ -474,7 +474,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/lstn/rdpkt/drop/npeer too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < 0 {
+	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < 1 { // ZERO WORK WOULD HAVE ZERO MASS, MIN IS 1
 		lg(log, "/lstn/rdpkt/drop/workcheck invalid\n")
 		return nil
 	}
