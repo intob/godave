@@ -25,12 +25,9 @@ An amount of trust proportional to the mass of a dat is earned by sending a dat 
 Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding.
 Trust values are not gossiped or weighed into peer sharing.
 
-Dave is a peer-to-peer global cache, anonymised, and almost instantly-consistent.
-Average response times should be close to theroretical best possible.
 
 
-
-1.      Constants
+0.      Constants
 
 MTU         1500        Packet size, reasonable value to avoid packet fragmentation.
 FILTERCAP   100000      Cuckoo filter capacity, using 16-bit fingerprints.
@@ -38,18 +35,20 @@ FANOUT      3           Max number of peers to send new dats to.
 ROUNDS      9           Number of rounds to repeat sending to <=FANOUT peers. Balance speed with FANOUT.
 NPEER       2           Max number of peers to share in PEER message. Prevents Eclipse attack.
 PROBE       256         Inverse of probability that an untrusted peer will be randomly selected.
-EPOCH       65537ns     Base minimum period of the operation cycle.
+EPOCH       65537ns     Base minimum period of the operation cycle. The following are used to modulate operations.
 DELAY       28657       Epochs until dats may be shared to a new peer, and until new peers are advertised. Prevents Sybil attack.
 PING        8191        Epochs until silent peers are pinged.
 DROP        524287      Epochs until silent peers are dropped from the peer table.
-PRUNE       60649       Number of epochs between memory pruning.
-SEED        3           Number of epochs between sending a random dat to one peer, excluding edges. 
-EDGE        28657       Number of epochs between sending a random dat to one random edge.
-PULL        32993       Number of epochs between sending a random get to one peer, excluding edges. 
+PRUNE       60649       Epochs between memory pruning.
+SEED        3           Epochs between sending a random dat to one peer, excluding edges. 
+EDGE        28657       Epochs between sending a random dat to one random edge.
+PULL        32993       Epochs between sending a random get to one peer, excluding edges.
+
+Note: known peer count is also used to modulate frequency of operations, ensuring that the protocol scales well.
 
 
 
-2.      User-configurable Settings
+1.      User-configurable Settings
 
 Listen      UDP listen ip-port address.
 Edges       A slice of edge node ip-port addresses.
@@ -58,7 +57,7 @@ Log         A string channel for sending log messages.
 
 
 
-3.      Operation Codes
+2.      Operation Codes
 
 GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
@@ -67,7 +66,7 @@ GET         Packet containing the work hash, remote should reply with a message 
 
 
 
-4.      Packet Message Format
+3.      Packet Message Format
 
 A message is serialized into binary using protobuf. See protobuf spec dave.proto.
 
@@ -86,7 +85,7 @@ WORK        BLAKE2B256(BLAKE2B256(VAL, TIME), SALT).    0 | 32
 
 
 
-5.      Packet Filter
+4.      Packet Filter
 
 Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application.
 
@@ -108,11 +107,11 @@ The number of ports allowed per ip address is limited using a 4-bit multiply-the
 
 The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER).
 
-A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
+A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors. 
 
 
 
-6.      MASS
+6.      Mass
 
 MASS = DIFFICULTY * (1 / AGE_MILLISECONDS)
 
@@ -120,15 +119,15 @@ Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECON
 
 
 
-7.      Replacement by MASS 
+7.      Replacement by Mass 
 
-Once per PRUNE epochs, a user defined (DatCap) number of heaviest dats are kept, and the remaining dropped.
+Every PRUNE EPOCH, a user defined (DatCap) number of most massive dats are kept, and the remaining dropped.
 
 
 
-8.      Random DAT
+8.      Random Push 
 
-Every SEED EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
+Every SEED/NPEER EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
 
 Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
 
@@ -136,10 +135,7 @@ Note: In the current implementation, messages are sent from the main routine and
 
 
 
-9.      Random GET
+9.      Random Pull
 
-Every PULL EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This further improves anonymity, at the cost of a small amount of wasted bandwidth.
-
-
-
+Every PULL/NPEER EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This further improves anonymity, at the cost of a small amount of wasted bandwidth.
 
