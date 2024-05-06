@@ -322,7 +322,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 									lg(log, "/d/send/get/sent %x %x\n", Pdfp(pdhfn, rp), m.W)
 								}
-							}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return !p.edge && available(p) && dotrust(p, l) }))
+							}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
 						}
 					}
 				default:
