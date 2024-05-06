@@ -426,7 +426,7 @@ func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		f := ckoo.NewFilter(fcap)
-		rtick := time.NewTicker(SEED * EPOCH)
+		rtick := time.NewTicker(EPOCH)
 		defer c.Close()
 		for {
 			select {
