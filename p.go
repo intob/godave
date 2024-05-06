@@ -28,19 +28,19 @@ import (
 )
 
 const (
-	MTU      = 1500
-	FANOUT   = 3
-	ROUNDS   = 9
-	NPEER    = 2
-	PROBE    = 256
-	EPOCH    = 65537 * time.Nanosecond
-	DELAY    = 28657
-	PING     = 8191
-	DROP     = 524287
-	PRUNE    = 60649
-	SEED     = 3
-	SEEDEDGE = 28657
-	PULL     = 127
+	MTU    = 1500
+	FANOUT = 3
+	ROUNDS = 9
+	NPEER  = 2
+	PROBE  = 256
+	EPOCH  = 65537 * time.Nanosecond
+	DELAY  = 28657
+	PING   = 8191
+	DROP   = 524287
+	PRUNE  = 60649
+	SEED   = 3
+	EDGE   = 28657
+	PULL   = 32993
 )
 
 type Dave struct {
@@ -258,28 +258,28 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 				prs = newpeers
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if nepoch%SEED == 0 { // RANDOM DAT TO RANDOM PEER
+			if nepoch%SEED == 0 { // RANDOM DAT TO RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, func(p *peer, legend *peer) bool { return !p.edge && usable(p, legend) }) {
+					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && usable(p, l) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/seed %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
 				}
 			}
-			if nepoch%SEEDEDGE == 0 { // RANDOM DAT TO RANDOM EDGE
+			if nepoch%EDGE == 0 { // RANDOM DAT TO RANDOM EDGE PEER
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rboot := range randpds(prs, nil, 1, func(p *peer, legend *peer) bool { return p.edge && usable(p, legend) }) {
+					for _, rboot := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return p.edge && usable(p, l) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rboot))
 						lg(log, "/d/seedboot %x %x\n", Pdfp(pdhfn, rboot), rd.W)
 					}
 				}
 			}
-			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER
+			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, usable) {
+					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && usable(p, l) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/pull %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
