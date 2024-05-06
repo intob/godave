@@ -28,19 +28,20 @@ import (
 )
 
 const (
-	MTU    = 1500
-	FANOUT = 3
-	ROUNDS = 9
-	NPEER  = 2
-	PROBE  = 256
-	EPOCH  = 65537 * time.Nanosecond
-	DELAY  = 28657
-	PING   = 8191
-	DROP   = 524287
-	PRUNE  = 60649
-	SEED   = 3
-	EDGE   = 28657
-	PULL   = 32993
+	MTU       = 1500
+	FILTERCAP = 100000
+	FANOUT    = 3
+	ROUNDS    = 9
+	NPEER     = 2
+	PROBE     = 256
+	EPOCH     = 65537 * time.Nanosecond
+	DELAY     = 28657
+	PING      = 8191
+	DROP      = 524287
+	PRUNE     = 60649
+	SEED      = 3
+	EDGE      = 28657
+	PULL      = 32993
 )
 
 type Dave struct {
@@ -49,10 +50,10 @@ type Dave struct {
 }
 
 type Cfg struct {
-	Listen            *net.UDPAddr
-	Edges             []netip.AddrPort
-	DatCap, FilterCap uint
-	Log               chan<- string
+	Listen *net.UDPAddr
+	Edges  []netip.AddrPort
+	DatCap uint
+	Log    chan<- string
 }
 
 type Dat struct {
@@ -76,9 +77,6 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.DatCap == 0 {
 		return nil, errors.New("Cfg.DatCap must not be 0")
 	}
-	if cfg.FilterCap == 0 {
-		return nil, errors.New("Cfg.FilterCap must not be 0")
-	}
 	lg(cfg.Log, "/newdave/creating %+v\n", *cfg)
 	c, err := net.ListenUDP("udp", cfg.Listen)
 	if err != nil {
@@ -92,7 +90,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(c, edges, int(cfg.DatCap), lstn(c, cfg.FilterCap, cfg.Log), send, recv, cfg.Log)
+	go d(c, edges, int(cfg.DatCap), lstn(c, cfg.Log), send, recv, cfg.Log)
 	for _, e := range cfg.Edges {
 		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), e)
 	}
@@ -433,12 +431,12 @@ func store(dats map[uint64]map[uint64]Dat, d *Dat) (bool, error) {
 	}
 }
 
-func lstn(c *net.UDPConn, fcap uint, log chan<- string) <-chan *pkt {
+func lstn(c *net.UDPConn, log chan<- string) <-chan *pkt {
 	pkts := make(chan *pkt, 1)
 	go func() {
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
-		f := ckoo.NewFilter(fcap)
+		f := ckoo.NewFilter(FILTERCAP)
 		rtick := time.NewTicker(EPOCH)
 		defer c.Close()
 		for {

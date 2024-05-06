@@ -3,7 +3,7 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-Anonymised peer-to-peer distributed hash table on proof-of-work and gossip.
+Anonymised continuous packet sharing peer-to-peer network protocol.
 
 Copyright 2024 Joey Innes <joey@inneslabs.uk>
 
@@ -15,38 +15,45 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 
 
-Dave is an open protocol, designed to simply & efficiently distribute a hash table in a byzantine environment.
+Dave is an open protocol, designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment.
 
-A peer-to-peer cache, anonymised, and almost instantly-consistent.
+Packets of data up to 1500 bytes in length are continuously pushed and pulled at random. We call these packets "dats".
 
-Clients (webapps included, via HTTP gateway), may write to the network without any token or key, providing only a classic hashcash style proof-of-work.
+Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
-Packets with fields value, time, and a time-bound proof-of-work (nonce, work) are gossiped, until their weight has decayed, such that they are no-longer available on any node.
+An amount of trust proportional to the mass of a dat is earned by sending a dat not already in the remote's hash table.
+Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding.
+Trust values are not gossiped or weighed into peer sharing.
+
+Dave is a peer-to-peer global cache, anonymised, and almost instantly-consistent.
+Average response times should be close to theroretical best possible.
 
 
 
 1.      Constants
 
 MTU         1500        Packet size, reasonable value to avoid packet fragmentation.
-NPEER       2           Number of peers to share in PEER message. Limit to prevent Eclipse attack.
-PROBE       1000        Inverse of probability that an untrusted peer will be randomly selected.
+FILTERCAP   100000      Cuckoo filter capacity, using 16-bit fingerprints.
+FANOUT      3           Max number of peers to send new dats to.
+ROUNDS      9           Number of rounds to repeat sending to <=FANOUT peers. Balance speed with FANOUT.
+NPEER       2           Max number of peers to share in PEER message. Prevents Eclipse attack.
+PROBE       256         Inverse of probability that an untrusted peer will be randomly selected.
 EPOCH       65537ns     Base minimum period of the operation cycle.
-DELAY       1993        Epochs until dats are shared to new peers.
-OPEN        257         Epochs until silent peers are no-longer advertised.
-PING        719         Epochs until silent peers are pinged.
-DROP        106033      Epochs until silent peers are dropped from the peer table.
-PRUNE       32768       Number of epochs between dat pruning.
-SEED        2           Number of epochs between sending a random dat. 
-PULL        53          Number of epochs between sending a random get. 
+DELAY       28657       Epochs until dats may be shared to a new peer, and until new peers are advertised. Prevents Sybil attack.
+PING        8191        Epochs until silent peers are pinged.
+DROP        524287      Epochs until silent peers are dropped from the peer table.
+PRUNE       60649       Number of epochs between memory pruning.
+SEED        3           Number of epochs between sending a random dat to one peer, excluding edges. 
+EDGE        28657       Number of epochs between sending a random dat to one random edge.
+PULL        32993       Number of epochs between sending a random get to one peer, excluding edges. 
 
 
 
 2.      User-configurable Settings
 
-Listen      UDP listening address.
-Bootstraps  A slice of seed node ip-port addresses.
-DatCap      As large as possible for available memory.
-FilterCap   1M allocates around 1MB of memory. Allocate more if possible, to reduce false-positive rate.
+Listen      UDP listen ip-port address.
+Edges       A slice of edge node ip-port addresses.
+DatCap      Number of dats to store. Adjust for available memory.
 Log         A string channel for sending log messages.
 
 
@@ -56,40 +63,44 @@ Log         A string channel for sending log messages.
 GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
 DAT         Packet containing a value, time, and output of the cost function: work, salt.
-GET         Packet containing the work hash, remote should reply with a message of op-code DAT, if possible.
+GET         Packet containing the work hash, remote should reply with a message of op-code DAT, if available.
 
 
 
-4.      Types
-
-4. 1.   M
-dave.M is the binary serialisation of an entire packet.
-
-FIELD       DESCRIPTION                                 BYTE LENGTH
-
-Op          Operation code.                             1
-Peers       List of peers.                              20*NPEER
-Work        BLAKE2B256(BLAKE2B256(Val, Time), Salt).    0 | 32
-Salt        Random bytes used to solve work.            0 | 32
-Time        Little-endian unix milliseconds.            0 | 8
-Val         The data.                                   0 | <= 1388 when NPEER=2
-
-
-
-4. 2.   Dat
-godave.Dat is a container for Value, Time, Salt, and Work.
-
-The proof of work allows the network to prioritise storage of newer keys backed by more work. See 6.
-
-
-
-4. 3.   Wire Format
+4.      Packet Message Format
 
 A message is serialized into binary using protobuf. See protobuf spec dave.proto.
 
 Transpiling Protobuf Spec for Go:
 #!/bin/bash
 protoc --go_out=. dave.proto
+
+FIELD       DESCRIPTION                                 BYTE LENGTH
+
+OP          Operation code.                             1
+PEERS       List of peers.                              20*NPEER
+VAL         The data.                                   0 | <= 1388 when NPEER=2
+TIME        Little-endian unix milliseconds.            0 | 8
+SALT        Random bytes used to solve WORK.            0 | 32
+WORK        BLAKE2B256(BLAKE2B256(VAL, TIME), SALT).    0 | 32
+
+
+
+5.      Packet Filter
+
+Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application.
+
+Packets that deviate from the protocol are detected & dropped without further processing.
+
+The key inserted uniquely into the cuckoo filter:
+        
+FNV128A(REMOTE_IP, HASH4(REMOTE_PORT), OP)
+
+Failing unique insertion, the packet is dropped.
+
+The cuckoo filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch.
+
+The number of ports allowed per ip address is limited using a 4-bit multiply-then-shift hash function.
 
 
 
@@ -99,52 +110,36 @@ The protocol ensures a cohesive network by combining liveness and peer discovery
 
 A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
 
-Peers are not advertised if they have not been seen within the last OPEN epochs.
+
+
+6.      MASS
+
+MASS = DIFFICULTY * (1 / AGE_MILLISECONDS)
+
+Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECONDS is calculated from message TIME and current time.
 
 
 
-6.      Mass
+7.      Replacement by MASS 
 
-mass = difficulty * (1 / ageMilliseconds)
-
-Where difficulty is number of leading zero bytes, age is calculated from the given time and current time.
+Once per PRUNE epochs, a user defined (DatCap) number of heaviest dats are kept, and the remaining dropped.
 
 
 
-7.      Replacement by Mass 
+8.      Random DAT
 
-Once per PRUNE epochs, a user defined number of heaviest dats are kept, and the remaining dropped.
-
-
-
-8.      Random Dat
-
-Every SEED EPOCH, each node sends one random dat to one random peer. This ensures reliable distribution and sender anonymitiy.
+Every SEED EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
 
 Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
 
-
-9.      Random Get
-
-Every PULL EPOCH, send a message with op-code GET, and a randomly selected work hash that we already have. This further improves anonymity, at the cost of wasted bandwidth.
+Note: In the current implementation, messages are sent from the main routine and I have not yet finished ensuring resistance to timing attack when sending new dats.
 
 
 
-9.      Packet Filter
+9.      Random GET
 
-Dropping packets efficiently is fundamental to resilience against DoS attack.
+Every PULL EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This further improves anonymity, at the cost of a small amount of wasted bandwidth.
 
-Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling fast insertions, deletions and lookups. This makes them well-suited for performance-critical applications.
 
-Packets that deviate from the protocol are detected & dropped without further processing.
 
-The key inserted uniquely into the cuckoo filter:
-        
-FNV128A(REMOTE_IP, HASH4(PORT), OP_CODE)
-
-Failing unique insertion, the packet is dropped.
-
-The cuckoo filter is reset every epoch, therefore each OP_CODE may be sent once per IP-PORT per epoch.
-
-The number of ports allowed per IP address is limited using a 4-bit multiply-then-shift hash function.
 
