@@ -306,7 +306,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 							wraddr(c, marshal(m), addrfrom(rp))
 							lg(log, "/d/send/dat %x %x\n", Pdfp(pdhfn, rp), m.W)
 						}
-					}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
+					}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return !p.edge && available(p) }))
 				case dave.Op_GET:
 					shardi, dati, err := id(m.W)
 					if err == nil {
@@ -326,7 +326,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 									lg(log, "/d/send/get/sent %x %x\n", Pdfp(pdhfn, rp), m.W)
 								}
-							}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
+							}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return !p.edge && available(p) }))
 						}
 					}
 				default:
