@@ -136,7 +136,7 @@ func (d *Dave) Set(dat Dat) <-chan struct{} {
 	return done
 }
 
-func Work(val, ti []byte, d int) (work, salt []byte) {
+func Work(val, tim []byte, d int) (work, salt []byte) {
 	if d < 0 || d > 32 {
 		return nil, nil
 	}
@@ -147,7 +147,7 @@ func Work(val, ti []byte, d int) (work, salt []byte) {
 		return nil, nil
 	}
 	h.Write(val)
-	h.Write(ti)
+	h.Write(tim)
 	load := h.Sum(nil)
 	for {
 		crand.Read(salt)
@@ -161,8 +161,8 @@ func Work(val, ti []byte, d int) (work, salt []byte) {
 	}
 }
 
-func Check(val, ti, salt, work []byte) int {
-	if len(ti) != 8 || Btt(ti).After(time.Now()) {
+func Check(val, tim, salt, work []byte) int {
+	if len(tim) != 8 || Btt(tim).After(time.Now()) {
 		return -2
 	}
 	h, err := blake2b.New256(nil)
@@ -170,7 +170,7 @@ func Check(val, ti, salt, work []byte) int {
 		return -3
 	}
 	h.Write(val)
-	h.Write(ti)
+	h.Write(tim)
 	load := h.Sum(nil)
 	h.Reset()
 	h.Write(load)
@@ -498,10 +498,9 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 
 func randpds(prs map[string]*peer, excl map[string]*peer, lim int, match func(p, legend *peer) bool) []*dave.Pd {
 	candidates := make([]*dave.Pd, 0, len(prs))
-	l := legend(prs)
 	for k, p := range prs {
 		_, exclude := excl[k]
-		if !exclude && match(p, l) {
+		if !exclude && match(p, legend(prs)) {
 			candidates = append(candidates, p.pd)
 		}
 	}
