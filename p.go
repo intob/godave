@@ -261,7 +261,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 			if nepoch%SEED == 0 { // RANDOM DAT TO RANDOM PEER
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, usable) {
+					for _, rp := range randpds(prs, nil, 1, func(p *peer, legend *peer) bool { return !p.edge && usable(p, legend) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/seed %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
@@ -270,7 +270,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 			if nepoch%SEEDEDGE == 0 { // RANDOM DAT TO RANDOM EDGE
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rboot := range randpds(prs, nil, 1, usableedge) {
+					for _, rboot := range randpds(prs, nil, 1, func(p *peer, legend *peer) bool { return p.edge && usable(p, legend) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rboot))
 						lg(log, "/d/seedboot %x %x\n", Pdfp(pdhfn, rboot), rd.W)
 					}
@@ -529,10 +529,6 @@ func usable(k, legend *peer) bool {
 		return time.Since(k.seen) < EPOCH*PING && (time.Since(k.added) > EPOCH*DELAY || k.edge)
 	}
 	return false
-}
-
-func usableedge(k, legend *peer) bool {
-	return k.edge && usable(k, legend)
 }
 
 func addrfrom(pd *dave.Pd) netip.AddrPort {
