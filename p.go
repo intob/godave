@@ -33,7 +33,7 @@ const (
 	FANOUT    = 3
 	ROUNDS    = 9
 	NPEER     = 2
-	PROBE     = 256
+	PROBE     = 16
 	EPOCH     = 65537 * time.Nanosecond
 	DELAY     = 28657
 	PING      = 8191
