@@ -213,7 +213,7 @@ func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 
 func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string) {
 	dats := make(map[uint64]map[uint64]Dat)
-	var nepoch uint64
+	var nepoch, npeer uint64
 	et := time.NewTicker(EPOCH)
 	pdhfn := fnv.New64a()
 	for {
@@ -256,30 +256,31 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 					newpeers[k] = p
 				}
 				prs = newpeers
+				npeer = uint64(len(newpeers))
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if nepoch%SEED == 0 { // RANDOM DAT TO RANDOM PEER, EXCLUDING EDGE
+			if npeer > 0 && nepoch%(max(1, SEED/npeer)) == 0 { // RANDOM DAT TO RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && usable(p, l) }) {
+					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) && dotrust(p, l) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/seed %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
 				}
 			}
-			if nepoch%EDGE == 0 { // RANDOM DAT TO RANDOM EDGE PEER
+			if npeer > 0 && nepoch%(EDGE*npeer) == 0 { // RANDOM DAT TO RANDOM EDGE PEER
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rboot := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return p.edge && usable(p, l) }) {
+					for _, rboot := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return p.edge && available(p) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}), addrfrom(rboot))
 						lg(log, "/d/seedboot %x %x\n", Pdfp(pdhfn, rboot), rd.W)
 					}
 				}
 			}
-			if nepoch%PULL == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGE
+			if npeer > 0 && nepoch%(max(1, PULL/npeer)) == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
-					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && usable(p, l) }) {
+					for _, rp := range randpds(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) }) {
 						wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: rd.W}), addrfrom(rp))
 						lg(log, "/d/pull %x %x\n", Pdfp(pdhfn, rp), rd.W)
 					}
@@ -307,7 +308,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 							wraddr(c, marshal(m), addrfrom(rp))
 							lg(log, "/d/send/dat %x %x\n", Pdfp(pdhfn, rp), m.W)
 						}
-					}(randpds(prs, nil, FANOUT, usable))
+					}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
 				case dave.Op_GET:
 					shardi, dati, err := id(m.W)
 					if err == nil {
@@ -327,7 +328,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 									wraddr(c, marshal(&dave.M{Op: dave.Op_GET, W: m.W}), addrfrom(rp))
 									lg(log, "/d/send/get/sent %x %x\n", Pdfp(pdhfn, rp), m.W)
 								}
-							}(randpds(prs, nil, FANOUT, usable))
+							}(randpds(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
 						}
 					}
 				default:
@@ -356,7 +357,7 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randpds := randpds(prs, map[string]*peer{pktpid: p}, NPEER, usable)
+				randpds := randpds(prs, map[string]*peer{pktpid: p}, NPEER, func(p *peer, l *peer) bool { return available(p) })
 				wraddr(c, marshal(&dave.M{Op: dave.Op_PEER, Pds: randpds}), pkt.ip)
 				lg(log, "/d/h/peer/reply %x\n", Pdfp(pdhfn, pktpd))
 			case dave.Op_DAT: // FORWARD ON RECV CHAN AND STORE
@@ -524,11 +525,12 @@ func legend(prs map[string]*peer) (legend *peer) {
 	return legend
 }
 
-func usable(k, legend *peer) bool {
-	if k.edge || mrand.Intn(PROBE) == 1 || k.trust >= mrand.Float64()*legend.trust {
-		return time.Since(k.seen) < EPOCH*PING && (time.Since(k.added) > EPOCH*DELAY || k.edge)
-	}
-	return false
+func available(k *peer) bool {
+	return time.Since(k.seen) < EPOCH*PING && (time.Since(k.added) > EPOCH*DELAY || k.edge)
+}
+
+func dotrust(k *peer, legend *peer) bool {
+	return mrand.Intn(PROBE) == 1 || k.trust >= mrand.Float64()*legend.trust
 }
 
 func addrfrom(pd *dave.Pd) netip.AddrPort {
