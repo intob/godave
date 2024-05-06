@@ -37,7 +37,7 @@ const (
 	DELAY  = 28657
 	PING   = 8191
 	DROP   = 524287
-	PRUNE  = 131071
+	PRUNE  = 60649
 	SEED   = 2
 	PULL   = 127
 )
