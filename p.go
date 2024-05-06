@@ -35,7 +35,7 @@ const (
 	NPEER     = 2
 	PROBE     = 16
 	EPOCH     = 65537 * time.Nanosecond
-	DELAY     = 28657
+	DELAY     = 3217
 	PING      = 8191
 	DROP      = 524287
 	PRUNE     = 60649
@@ -53,7 +53,7 @@ type Cfg struct {
 	Listen *net.UDPAddr
 	Edges  []netip.AddrPort
 	DatCap uint
-	Log    chan<- string
+	Log    chan<- []byte
 }
 
 type Dat struct {
@@ -97,21 +97,17 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return &Dave{Recv: recv, send: send}, nil
 }
 
-func (d *Dave) Get(work []byte, timeout time.Duration, pass chan<- *dave.M) <-chan *Dat {
+func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
 		defer close(c)
-		sendy := time.NewTicker(EPOCH * SEED)
+		sendy := time.NewTicker(SEED * EPOCH)
 		to := time.NewTimer(timeout)
 		for {
 			select {
 			case <-to.C:
 				return
 			case m := <-d.Recv:
-				select {
-				case pass <- m:
-				default:
-				}
 				if bytes.Equal(m.W, work) {
 					c <- &Dat{m.V, m.S, m.W, Btt(m.T)}
 					return
@@ -209,7 +205,7 @@ func Pdfp(h hash.Hash, pd *dave.Pd) []byte {
 	return h.Sum(nil)
 }
 
-func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- string) {
+func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-chan *dave.M, recv chan<- *dave.M, log chan<- []byte) {
 	dats := make(map[uint64]map[uint64]Dat)
 	var nepoch, npeer uint64
 	et := time.NewTicker(EPOCH)
@@ -431,7 +427,7 @@ func store(dats map[uint64]map[uint64]Dat, d *Dat) (bool, error) {
 	}
 }
 
-func lstn(c *net.UDPConn, log chan<- string) <-chan *pkt {
+func lstn(c *net.UDPConn, log chan<- []byte) <-chan *pkt {
 	pkts := make(chan *pkt, 1)
 	go func() {
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
@@ -455,7 +451,7 @@ func lstn(c *net.UDPConn, log chan<- string) <-chan *pkt {
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<- string) *pkt {
+func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<- []byte) *pkt {
 	buf := bufpool.Get().([]byte)
 	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
@@ -586,9 +582,9 @@ func nzero(key []byte) int {
 	return len(key)
 }
 
-func lg(ch chan<- string, msg string, args ...any) {
+func lg(ch chan<- []byte, msg string, args ...any) {
 	select {
-	case ch <- fmt.Sprintf(msg, args...):
+	case ch <- []byte(fmt.Sprintf(msg, args...)):
 	default:
 	}
 }
