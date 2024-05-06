@@ -548,7 +548,7 @@ func pdstr(p *dave.Pd) string {
 	return fmt.Sprintf("%x:%x", p.Ip, []byte{hash4(uint16(p.Port))})
 }
 
-func hash4(port uint16) byte { // 4-bit hash
+func hash4(port uint16) byte {
 	return byte((port * 41) >> 12)
 }
 
