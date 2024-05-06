@@ -30,12 +30,12 @@ import (
 const (
 	MTU       = 1500
 	FILTERCAP = 100000
-	FANOUT    = 3
+	FANOUT    = 2
 	ROUNDS    = 9
 	NPEER     = 2
 	PROBE     = 16
 	EPOCH     = 65537 * time.Nanosecond
-	DELAY     = 3217
+	DELAY     = 9689
 	PING      = 8191
 	DROP      = 524287
 	PRUNE     = 60649
