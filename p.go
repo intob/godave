@@ -366,10 +366,12 @@ func d(c *net.UDPConn, prs map[string]*peer, dcap int, pch <-chan *pkt, send <-c
 				default:
 				}
 				novel, _ := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
+				label := "known"
 				if novel {
+					label = "novel"
 					p.trust += Mass(m.W, Btt(m.T))
 				}
-				lg(log, "/d/h/dat %x novel: %v from: %x trust: %f\n", m.W, novel, Pdfp(pdhfn, p.pd), p.trust)
+				lg(log, "/d/h/dat/%s %x %x %f\n", label, m.W, Pdfp(pdhfn, p.pd), p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := id(m.W)
 				if err == nil {
