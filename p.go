@@ -32,13 +32,13 @@ const (
 	FILTERCAP = 100000
 	FANOUT    = 2
 	ROUNDS    = 9
-	NPEER     = 2
+	NPEER     = 3
 	PROBE     = 16
 	EPOCH     = 28657 * time.Nanosecond
-	DELAY     = 9689
+	DELAY     = 5039
 	PING      = 8191
 	DROP      = 524287
-	PRUNE     = 60649
+	PRUNE     = 65537
 	SEED      = 3
 	PUSH      = 7
 	EDGE      = 131071
@@ -108,8 +108,9 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
+		d.send <- &dave.M{Op: dave.Op_GET, W: work}
 		defer close(c)
-		sendy := time.NewTicker(SEED * EPOCH)
+		sendy := time.NewTicker(PULL * EPOCH)
 		to := time.NewTimer(timeout)
 		for {
 			select {
@@ -289,13 +290,15 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 			}
 			if nepoch%PING == 0 { // PING AND DROP
 				for pid, p := range prs {
-					if !p.edge && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
-						delete(prs, pid)
-						lg(log, "/d/ping/delete %x\n", p.fp)
-					} else if time.Since(p.seen) > EPOCH*PING && time.Since(p.ping) > EPOCH*PING { // SEND PING
-						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
-						p.ping = time.Now()
-						lg(log, "/d/ping/ping %x\n", p.fp)
+					if !p.edge {
+						if time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
+							delete(prs, pid)
+							lg(log, "/d/ping/delete %x\n", p.fp)
+						} else if time.Since(p.seen) > EPOCH*PING && time.Since(p.ping) > EPOCH*PING { // SEND PING
+							pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
+							p.ping = time.Now()
+							lg(log, "/d/ping/ping %x\n", p.fp)
+						}
 					}
 				}
 			}
@@ -363,7 +366,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rpeers := rndpeers(prs, map[string]*peer{pkpid: p}, NPEER, func(p *peer, l *peer) bool { return available(p) })
+				rpeers := rndpeers(prs, map[string]*peer{pkpid: p}, NPEER, func(p *peer, l *peer) bool { return !p.edge && available(p) })
 				pds := make([]*dave.Pd, len(rpeers))
 				for i, rp := range rpeers {
 					pds[i] = rp.pd
