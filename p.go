@@ -36,7 +36,7 @@ const (
 	PROBE     = 16
 	EPOCH     = 28657 * time.Nanosecond
 	DELAY     = 5039
-	PING      = 8191
+	PING      = 132049
 	DROP      = 524287
 	PRUNE     = 65537
 	SEED      = 3
@@ -63,11 +63,11 @@ type Dat struct {
 }
 
 type peer struct {
-	pd                *dave.Pd
-	fp                uint64
-	added, seen, ping time.Time
-	edge              bool
-	trust             float64
+	pd          *dave.Pd
+	fp          uint64
+	added, seen time.Time
+	edge        bool
+	trust       float64
 }
 
 type pkt struct {
@@ -88,7 +88,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	edges := make(map[string]*peer)
 	for _, e := range cfg.Edges {
 		pd := pdfrom(e)
-		edges[pdstr(pd)] = &peer{pd: pd, added: time.Now(), seen: time.Now(), edge: true}
+		edges[pdstr(pd)] = &peer{pd: pd, fp: pdfp(fnv.New64a(), pd), added: time.Now(), seen: time.Now(), edge: true}
 	}
 	pktout := make(chan *pkt, 1)
 	go func(c *net.UDPConn, pkts <-chan *pkt) {
@@ -108,6 +108,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
+		d.send <- &dave.M{Op: dave.Op_GETPEER}
 		d.send <- &dave.M{Op: dave.Op_GET, W: work}
 		defer close(c)
 		sendy := time.NewTicker(PULL * EPOCH)
@@ -132,11 +133,27 @@ func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 func (d *Dave) Set(dat Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < ROUNDS; i++ {
-			d.send <- &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
+		defer close(done)
+		var npeer, nround int
+		ptick := time.NewTicker(SEED * EPOCH)
+		dtick := time.NewTicker(PUSH * EPOCH)
+		for {
+			select {
+			case <-ptick.C:
+				d.send <- &dave.M{Op: dave.Op_GETPEER}
+			case <-dtick.C:
+				d.send <- &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
+				nround++
+				if nround >= ROUNDS && npeer >= 20 { // TODO: constant
+					done <- struct{}{}
+					return
+				}
+			case m := <-d.Recv:
+				if m.Op == dave.Op_PEER {
+					npeer += len(m.Pds)
+				}
+			}
 		}
-		done <- struct{}{}
-		close(done)
 	}()
 	return done
 }
@@ -206,6 +223,7 @@ func Btt(b []byte) time.Time {
 }
 
 func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, log chan<- []byte) {
+	nedge := len(prs)
 	dats := make(map[uint64]map[uint64]Dat)
 	var nepoch, npeer uint64
 	var newest *Dat
@@ -294,9 +312,8 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 						if time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
 							delete(prs, pid)
 							lg(log, "/d/ping/delete %x\n", p.fp)
-						} else if time.Since(p.seen) > EPOCH*PING && time.Since(p.ping) > EPOCH*PING { // SEND PING
+						} else if time.Since(p.seen) > EPOCH*PING { // SEND PING
 							pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
-							p.ping = time.Now()
 							lg(log, "/d/ping/ping %x\n", p.fp)
 						}
 					}
@@ -312,7 +329,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 							pktout <- &pkt{m, addrfrom(rp.pd)}
 							lg(log, "/d/send/dat %x %x\n", rp.fp, m.W)
 						}
-					}(rndpeers(prs, nil, FANOUT, func(p *peer, l *peer) bool { return !p.edge && available(p) }))
+					}(rndpeers(prs, nil, FANOUT, func(p *peer, l *peer) bool { return (!p.edge || int(npeer) < 2*nedge) && available(p) }))
 				case dave.Op_GET:
 					shardi, dati, err := workid(h, m.W)
 					if err == nil {
@@ -334,6 +351,11 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 								}
 							}(rndpeers(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p) }))
 						}
+					}
+				case dave.Op_GETPEER:
+					for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return available(p) }) {
+						pktout <- &pkt{m, addrfrom(rp.pd)}
+						lg(log, "/d/send/getpeer %x\n", rp.fp)
 					}
 				default:
 					panic("unsupported operation")
