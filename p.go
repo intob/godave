@@ -309,14 +309,12 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 			}
 			if nepoch%PING == 0 { // PING AND DROP
 				for pid, p := range prs {
-					if !p.edge {
-						if time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
-							delete(prs, pid)
-							lg(log, "/d/ping/delete %x\n", p.fp)
-						} else if time.Since(p.seen) > EPOCH*PING { // SEND PING
-							pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
-							lg(log, "/d/ping/ping %x\n", p.fp)
-						}
+					if !p.edge && time.Since(p.seen) > EPOCH*DROP { // DROP UNRESPONSIVE PEER
+						delete(prs, pid)
+						lg(log, "/d/ping/delete %x\n", p.fp)
+					} else if time.Since(p.seen) > EPOCH*PING { // SEND PING
+						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
+						lg(log, "/d/ping/ping %x\n", p.fp)
 					}
 				}
 			}
