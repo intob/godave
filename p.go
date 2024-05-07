@@ -40,6 +40,7 @@ const (
 	DROP      = 524287
 	PRUNE     = 60649
 	SEED      = 3
+	PUSH      = 7
 	EDGE      = 131071
 	PULL      = 32993
 )
@@ -206,11 +207,12 @@ func Btt(b []byte) time.Time {
 func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, log chan<- []byte) {
 	dats := make(map[uint64]map[uint64]Dat)
 	var nepoch, npeer uint64
-	et := time.NewTicker(EPOCH)
+	var newest *Dat
+	etick := time.NewTicker(EPOCH)
 	h := fnv.New64a()
 	for {
 		select {
-		case <-et.C:
+		case <-etick.C:
 			nepoch++
 			if nepoch%PRUNE == 0 { // PRUNING MEMORY, KEEP <=CAP MASSIVE DATS
 				memstat := &runtime.MemStats{}
@@ -251,7 +253,14 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 				npeer = uint64(len(newpeers))
 				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
 			}
-			if npeer > 0 && nepoch%(max(1, SEED/npeer)) == 0 { // RANDOM DAT TO RANDOM PEER, EXCLUDING EDGE
+			if newest != nil && npeer > 0 && nepoch%(max(PUSH, PUSH/npeer)) == 0 { // NEWEST DAT TO RANDOM PEER, EXCLUDING EDGE
+				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) && dotrust(p, l) }) {
+					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: newest.V, T: Ttb(newest.Ti), S: newest.S, W: newest.W}, addrfrom(rp.pd)}
+					lg(log, "/d/push %x %x\n", rp.fp, newest.W)
+				}
+
+			}
+			if npeer > 0 && nepoch%(max(SEED, SEED/npeer)) == 0 { // RANDOM DAT TO RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) && dotrust(p, l) }) {
@@ -269,7 +278,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 					}
 				}
 			}
-			if npeer > 0 && nepoch%(max(1, PULL/npeer)) == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGE
+			if npeer > 0 && nepoch%(max(PULL, PULL/npeer)) == 0 { // REQUEST RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGE
 				rd := rnd(dats)
 				if rd != nil {
 					for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) }) {
@@ -362,9 +371,11 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
 				lg(log, "/d/h/peer/reply %x\n", p.fp)
 			case dave.Op_DAT: // FORWARD ON RECV CHAN AND STORE
-				novel, _ := store(dats, &Dat{m.V, m.S, m.W, Btt(m.T)}, h)
+				dat := &Dat{m.V, m.S, m.W, Btt(m.T)}
+				novel, _ := store(dats, dat, h)
 				label := "known"
 				if novel {
+					newest = dat
 					label = "novel"
 					p.trust += Mass(m.W, Btt(m.T))
 				}
