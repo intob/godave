@@ -31,7 +31,8 @@ const (
 	MTU       = 1500
 	FILTERCAP = 100000
 	FANOUT    = 2
-	ROUNDS    = 9
+	SETROUNDS = 9
+	SETNPEER  = 64
 	NPEER     = 3
 	PROBE     = 16
 	EPOCH     = 28657 * time.Nanosecond
@@ -144,7 +145,7 @@ func (d *Dave) Set(dat Dat) <-chan struct{} {
 			case <-dtick.C:
 				d.send <- &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
 				nround++
-				if nround >= ROUNDS && npeer >= 20 { // TODO: constant
+				if nround >= SETROUNDS && npeer >= SETNPEER {
 					done <- struct{}{}
 					return
 				}
