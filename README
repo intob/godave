@@ -2,28 +2,14 @@
 |  _ \  __ ___   _____  
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
-|____/ \__,_| \_/ \___|
+|____/ \__,_| \_/ \___| Public domain.
 Anonymised continuous packet sharing peer-to-peer network protocol.
 
-Copyright 2024 Joey Innes <joey@inneslabs.uk>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
-
-
-
-Dave is an open protocol, designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment.
-
-Packets of data up to 1500 bytes in length are continuously pushed and pulled at random. We call these packets "dats".
+Dave is an open protocol, designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Packets of data up to 1500 bytes in length are continuously pushed and pulled at random. We call these packets "dats".
 
 Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
-An amount of trust proportional to the mass of a dat is earned by sending a dat not already in the remote's hash table.
-Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding.
-Trust values are not gossiped or weighed into peer sharing.
+An amount of trust proportional to the mass of a dat is earned by sending a dat not already in the remote's hash table. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding. Trust values are not gossiped or weighed into peer sharing.
 
 
 
@@ -44,7 +30,7 @@ SEED        3           Epochs between sending a random dat to one peer, excludi
 EDGE        28657       Epochs between sending a random dat to one random edge.
 PULL        32993       Epochs between sending a random get to one peer, excluding edges.
 
-Note: known peer count is also used to modulate frequency of operations, ensuring that the protocol scales well.
+Note: known peer count is also used to modulate frequency of some operations, ensuring that the protocol operates well at any scale.
 
 
 
@@ -81,33 +67,25 @@ PEERS       List of peers.                              20*NPEER
 VAL         The data.                                   0 | <= 1388 when NPEER=2
 TIME        Little-endian unix milliseconds.            0 | 8
 SALT        Random bytes used to solve WORK.            0 | 32
-WORK        BLAKE2B256(BLAKE2B256(VAL, TIME), SALT).    0 | 32
+WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
 
 
 
 4.      Packet Filter
 
-Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application.
+Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application. Packets that deviate from the protocol are detected & dropped without further processing.
 
-Packets that deviate from the protocol are detected & dropped without further processing.
+The key inserted uniquely into the filter:
 
-The key inserted uniquely into the cuckoo filter:
-        
-FNV128A(REMOTE_IP, HASH4(REMOTE_PORT), OP)
+FNV64A(OP, HASH4(REMOTE_PORT), REMOTE_IP)
 
-Failing unique insertion, the packet is dropped.
-
-The cuckoo filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch.
-
-The number of ports allowed per ip address is limited using a 4-bit multiply-then-shift hash function.
+Failing unique insertion, the packet is dropped. The filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch. The number of ports allowed per ip address is limited using a 4-bit multiply-then-shift hash function.
 
 
 
 5.      Peer Discovery & Liveness
 
-The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER).
-
-A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors. 
+The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER). A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
 
 
 
@@ -119,7 +97,7 @@ Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECON
 
 
 
-7.      Replacement by Mass 
+7.      Replacement by Mass
 
 Every PRUNE EPOCH, a user defined (DatCap) number of most massive dats are kept, and the remaining dropped.
 
@@ -131,7 +109,7 @@ Every SEED/NPEER EPOCH, each node sends one random dat to one random peer, exclu
 
 Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
 
-Note: In the current implementation, messages are sent from the main routine and I have not yet finished ensuring resistance to timing attack when sending new dats.
+Note: In the current implementation, messages are sent from the main routine and we have not yet finished ensuring resistance to timing attack when sending new dats.
 
 
 
