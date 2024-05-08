@@ -1,4 +1,10 @@
-// Public domain. Concept and implementation by Joey Innes <joey@inneslabs.uk>.
+// ____
+// |  _ \  __ ___   _____
+// | | | |/ _` \ \ / / _ \
+// | |_| | (_| |\ V /  __/
+// |____/ \__,_| \_/ \___| Public domain.
+// Anonymised continuous packet sharing peer-to-peer network protocol.
+// Concept and implementation by Joey Innes <joey@inneslabs.uk>.
 
 package godave
 
