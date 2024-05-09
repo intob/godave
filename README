@@ -7,7 +7,7 @@ Anonymised continuous packet sharing peer-to-peer network protocol.
 With love, light, water, and breath. Let us heal, beautiful brothers and sisters.
 We may lose our life by fear of death, leading us to build our own prison.
 Nuance is not complexity. Truth is simplicity. We are light and balance.
-We are one. Nature does not fear. It is life to free the world.
+We are one. Nature does not fear. It is life to free our mind, to free the world.
 Idea and implementation by Joey Innes joey@inneslabs.uk github.com/intob/.
 
 Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Packets of data currently up to 1500 bytes in length are continuously pushed and pulled via a set of operations executed at random. We call these packets "dats".
