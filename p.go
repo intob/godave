@@ -1,10 +1,11 @@
-// ____
+//  ____
 // |  _ \  __ ___   _____
 // | | | |/ _` \ \ / / _ \
 // | |_| | (_| |\ V /  __/
 // |____/ \__,_| \_/ \___| Public domain.
 // Anonymised continuous packet sharing peer-to-peer network protocol.
-// Concept and implementation by Joey Innes <joey@inneslabs.uk>.
+// With love, light, water, and breath. Let us heal, beautiful brothers and sisters.
+// Idea and implementation by Joey Innes joey@inneslabs.uk github.com/intob/.
 
 package godave
 
@@ -32,6 +33,7 @@ import (
 
 const (
 	MTU       = 1500
+	MINWORK   = 2
 	FILTERCAP = 100000
 	FANOUT    = 2
 	SETROUNDS = 9
@@ -62,7 +64,7 @@ type Cfg struct {
 }
 
 type Dat struct {
-	V, S, W []byte // Val, Salt, Work
+	V, S, W []byte
 	Ti      time.Time
 }
 
@@ -222,8 +224,7 @@ func Btt(b []byte) time.Time {
 	if len(b) != 8 {
 		return time.Time{}
 	}
-	milli := int64(binary.LittleEndian.Uint64(b))
-	return time.Unix(0, milli*1000000)
+	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
 func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, log chan<- []byte) {
@@ -522,8 +523,8 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/lstn/rdpkt/drop/npeer too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < 1 { // ZERO WORK WOULD HAVE ZERO MASS
-		lg(log, "/lstn/rdpkt/drop/workcheck invalid\n")
+	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < MINWORK {
+		lg(log, "/lstn/rdpkt/drop/workcheck failed\n")
 		return nil
 	}
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), V: m.V, T: m.T, S: m.S, W: m.W}
