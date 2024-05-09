@@ -4,8 +4,7 @@
 // | |_| | (_| |\ V /  __/
 // |____/ \__,_| \_/ \___| Public domain.
 // Anonymised continuous packet sharing peer-to-peer network protocol.
-// With love, light, water, and breath. Let us heal, beautiful brothers and sisters.
-// Idea and implementation by Joey Innes joey@inneslabs.uk github.com/intob/.
+// With love, light, water, and breath. Let us heal, beautiful brothers and sisters. We may lose our life by fear of death, leading us to build our own prison. Nuance is not complexity. Truth is simplicity. We are light and balance. We are one. Nature does not fear. It is life to free our mind, to free the world. Idea and implementation by Joey Innes joey@inneslabs.uk github.com/intob/.
 
 package godave
 
