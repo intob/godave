@@ -4,7 +4,13 @@
 // | |_| | (_| |\ V /  __/
 // |____/ \__,_| \_/ \___| Public domain.
 // Anonymised continuous packet sharing peer-to-peer network protocol.
-// With love, light, water, and breath. Let us heal, beautiful brothers and sisters. We may lose our life by fear of death, leading us to build our own prison. Nuance is not complexity. Truth is simplicity. We are light and balance. We are one. Nature does not fear. It is life to free our mind, to free the world. Idea and implementation by Joey Innes joey@inneslabs.uk github.com/intob/.
+// With love, light, water, and breath. Let us heal, beautiful brothers and sisters. We may lose our life by fear of death, leading us to build our own prison. Nuance is not complexity. Truth is simplicity. We are light and balance. We are one. Nature does not fear, nature heals with light. It is life to free our mind, to free the world. Idea and implementation with love from Joey Innes joey@inneslabs.uk github.com/intob/.
+// ./dave.proto
+// syntax = "proto3";
+// option go_package = "./dave";
+// enum Op { GETPEER = 0; PEER = 1; DAT = 2; GET = 3; }
+// message M { Op op = 1; repeated Pd pds = 2; bytes v = 3; bytes t = 4; bytes s = 5; bytes w = 6; }
+// message Pd { bytes ip = 1; uint32 port = 2; }
 
 package godave
 
@@ -32,14 +38,13 @@ import (
 
 const (
 	MTU       = 1500
-	MINWORK   = 2
 	FILTERCAP = 100000
 	FANOUT    = 2
 	SETROUNDS = 9
 	SETNPEER  = 64
 	NPEER     = 3
 	PROBE     = 16
-	EPOCH     = 28657 * time.Nanosecond
+	EPOCH     = 8191 * time.Nanosecond
 	DELAY     = 5039
 	PING      = 132049
 	DROP      = 524287
@@ -274,7 +279,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, dcap int, pktin <-chan *pkt, ap
 				}
 				prs = newpeers
 				npeer = uint64(len(newpeers))
-				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/1024/1024)
+				lg(log, "/d/prune/keep %d peers, %d dats across %d shards, %.2fMB mem alloc\n", len(newpeers), count, len(newdats), float32(memstat.Alloc)/(2^20))
 			}
 			if newest != nil && npeer > 0 && nepoch%(max(PUSH, PUSH/npeer)) == 0 { // NEWEST DAT TO RANDOM PEER, EXCLUDING EDGE
 				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p) && dotrust(p, l) }) {
@@ -522,7 +527,7 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 	if m.Op == dave.Op_PEER && len(m.Pds) > NPEER {
 		lg(log, "/lstn/rdpkt/drop/npeer too many peers\n")
 		return nil
-	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < MINWORK {
+	} else if m.Op == dave.Op_DAT && Check(m.V, m.T, m.S, m.W) < 1 {
 		lg(log, "/lstn/rdpkt/drop/workcheck failed\n")
 		return nil
 	}
