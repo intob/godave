@@ -37,8 +37,7 @@ import (
 )
 
 const (
-	MTU       = 1500
-	FILTERCAP = 100000
+	MTU       = 1500 // Max packet size, 1500 is typical for home WiFi, and reasonable for now.
 	FANOUT    = 2
 	SETROUNDS = 9
 	SETNPEER  = 64
@@ -61,10 +60,10 @@ type Dave struct {
 }
 
 type Cfg struct {
-	Listen *net.UDPAddr
-	Edges  []netip.AddrPort
-	DatCap uint
-	Log    chan<- []byte
+	LstnAddr          *net.UDPAddr     // listening address:port
+	Edges             []netip.AddrPort // Bootstrap peers
+	DatCap, FilterCap uint
+	Log               chan<- []byte
 }
 
 type Dat struct {
@@ -89,8 +88,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.DatCap == 0 {
 		return nil, errors.New("Cfg.DatCap must not be 0")
 	}
+	if cfg.FilterCap == 0 {
+		return nil, errors.New("Cfg.FilterCap must not be 0. 1K, 10K or 100K is probably good for you ;)")
+	}
 	lg(cfg.Log, "/newdave/creating %+v\n", *cfg)
-	c, err := net.ListenUDP("udp", cfg.Listen)
+	c, err := net.ListenUDP("udp", cfg.LstnAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -108,7 +110,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}(c, pktout)
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(pktout, edges, int(cfg.DatCap), lstn(c, cfg.Log), send, recv, cfg.Log)
+	go d(pktout, edges, int(cfg.DatCap), lstn(c, cfg.Log, cfg.FilterCap), send, recv, cfg.Log)
 	for _, e := range cfg.Edges {
 		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), e)
 	}
@@ -473,12 +475,12 @@ func store(dats map[uint64]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) 
 	}
 }
 
-func lstn(c *net.UDPConn, log chan<- []byte) <-chan *pkt {
+func lstn(c *net.UDPConn, log chan<- []byte, fcap uint) <-chan *pkt {
 	pkts := make(chan *pkt, 100)
 	go func() {
 		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
-		f := ckoo.NewFilter(FILTERCAP)
+		f := ckoo.NewFilter(fcap)
 		rtick := time.NewTicker(EPOCH)
 		defer c.Close()
 		for {
