@@ -5,7 +5,9 @@
 |____/ \__,_| \_/ \___| Public domain.
 Anonymised continuous packet sharing peer-to-peer network protocol.
 
-Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Packets of data currently up to 1500 bytes in length are continuously pushed and pulled via a set of operations executed at random. We call these packets "dats".
+Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Applications such as serverless contact forms, and social media applications could built on this interoperable protocol that quickly disseminates information. 
+
+Packets of data currently up to 1500 bytes in length are continuously pushed and pulled via a set of operations executed at random. We call these packets "dats".
 
 Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
@@ -13,38 +15,18 @@ An amount of trust equal to the mass of a dat is earned by sending a dat not alr
 
 
 
-0.      Constants
-
-MTU         1500        Packet size, reasonable value to avoid packet fragmentation.
-MINWORK     2           Prevents DoS.
-FILTERCAP   100000      Cuckoo filter capacity, using 16-bit fingerprints.
-FANOUT      3           Max number of peers to send new dats to.
-ROUNDS      9           Number of rounds to repeat sending to <=FANOUT peers. Balance speed with FANOUT.
-NPEER       2           Max number of peers to share in PEER message. Prevents Eclipse attack.
-PROBE       16          Inverse of probability that an untrusted peer will be randomly selected.
-EPOCH       65537ns     Base minimum period of the operation cycle. The following are used to modulate operations.
-DELAY       28657       Epochs until dats may be shared to a new peer, and until new peers are advertised. Prevents Sybil attack.
-PING        8191        Epochs until silent peers are pinged.
-DROP        524287      Epochs until silent peers are dropped from the peer table.
-PRUNE       60649       Epochs between memory pruning.
-SEED        3           Epochs between sending a random dat to one peer, excluding edges. 
-EDGE        28657       Epochs between sending a random dat to one random edge.
-PULL        32993       Epochs between sending a random get to one peer, excluding edges.
-
-Note: known peer count is also used to modulate frequency of some operations, ensuring that the protocol operates well at any scale.
-
-
-
-1.      User-configurable Settings
+1.      Configurable Settings
 
 Listen      UDP listen ip-port address.
 Edges       A slice of edge node ip-port addresses.
 DatCap      Number of dats to store. Adjust for available memory.
+FilterCap   Capacity of cuckoo filter. 10K or 100K should be fine.
+Prune       Number of epochs between refreshing maps. 100K is probably goodu
 Log         A string channel for sending log messages.
 
 
 
-2.      Operation Codes
+2.      Message Operation Codes
 
 GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
@@ -53,9 +35,9 @@ GET         Packet containing the work hash, remote should reply with a message 
 
 
 
-3.      Packet Message Format
+3.      Binary Serialisation
 
-A message is serialized into binary using protobuf. See protobuf spec dave.proto.
+A message is serialized into binary using protobuf.
 
 Transpiling Protobuf Spec for Go:
 #!/bin/bash
