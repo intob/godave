@@ -5,7 +5,7 @@
 |____/ \__,_| \_/ \___| Public domain.
 Anonymised continuous packet sharing peer-to-peer network protocol.
 
-Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Applications such as serverless contact forms, and social media applications could built on this interoperable protocol that quickly disseminates information. 
+Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Applications such as serverless contact forms, and social media applications could built on this interoperable protocol that quickly and reliably disseminates information.
 
 Packets of data currently up to 1500 bytes in length are continuously pushed and pulled via a set of operations executed at random. We call these packets "dats".
 
