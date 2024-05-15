@@ -275,7 +275,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, epoch time.Duration, dcap int, 
 				}
 				prs = newpeers
 				npeer = uint64(len(newpeers))
-				lg(log, "/d/prune/keep %d peers, %d dat shards, %.2fGB mem alloc\n", len(newpeers), len(newdats), float32(memstat.Alloc)/(2^200))
+				lg(log, "/d/prune/keep %d peers, %d dat shards, %.2fGB mem alloc\n", len(newpeers), len(newdats), float64(memstat.Alloc)/(1<<30))
 			}
 			if newest != nil && npeer > 0 && nepoch%(max(PUSH, PUSH/npeer)) == 0 { // SEND NEWEST DAT TO ONE RANDOM PEER, EXCLUDING EDGES
 				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) && dotrust(p, l) }) {
