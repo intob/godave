@@ -88,7 +88,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, err
 	}
-	lg(cfg.Log, "/newdave/listening %s\n", c.LocalAddr())
+	lg(cfg.Log, "/newdave/listening %s hash4(port):%x\n", c.LocalAddr(), hash4(uint16(cfg.LstnAddr.Port)))
 	edges := make(map[string]*peer)
 	for _, e := range cfg.Edges {
 		pd := pdfrom(e)
@@ -391,7 +391,7 @@ func d(pktout chan<- *pkt, prs map[string]*peer, epoch time.Duration, dcap int, 
 					}
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rpeers := rndpeers(prs, map[string]*peer{pkpid: p}, GETNPEER, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) })
+				rpeers := rndpeers(prs, map[string]*peer{pkpid: p}, GETNPEER, func(p *peer, l *peer) bool { return available(p, epoch) })
 				pds := make([]*dave.Pd, len(rpeers))
 				for i, rp := range rpeers {
 					pds[i] = rp.pd
