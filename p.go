@@ -24,7 +24,7 @@ import (
 )
 
 const (
-	MTU      = 1500   // Max packet size, 1500 is typical for home WiFi, preventing packet fragmentation.
+	BUF      = 1424   // Max packet size, 1500 MTU is typical for home WiFi, preventing packet fragmentation.
 	FANOUT   = 2      // Number of peers randomly selected when selecting more than one.
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER = 2      // Limit of peers in a PEER message. Prevents Eclipse attack.
@@ -486,7 +486,7 @@ func store(dats map[uint64]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) 
 func lstn(c *net.UDPConn, epoch time.Duration, fcap uint, log chan<- []byte) <-chan *pkt {
 	pkts := make(chan *pkt, 100)
 	go func() {
-		bpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
+		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		h := fnv.New64a()
 		f := ckoo.NewFilter(fcap)
