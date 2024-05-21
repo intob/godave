@@ -486,8 +486,9 @@ func store(dats map[uint64]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) 
 func lstn(c *net.UDPConn, epoch time.Duration, fcap uint, log chan<- []byte) <-chan *pkt {
 	pkts := make(chan *pkt, 100)
 	go func() {
-		bufpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
+		bpool := sync.Pool{New: func() any { return make([]byte, MTU) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
+		h := fnv.New64a()
 		f := ckoo.NewFilter(fcap)
 		rtick := time.NewTicker(epoch)
 		defer c.Close()
@@ -497,7 +498,7 @@ func lstn(c *net.UDPConn, epoch time.Duration, fcap uint, log chan<- []byte) <-c
 				f.Reset()
 				lg(log, "/lstn/filter_reset\n")
 			default:
-				p := rdpkt(c, f, &bufpool, &mpool, log)
+				p := rdpkt(c, h, f, &bpool, &mpool, log)
 				if p != nil {
 					pkts <- p
 				}
@@ -507,9 +508,9 @@ func lstn(c *net.UDPConn, epoch time.Duration, fcap uint, log chan<- []byte) <-c
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<- []byte) *pkt {
-	buf := bufpool.Get().([]byte)
-	defer bufpool.Put(buf) //lint:ignore SA6002 slice is already a reference
+func rdpkt(c *net.UDPConn, h hash.Hash, f *ckoo.Filter, bpool, mpool *sync.Pool, log chan<- []byte) *pkt {
+	buf := bpool.Get().([]byte)
+	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
 	if err != nil {
 		panic(err)
@@ -521,8 +522,8 @@ func rdpkt(c *net.UDPConn, f *ckoo.Filter, bufpool, mpool *sync.Pool, log chan<-
 		lg(log, "/lstn/rdpkt/drop unmarshal err\n")
 		return nil
 	}
-	h := fnv.New64a()
-	op := make([]byte, 8)
+	h.Reset()
+	op := make([]byte, 4)
 	binary.LittleEndian.PutUint32(op, uint32(m.Op.Number()))
 	h.Write(op)
 	h.Write([]byte{hash4(raddr.Port())})
