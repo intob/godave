@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"math"
 	mrand "math/rand"
 	"net"
 	"net/netip"
@@ -20,14 +21,14 @@ import (
 	"github.com/twmb/murmur3"
 	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/reflect/protoreflect"
 )
 
 const (
 	BUF      = 1424   // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
 	FANOUT   = 2      // Number of peers randomly selected when selecting more than one.
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
-	GETNPEER = 2      // Limit of peers in a PEER message.
+	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
+	TRUSTEXP = .3     // Exponent to apply to trust score to flatten distribution of peer selection.
 	DELAY    = 5039   // Epochs until new peers may be randomly selected.
 	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
@@ -79,11 +80,11 @@ type Dat struct {
 }
 
 type peer struct {
-	pd                 *dave.Pd // Peer descriptor
-	id                 uint64   // Address:port hash
-	added, seen, peers time.Time
-	edge               bool
-	trust              float64
+	pd                   *dave.Pd // Peer descriptor
+	fp                   uint64   // Fingerprint
+	added, seen, peermsg time.Time
+	edge                 bool
+	trust                float64
 }
 
 type pkt struct {
@@ -114,19 +115,33 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	h := murmur3.New64()
 	for _, e := range cfg.Edges {
 		pd := pdfrom(e)
-		edges[pdid(h, pd)] = &peer{pd: pd, id: pdid(h, pd), added: time.Now(), seen: time.Now(), edge: true}
+		edges[pdfp(h, pd)] = &peer{pd: pd, fp: pdfp(h, pd), added: time.Now(), seen: time.Now(), edge: true}
 	}
 	pktout := make(chan *pkt, 1)
 	go func(c *net.UDPConn, pkts <-chan *pkt) {
 		for pkt := range pkts {
-			wraddr(c, marshal(pkt.msg), pkt.ip, cfg.Log)
+			bin, err := proto.Marshal(pkt.msg)
+			if err != nil {
+				panic(err)
+			}
+			_, err = c.WriteToUDPAddrPort(bin, pkt.ip)
+			if err != nil {
+				lg(cfg.Log, "/pktout/wraddr/error %s\n", err)
+			}
 		}
 	}(c, pktout)
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	go d(pktout, edges, cfg.Epoch, cfg.DatCap, cfg.Prune, lstn(c, cfg.Epoch, cfg.FilterCap, cfg.Test, cfg.Log), send, recv, cfg.Log)
-	for _, e := range cfg.Edges {
-		wraddr(c, marshal(&dave.M{Op: dave.Op_GETPEER}), e, cfg.Log)
+	for _, addr := range cfg.Edges {
+		bin, err := proto.Marshal(&dave.M{Op: dave.Op_GETPEER})
+		if err != nil {
+			panic(err)
+		}
+		_, err = c.WriteToUDPAddrPort(bin, addr)
+		if err != nil {
+			lg(cfg.Log, "/newdave/bootstrap/error %s\n", err)
+		}
 	}
 	return &Dave{Recv: recv, Send: send, epoch: cfg.Epoch}, nil
 }
@@ -255,33 +270,33 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 			if newest != nil && npeer > 0 && nepoch%PUSH == 0 { // SEND NEWEST DAT TO RANDOM PEER, EXCLUDING EDGES
 				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) && dotrust(p, l) }) {
 					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: newest.V, T: Ttb(newest.Ti), S: newest.S, W: newest.W}, addrfrom(rp.pd)}
-					lg(log, "/d/push %x %x\n", rp.id, newest.W)
+					lg(log, "/d/push %x %x\n", rp.fp, newest.W)
 				}
 			}
 			if npeer > 0 && nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER, EXCLUDING EDGES
 				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) && dotrust(p, l) }) {
-					rd := rnd(dats)
+					rd := rnddat(dats)
 					if rd != nil {
 						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
-						lg(log, "/d/seed %x %x\n", rp.id, rd.W)
+						lg(log, "/d/seed %x %x\n", rp.fp, rd.W)
 					}
 				}
 			}
 			if npeer > 0 && nedge > 0 && nepoch%(EDGE*(npeer/nedge)) == 0 { // SEND RANDOM DAT TO RANDOM EDGE PEER, MODULATED WITH PEER/EDGE RATIO
-				rd := rnd(dats)
+				rd := rnddat(dats)
 				if rd != nil {
 					for _, redge := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return p.edge && available(p, epoch) }) {
 						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(redge.pd)}
-						lg(log, "/d/seed_edge %x %x\n", redge.id, rd.W)
+						lg(log, "/d/seed_edge %x %x\n", redge.fp, rd.W)
 					}
 				}
 			}
 			if npeer > 0 && nepoch%PULL == 0 { // PULL RANDOM DAT FROM RANDOM PEER, EXCLUDING EDGES
-				rd := rnd(dats)
+				rd := rnddat(dats)
 				if rd != nil {
 					for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) }) {
 						pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: rd.W}, addrfrom(rp.pd)}
-						lg(log, "/d/pull %x %x\n", rp.id, rd.W)
+						lg(log, "/d/pull %x %x\n", rp.fp, rd.W)
 					}
 				}
 			}
@@ -289,10 +304,10 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 				for pid, p := range prs {
 					if !p.edge && time.Since(p.seen) > epoch*DROP { // DROP UNRESPONSIVE PEER
 						delete(prs, pid)
-						lg(log, "/d/ping/deleted %x\n", p.id)
+						lg(log, "/d/ping/deleted %x\n", p.fp)
 					} else if time.Since(p.seen) > epoch*PING { // SEND PING
 						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
-						lg(log, "/d/ping/sent %x\n", p.id)
+						lg(log, "/d/ping/sent %x\n", p.fp)
 					}
 				}
 			}
@@ -300,12 +315,12 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 			sendForApp(m, dats, h, prs, pktout, apprecv, npeer, nedge, epoch, log)
 		case pk := <-pktin: // HANDLE INCOMING PACKET
 			pkpd := pdfrom(pk.ip)
-			pkpid := pdid(h, pkpd)
-			p, ok := prs[pkpid]
+			pkpfp := pdfp(h, pkpd)
+			p, ok := prs[pkpfp]
 			if !ok {
-				p = &peer{pd: pkpd, id: pkpid, added: time.Now(), seen: time.Now()}
-				prs[pkpid] = p
-				lg(log, "/d/h/add_peer %s %x\n", pk.ip.String(), pkpid)
+				p = &peer{pd: pkpd, fp: pkpfp, added: time.Now(), seen: time.Now()}
+				prs[pkpfp] = p
+				lg(log, "/d/h/add_peer %s %x\n", pk.ip.String(), pkpfp)
 			} else {
 				p.seen = time.Now()
 			}
@@ -317,28 +332,27 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 			}
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
-				if time.Since(p.peers) >= PING*epoch-epoch {
-					p.peers = time.Now()
-					for _, pd := range m.Pds {
-						pid := pdid(h, pd)
-						_, ok := prs[pid]
+				if time.Since(p.peermsg) >= PING*epoch-epoch {
+					p.peermsg = time.Now()
+					for _, mpd := range m.Pds {
+						mpdfp := pdfp(h, mpd)
+						_, ok := prs[mpdfp]
 						if !ok {
-							p := &peer{pd: pd, id: pdid(h, pd), added: time.Now(), seen: time.Now()}
-							prs[pid] = p
-							lg(log, "/d/h/peer_msg/add_from_gossip %s %x\n", pk.ip.String(), p.id)
+							prs[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
+							lg(log, "/d/h/peer_msg/add_from_gossip %s %x\n", pk.ip.String(), prs[mpdfp].fp)
 						}
 					}
 				} else {
-					lg(log, "/d/h/peer_msg/unexpected dropped %s %x\n", pk.ip.String(), p.id)
+					lg(log, "/d/h/peer_msg/unexpected dropped %s %x\n", pk.ip.String(), p.fp)
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rpeers := rndpeers(prs, map[uint64]*peer{pkpid: p}, GETNPEER, func(p *peer, l *peer) bool { return available(p, epoch) })
+				rpeers := rndpeers(prs, map[uint64]*peer{pkpfp: p}, GETNPEER, func(p *peer, l *peer) bool { return available(p, epoch) })
 				pds := make([]*dave.Pd, len(rpeers))
 				for i, rp := range rpeers {
 					pds[i] = rp.pd
 				}
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
-				lg(log, "/d/h/getpeer_msg/reply %s %x\n", pk.ip.String(), p.id)
+				lg(log, "/d/h/getpeer_msg/reply %s %x\n", pk.ip.String(), p.fp)
 			case dave.Op_DAT: // FORWARD ON RECV CHAN AND STORE
 				dat := &Dat{m.V, m.S, m.W, Btt(m.T)}
 				novel, _ := store(dats, dat, h)
@@ -348,7 +362,7 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 					label = "novel"
 					p.trust += Mass(m.W, Btt(m.T))
 				}
-				lg(log, "/d/h/dat_msg/%s %x %x %f\n", label, m.W, p.id, p.trust)
+				lg(log, "/d/h/dat_msg/%s %x %x %f\n", label, m.W, p.fp, p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := workid(h, m.W)
 				if err == nil {
@@ -414,7 +428,7 @@ func sendForApp(m *dave.M, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs ma
 			go func(rps []*peer) {
 				for _, rp := range rps {
 					pktout <- &pkt{m, addrfrom(rp.pd)}
-					lg(log, "/d/send/dat %x %x\n", rp.id, m.W)
+					lg(log, "/d/send/dat %x %x\n", rp.fp, m.W)
 				}
 			}(rndpeers(prs, nil, FANOUT, func(p *peer, l *peer) bool { return (!p.edge || npeer < 2*nedge) && available(p, epoch) }))
 		case dave.Op_GET:
@@ -434,7 +448,7 @@ func sendForApp(m *dave.M, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs ma
 					go func(rps []*peer) {
 						for _, rp := range rps {
 							pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
-							lg(log, "/d/send/get sent %x %x\n", rp.id, m.W)
+							lg(log, "/d/send/get sent %x %x\n", rp.fp, m.W)
 						}
 					}(rndpeers(prs, nil, FANOUT, func(p *peer, l *peer) bool { return available(p, epoch) }))
 				}
@@ -442,7 +456,7 @@ func sendForApp(m *dave.M, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs ma
 		case dave.Op_GETPEER:
 			for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return available(p, epoch) }) {
 				pktout <- &pkt{m, addrfrom(rp.pd)}
-				lg(log, "/d/send/getpeer %x\n", rp.id)
+				lg(log, "/d/send/getpeer %x\n", rp.fp)
 			}
 		default:
 			panic(fmt.Sprintf("unsupported operation: send %s", m.Op))
@@ -450,7 +464,7 @@ func sendForApp(m *dave.M, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs ma
 	}
 }
 
-func rnd(dats map[uint64]map[uint64]Dat) *Dat {
+func rnddat(dats map[uint64]map[uint64]Dat) *Dat {
 	if len(dats) == 0 {
 		return nil
 	}
@@ -554,12 +568,13 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch hash.Hash, bpool, mp
 	}
 	f.Insert(sum)
 	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
-		lg(log, "/lstn/rdpkt/drop/npeer too many peers\n")
+		lg(log, "/lstn/rdpkt/drop/npeer packet exceeds pd limit\n")
 		return nil
 	} else if m.Op == dave.Op_DAT && check(ch, m.V, m.T, m.S, m.W) < 1 {
 		lg(log, "/lstn/rdpkt/drop/workcheck failed\n")
 		return nil
 	}
+	lg(log, "/lstn/rdpkt/accepted %s %x\n", m.Op, m.W)
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), V: m.V, T: m.T, S: m.S, W: m.W}
 	for i, pd := range m.Pds {
 		cpy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
@@ -600,7 +615,10 @@ func available(k *peer, epoch time.Duration) bool {
 }
 
 func dotrust(k *peer, legend *peer) bool {
-	return mrand.Intn(PROBE) == 1 || k.trust >= mrand.Float64()*legend.trust
+	if mrand.Intn(PROBE) == 1 {
+		return true
+	}
+	return mrand.Float64() < math.Pow(k.trust/legend.trust, TRUSTEXP)
 }
 
 func addrfrom(pd *dave.Pd) netip.AddrPort {
@@ -612,7 +630,7 @@ func pdfrom(addrport netip.AddrPort) *dave.Pd {
 	return &dave.Pd{Ip: ip[:], Port: uint32(addrport.Port())}
 }
 
-func pdid(h hash.Hash64, pd *dave.Pd) uint64 {
+func pdfp(h hash.Hash64, pd *dave.Pd) uint64 {
 	port := make([]byte, 2)
 	binary.LittleEndian.PutUint16(port, uint16(pd.Port))
 	h.Reset()
@@ -660,21 +678,6 @@ func nzerobit(key []byte) int {
 		}
 	}
 	return count
-}
-
-func wraddr(c *net.UDPConn, payload []byte, addr netip.AddrPort, log chan<- []byte) {
-	_, err := c.WriteToUDPAddrPort(payload, addr)
-	if err != nil {
-		lg(log, "/wraddr %s\n", err)
-	}
-}
-
-func marshal(m protoreflect.ProtoMessage) []byte {
-	b, err := proto.Marshal(m)
-	if err != nil {
-		panic(err)
-	}
-	return b
 }
 
 func lg(ch chan<- []byte, msg string, args ...any) {
