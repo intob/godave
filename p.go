@@ -28,7 +28,7 @@ const (
 	FANOUT   = 2      // Number of peers randomly selected when selecting more than one.
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
-	TRUSTEXP = .3     // Exponent to apply to trust score to flatten distribution of peer selection.
+	TRUSTEXP = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
 	DELAY    = 5039   // Epochs until new peers may be randomly selected.
 	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
