@@ -10,5 +10,6 @@ require (
 
 require (
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
+	github.com/twmb/murmur3 v1.1.8 // indirect
 	golang.org/x/sys v0.20.0 // indirect
 )
