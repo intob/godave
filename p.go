@@ -248,46 +248,9 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 			if nepoch%prune == 0 { // MEMORY MANAGEMENT
 				memstat := &runtime.MemStats{}
 				runtime.ReadMemStats(memstat)
-				type hdat struct {
-					shard, key uint64
-					dat        Dat
-				}
-				heaviest := make([]hdat, dcap)
-				for shardId, shard := range dats {
-					for key, dat := range shard {
-						if len(heaviest) < dcap {
-							heaviest = append(heaviest, hdat{shardId, key, dat})
-							if len(heaviest) == dcap {
-								sort.Slice(heaviest, func(i, j int) bool {
-									return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
-								})
-							}
-						} else if Mass(dat.W, dat.Ti) > Mass(heaviest[0].dat.W, heaviest[0].dat.Ti) {
-							heaviest[0] = hdat{shardId, key, dat}
-							sort.Slice(heaviest, func(i, j int) bool {
-								return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
-							})
-						}
-					}
-				}
-				newdats := make(map[uint64]map[uint64]Dat, len(heaviest))
-				for _, hdat := range heaviest {
-					if hdat.shard != 0 && hdat.key != 0 {
-						_, shardExists := newdats[hdat.shard]
-						if !shardExists {
-							newdats[hdat.shard] = make(map[uint64]Dat)
-						}
-						newdats[hdat.shard][hdat.key] = hdat.dat
-					}
-				}
-				dats = newdats
-				newpeers := make(map[uint64]*peer)
-				for k, p := range prs {
-					newpeers[k] = p
-				}
-				prs = newpeers
-				npeer = len(newpeers)
-				lg(log, "/d/prune/keep %d peers, %d dat shards, %.2fGB mem alloc\n", len(newpeers), len(newdats), float64(memstat.Alloc)/(1<<30))
+				dats, prs = mem(dats, prs, dcap)
+				npeer = len(prs)
+				lg(log, "/d/prune/keep %d peers, %d dat shards, %.2fGB mem alloc\n", len(prs), len(dats), float64(memstat.Alloc)/(1<<30))
 			}
 			if newest != nil && npeer > 0 && nepoch%PUSH == 0 { // SEND NEWEST DAT TO RANDOM PEER, EXCLUDING EDGES
 				for _, rp := range rndpeers(prs, nil, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, epoch) && dotrust(p, l) }) {
@@ -401,6 +364,46 @@ func d(pktout chan<- *pkt, prs map[uint64]*peer, epoch time.Duration, dcap, prun
 			}
 		}
 	}
+}
+
+func mem(dats map[uint64]map[uint64]Dat, prs map[uint64]*peer, dcap int) (map[uint64]map[uint64]Dat, map[uint64]*peer) {
+	type hdat struct {
+		shard, key uint64
+		dat        Dat
+	}
+	heaviest := make([]hdat, dcap)
+	for shardId, shard := range dats {
+		for key, dat := range shard {
+			if len(heaviest) < dcap {
+				heaviest = append(heaviest, hdat{shardId, key, dat})
+				if len(heaviest) == dcap {
+					sort.Slice(heaviest, func(i, j int) bool {
+						return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
+					})
+				}
+			} else if Mass(dat.W, dat.Ti) > Mass(heaviest[0].dat.W, heaviest[0].dat.Ti) {
+				heaviest[0] = hdat{shardId, key, dat}
+				sort.Slice(heaviest, func(i, j int) bool {
+					return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
+				})
+			}
+		}
+	}
+	newdats := make(map[uint64]map[uint64]Dat, len(heaviest))
+	for _, hdat := range heaviest {
+		if hdat.shard != 0 && hdat.key != 0 {
+			_, shardExists := newdats[hdat.shard]
+			if !shardExists {
+				newdats[hdat.shard] = make(map[uint64]Dat)
+			}
+			newdats[hdat.shard][hdat.key] = hdat.dat
+		}
+	}
+	newpeers := make(map[uint64]*peer)
+	for k, p := range prs {
+		newpeers[k] = p
+	}
+	return newdats, newpeers
 }
 
 func sendForApp(m *dave.M, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, npeer, nedge int, epoch time.Duration, log chan<- []byte) {
