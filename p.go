@@ -119,7 +119,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, errors.New("Cfg.Epoch must not be zero. Try 20us")
 	}
 	if cfg.ShardCap < 1 {
-		return nil, errors.New("Cfg.ShardCap must be at least 1. 5K should be ok.")
+		return nil, errors.New("Cfg.ShardCap must be at least 1. 5K should be ok")
 	}
 	if cfg.FilterCap < 1 {
 		return nil, errors.New("Cfg.FilterCap must not be at least 1. 1K, 10K or 100K is probably good for you ;)")
@@ -339,7 +339,7 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				}
 			}
 		case m := <-appsend: // SEND PACKET FOR APP
-			sendForApp(m, ring, dats, h, prs, pktout, apprecv, npeer, nedge, cfg)
+			sendForApp(m, ring, dats, h, prs, pktout, apprecv, cfg)
 		case pk := <-pktin: // HANDLE INCOMING PACKET
 			pkpd := pdfrom(pk.ip)
 			pkpfp := pdfp(h, pkpd)
@@ -527,7 +527,7 @@ func readBackup(backupFname string, h hash.Hash64) (map[uint8]map[uint64]Dat, er
 	return dats, nil
 }
 
-func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, npeer, nedge int, cfg *Cfg) {
+func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, cfg *Cfg) {
 	if m != nil {
 		switch m.Op {
 		case dave.Op_DAT:
