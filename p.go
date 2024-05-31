@@ -381,13 +381,16 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				lg(cfg.Log, "/d/h/getpeer_msg/reply %s %x\n", pk.ip.String(), p.fp)
 			case dave.Op_DAT: // STORE
 				dat := &Dat{m.V, m.S, m.W, Btt(m.T)}
-				novel, _ := store(ring, dats, dat, h)
+				novel, shardid, err := store(ring, dats, dat, h)
+				if err != nil {
+					lg(cfg.Log, "/d/h/dat_msg/store_error %s\n", err)
+				}
 				label := "known"
 				if novel {
 					label = "novel"
 					p.trust += Mass(m.W, Btt(m.T))
 				}
-				lg(cfg.Log, "/d/h/dat_msg/%s %x %x %f\n", label, m.W, p.fp, p.trust)
+				lg(cfg.Log, "/d/h/dat_msg/%s %x %d %x %f\n", label, m.W, shardid, p.fp, p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := workid(h, m.W)
 				if err == nil {
@@ -594,24 +597,24 @@ func rnddat(dats map[uint8]map[uint64]Dat) *Dat {
 	return nil
 }
 
-func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) {
+func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, uint8, error) {
 	ring.write(d)
-	shardi, dati, err := workid(h, d.W)
+	shardid, datid, err := workid(h, d.W)
 	if err != nil {
-		return false, err
+		return false, shardid, err
 	}
-	shard, ok := dats[shardi]
+	shard, ok := dats[shardid]
 	if !ok {
-		dats[shardi] = make(map[uint64]Dat)
-		dats[shardi][dati] = *d
-		return true, nil
+		dats[shardid] = make(map[uint64]Dat)
+		dats[shardid][datid] = *d
+		return true, shardid, nil
 	} else {
-		_, ok := shard[dati]
+		_, ok := shard[datid]
 		if !ok {
-			shard[dati] = *d
-			return true, nil
+			shard[datid] = *d
+			return true, shardid, nil
 		}
-		return false, nil
+		return false, shardid, nil
 	}
 }
 
