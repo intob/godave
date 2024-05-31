@@ -31,7 +31,6 @@ const (
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
 	TRUSTEXP = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
-	RINGCAP  = 100    // 1%. Inverse of capacity of the ring buffer as compared to that of the map.
 	DELAY    = 14197  // Epochs until new peers may be randomly selected.
 	PING     = 5039   // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
@@ -42,7 +41,7 @@ const (
 	PULL     = 9377   // Interval between pulling a random dat from a random peer. Increases anonymity.
 )
 
-var zeroTable = [256]int{ // Lookup table for the number of leading zero bits in a byte
+var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
 	8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
 	3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
 	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
@@ -71,8 +70,8 @@ type Cfg struct {
 	LstnAddr    *net.UDPAddr     // Listening address:port
 	Edges       []netip.AddrPort // Bootstrap peers
 	Epoch       time.Duration    // Base cycle, lower runs faster, using more bandwidth
-	DatCap      int              // Cuckoo filter capacity
 	Prune       int              // Interval between refreshing dat & peer maps
+	ShardCap    int              // Cuckoo filter capacity
 	FilterCap   uint             // Dat map capacity
 	Log         chan<- []byte    // Log messages
 	Test        bool             // Allow multiple ports per IP
@@ -119,8 +118,8 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.Epoch == 0 {
 		return nil, errors.New("Cfg.Epoch must not be zero. Try 20us")
 	}
-	if cfg.DatCap < 1 {
-		return nil, errors.New("Cfg.DatCap must be at least 1")
+	if cfg.ShardCap < 1 {
+		return nil, errors.New("Cfg.ShardCap must be at least 1. 5K should be ok.")
 	}
 	if cfg.FilterCap < 1 {
 		return nil, errors.New("Cfg.FilterCap must not be at least 1. 1K, 10K or 100K is probably good for you ;)")
@@ -140,7 +139,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	pktout := make(chan *pkt, 1)
 	go writePackets(c, pktout, cfg.Log)
-	var dats map[uint64]map[uint64]Dat
+	var dats map[uint8]map[uint64]Dat
 	if cfg.BackupFname != "" {
 		dats, err = readBackup(cfg.BackupFname, h)
 		if err != nil {
@@ -149,7 +148,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		lg(cfg.Log, "/init/read_backup read %d dats from file\n", len(dats))
 	}
 	if dats == nil {
-		dats = make(map[uint64]map[uint64]Dat)
+		dats = make(map[uint8]map[uint64]Dat)
 		lg(cfg.Log, "/init/new created empty map\n")
 	}
 	send := make(chan *dave.M)
@@ -213,10 +212,7 @@ func (d *Dave) Set(dat Dat, rounds int) <-chan struct{} {
 	return done
 }
 
-func Work(val, tim []byte, d int) (work, salt []byte) {
-	if d < 0 || d > 256 {
-		return nil, nil
-	}
+func Work(val, tim []byte, d uint8) (work, salt []byte) {
 	salt = make([]byte, 32)
 	h, err := blake2b.New256(nil)
 	if err != nil {
@@ -263,7 +259,7 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(pktout chan<- *pkt, dats map[uint64]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
+func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
 	var nepoch, npeer, nedge int
 	for _, p := range prs {
 		if p.edge {
@@ -272,7 +268,7 @@ func d(pktout chan<- *pkt, dats map[uint64]map[uint64]Dat, prs map[uint64]*peer,
 	}
 	etick := time.NewTicker(cfg.Epoch)
 	h := murmur3.New64()
-	ring := &ringbuffer{cap: cfg.DatCap / RINGCAP, buf: make([]Dat, cfg.DatCap/RINGCAP)}
+	ring := &ringbuffer{cap: cfg.ShardCap, buf: make([]Dat, cfg.ShardCap)}
 	lg(cfg.Log, "/d/init/ring cap: %d\n", ring.cap)
 	for {
 		select {
@@ -281,9 +277,10 @@ func d(pktout chan<- *pkt, dats map[uint64]map[uint64]Dat, prs map[uint64]*peer,
 			if nepoch%cfg.Prune == 0 { // MEMORY MANAGEMENT
 				memstat := &runtime.MemStats{}
 				runtime.ReadMemStats(memstat)
-				dats, prs = mem(dats, prs, cfg)
+				var ndat int
+				ndat, dats, prs = mem(dats, prs, cfg)
 				npeer = len(prs)
-				lg(cfg.Log, "/d/mem keep %d peers, %d dat shards, %.2fGB mem alloc\n", len(prs), len(dats), float64(memstat.Alloc)/(1<<30))
+				lg(cfg.Log, "/d/mem got %d peers, %d dats across %d shards, %.2fGB mem alloc\n", len(prs), ndat, len(dats), float64(memstat.Alloc)/(1<<30))
 			}
 			if npeer > 0 && nepoch%PUSH == 0 { // SEND RANDOM NEW DAT TO RANDOM PEER, EXCLUDING EDGES
 				rd := ring.rand()
@@ -421,37 +418,40 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, log chan<- []byte) {
 	}
 }
 
-func mem(dats map[uint64]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (map[uint64]map[uint64]Dat, map[uint64]*peer) {
+func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, map[uint8]map[uint64]Dat, map[uint64]*peer) {
 	type hdat struct {
-		shard, key uint64
-		dat        Dat
+		shardid uint8
+		datid   uint64
+		dat     Dat
 	}
-	heaviest := make([]hdat, cfg.DatCap)
-	for shardId, shard := range dats {
-		for key, dat := range shard {
-			if len(heaviest) < cfg.DatCap {
-				heaviest = append(heaviest, hdat{shardId, key, dat})
-				if len(heaviest) == cfg.DatCap {
+	keep := make([]hdat, cfg.ShardCap*len(dats))
+	for shardid, shard := range dats {
+		heaviest := make([]hdat, 0)
+		for datid, dat := range shard {
+			if len(heaviest) < cfg.ShardCap {
+				heaviest = append(heaviest, hdat{shardid, datid, dat})
+				if len(heaviest) == cfg.ShardCap {
 					sort.Slice(heaviest, func(i, j int) bool {
 						return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
 					})
 				}
 			} else if Mass(dat.W, dat.Ti) > Mass(heaviest[0].dat.W, heaviest[0].dat.Ti) {
-				heaviest[0] = hdat{shardId, key, dat}
+				heaviest[0] = hdat{shardid, datid, dat}
 				sort.Slice(heaviest, func(i, j int) bool {
 					return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
 				})
 			}
 		}
+		keep = append(keep, heaviest...)
 	}
-	newdats := make(map[uint64]map[uint64]Dat, len(heaviest))
-	for _, hdat := range heaviest {
-		if hdat.shard != 0 && hdat.key != 0 {
-			_, shardExists := newdats[hdat.shard]
+	newdats := make(map[uint8]map[uint64]Dat)
+	for _, hdat := range keep {
+		if hdat.shardid != 0 && hdat.datid != 0 {
+			_, shardExists := newdats[hdat.shardid]
 			if !shardExists {
-				newdats[hdat.shard] = make(map[uint64]Dat)
+				newdats[hdat.shardid] = make(map[uint64]Dat)
 			}
-			newdats[hdat.shard][hdat.key] = hdat.dat
+			newdats[hdat.shardid][hdat.datid] = hdat.dat
 		}
 	}
 	newpeers := make(map[uint64]*peer)
@@ -459,10 +459,10 @@ func mem(dats map[uint64]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (map[ui
 		newpeers[k] = p
 	}
 	writeBackup(newdats, cfg.BackupFname)
-	return newdats, newpeers
+	return len(keep), newdats, newpeers
 }
 
-func writeBackup(dats map[uint64]map[uint64]Dat, backupFname string) {
+func writeBackup(dats map[uint8]map[uint64]Dat, backupFname string) {
 	if backupFname == "" {
 		return
 	}
@@ -484,8 +484,8 @@ func writeBackup(dats map[uint64]map[uint64]Dat, backupFname string) {
 	buf.Flush()
 }
 
-func readBackup(backupFname string, h hash.Hash64) (map[uint64]map[uint64]Dat, error) {
-	dats := make(map[uint64]map[uint64]Dat)
+func readBackup(backupFname string, h hash.Hash64) (map[uint8]map[uint64]Dat, error) {
+	dats := make(map[uint8]map[uint64]Dat)
 	f, err := os.Open(backupFname)
 	if err != nil {
 		return nil, fmt.Errorf("err opening file: %w", err)
@@ -515,11 +515,11 @@ func readBackup(backupFname string, h hash.Hash64) (map[uint64]map[uint64]Dat, e
 		if err != nil {
 			return dats, fmt.Errorf("err unmarshalling proto msg: %w", err)
 		}
-		dati, shardi, err := workid(h, m.W)
+		shardi, dati, err := workid(h, m.W)
 		if err != nil {
 			return dats, fmt.Errorf("err calculating dati or shardi: %w", err)
 		}
-		if _, ok := dats[dati]; !ok {
+		if _, ok := dats[shardi]; !ok {
 			dats[shardi] = make(map[uint64]Dat)
 		}
 		dats[shardi][dati] = Dat{V: m.V, Ti: Btt(m.T), S: m.S, W: m.W}
@@ -527,7 +527,7 @@ func readBackup(backupFname string, h hash.Hash64) (map[uint64]map[uint64]Dat, e
 	return dats, nil
 }
 
-func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint64]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, npeer, nedge int, cfg *Cfg) {
+func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, npeer, nedge int, cfg *Cfg) {
 	if m != nil {
 		switch m.Op {
 		case dave.Op_DAT:
@@ -571,16 +571,16 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint64]map[uint64]Dat, h h
 	}
 }
 
-func rnddat(dats map[uint64]map[uint64]Dat) *Dat {
+func rnddat(dats map[uint8]map[uint64]Dat) *Dat {
 	if len(dats) == 0 {
 		return nil
 	}
-	rshardpos := mrand.Uint64() % (uint64(len(dats)) + 1)
-	var cshardpos uint64
+	rshardpos := uint8(mrand.Uint32() % (uint32(len(dats)) + 1))
+	var cshardpos uint8
 	for _, shard := range dats {
 		if cshardpos == rshardpos {
-			rdattop := uint64(len(shard))
-			rdatpos := mrand.Uint64() % (rdattop + 1)
+			rdati := uint64(len(shard))
+			rdatpos := mrand.Uint64() % (rdati + 1)
 			var cdatpos uint64
 			for _, dat := range shard {
 				if cdatpos == rdatpos {
@@ -594,7 +594,7 @@ func rnddat(dats map[uint64]map[uint64]Dat) *Dat {
 	return nil
 }
 
-func store(ring *ringbuffer, dats map[uint64]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) {
+func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, error) {
 	ring.write(d)
 	shardi, dati, err := workid(h, d.W)
 	if err != nil {
@@ -745,17 +745,13 @@ func pdfp(h hash.Hash64, pd *dave.Pd) uint64 {
 	return h.Sum64()
 }
 
-func workid(h hash.Hash64, work []byte) (shardi uint64, dati uint64, err error) {
+func workid(h hash.Hash64, work []byte) (uint8, uint64, error) {
 	if len(work) != 32 {
 		return 0, 0, errors.New("value is not of length 32 bytes")
 	}
 	h.Reset()
-	h.Write(work[:16])
-	shardi = h.Sum64()
-	h.Reset()
-	h.Write(work[16:])
-	dati = h.Sum64()
-	return
+	h.Write(work)
+	return nzerobit(work), h.Sum64(), nil
 }
 
 func check(h hash.Hash, val, tim, salt, work []byte) int {
@@ -772,11 +768,11 @@ func check(h hash.Hash, val, tim, salt, work []byte) int {
 	if !bytes.Equal(h.Sum(nil), work) {
 		return -1
 	}
-	return nzerobit(work)
+	return int(nzerobit(work))
 }
 
-func nzerobit(key []byte) int {
-	count := 0
+func nzerobit(key []byte) uint8 {
+	var count uint8
 	for _, b := range key {
 		count += zeroTable[b]
 		if b != 0 {
