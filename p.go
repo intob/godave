@@ -563,11 +563,6 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 					}(rndpeers(prs, 0, FANOUT, func(p *peer, l *peer) bool { return available(p, cfg.Epoch) }))
 				}
 			}
-		case dave.Op_GETPEER:
-			for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return available(p, cfg.Epoch) }) {
-				pktout <- &pkt{m, addrfrom(rp.pd)}
-				lg(cfg.Log, "/d/send/getpeer %x\n", rp.fp)
-			}
 		default:
 			panic(fmt.Sprintf("unsupported operation: send %s", m.Op))
 		}
