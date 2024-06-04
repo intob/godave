@@ -154,16 +154,6 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
 	go d(pktout, dats, bootstrap, lstn(c, cfg), send, recv, cfg)
-	for _, addr := range cfg.Edges {
-		bin, err := proto.Marshal(&dave.M{Op: dave.Op_GETPEER})
-		if err != nil {
-			panic(err)
-		}
-		_, err = c.WriteToUDPAddrPort(bin, addr)
-		if err != nil {
-			lg(cfg.Log, "/init/bootstrap failed to write to edge peer: %s\n", err)
-		}
-	}
 	return &Dave{Recv: recv, Send: send, epoch: cfg.Epoch}, nil
 }
 
