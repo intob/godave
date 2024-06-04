@@ -31,8 +31,8 @@ const (
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
 	TRUSTEXP = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
-	DELAY    = 14197  // Epochs until new peers may be randomly selected.
-	PING     = 5039   // Epochs until silent peers are pinged with a GETPEER message.
+	DELAY    = 28657  // Epochs until new peers may be randomly selected.
+	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
 	PUSH     = 3      // Epcohs between sending one random mew dat to one random peer, excluding edges.
 	SEED     = 7      // Epochs between sending one random dat to one random peer, excluding edges.
