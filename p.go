@@ -38,7 +38,8 @@ const (
 	SEED     = 7      // Epochs between sending one random dat to one random peer, excluding edges.
 	EDGEPUSH = 1949   // Epochs between sending one random new dat to one random edge peer.
 	EDGESEED = 3889   // Epochs between sending one random dat to one random edge peer.
-	PULL     = 9377   // Interval between pulling a random dat from a random peer. Increases anonymity.
+	PULL     = 9377   // Epochs between pulling a random dat from a random peer. Increases anonymity.
+	GET      = 257    // Epochs between repeating GET messages.
 )
 
 var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
@@ -163,7 +164,7 @@ func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 		getmsg := &dave.M{Op: dave.Op_GET, W: work}
 		d.Send <- getmsg
 		defer close(c)
-		tick := time.NewTicker(SEED * d.epoch)
+		tick := time.NewTicker(GET * d.epoch)
 		timeout := time.NewTimer(timeout)
 		for {
 			select {
