@@ -3,11 +3,8 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-Anonymised packet sharing peer-to-peer network protocol.
 
-Dave is a protocol designed to simply and efficiently distribute a hash table in a byzantine environment. Anonymity is achieved by each node blending in with the crowd, hence the name 'dave'.
-
-Applications such as serverless contact forms and social media applications could built on this interoperable protocol that quickly and reliably disseminates information.
+Dave is a distributed hash table. It may also be described as an anonymised packet-sharing peer-to-peer network protocol. This is a thin layer over UDP, with many possible decentralised applications.
 
 Packets of data up to 1424 bytes in length are pushed and pulled via a set of operations continuously executed at random. We call these packets "dats".
 
