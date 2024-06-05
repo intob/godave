@@ -62,9 +62,7 @@ WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
 
 Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application. Packets that deviate from the protocol are detected & dropped without further processing.
 
-The key inserted uniquely into the filter:
-
-MURMUR3(OP, REMOTE_IP, REMOTE_PORT)
+Key inserted into the filter: MURMUR3(OP, REMOTE_IP, REMOTE_PORT)
 
 Failing unique insertion, the packet is dropped. The filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch.
 
