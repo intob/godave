@@ -3,26 +3,33 @@
 | | | |/ _` \ \ / / _ \ 
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
-Anonymised continuous packet sharing peer-to-peer network protocol.
+Anonymised packet sharing peer-to-peer network protocol.
 
-Dave is an open protocol designed to simply, efficiently, and continuously distribute a hash table in a byzantine environment. Applications such as serverless contact forms and social media applications could built on this interoperable protocol that quickly and reliably disseminates information.
+Dave is a protocol designed to simply and efficiently distribute a hash table in a byzantine environment. Anonymity is achieved by each node blending in with the crowd, hence the name 'dave'.
 
-Packets of data currently up to 1500 bytes in length are continuously pushed and pulled via a set of operations executed at random. We call these packets "dats".
+Applications such as serverless contact forms and social media applications could built on this interoperable protocol that quickly and reliably disseminates information.
+
+Packets of data up to 1424 bytes in length are pushed and pulled via a set of operations continuously executed at random. We call these packets "dats".
 
 Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
-An amount of trust equal to the mass of a dat is earned by sending a dat not already in the remote's hash table. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding and pushes. Trust values are not gossiped or weighed into peer sharing.
+A remote peer earns trust when a dat not already in the local hash table is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding and pushes. Trust values are currently not gossiped or weighed into peer sharing.
+
+Below is an outline of this implementation, although different implementations could be interoperable. There are many possible optimisations that don't necessitate changing the message format. The project is still in an early enough phase that we can also modify the message format easily.
 
 
 
 1.      Configurable Settings
 
-Listen      UDP listen ip-port address.
-Edges       A slice of edge node ip-port addresses.
-DatCap      Number of dats to store. Adjust for available memory.
-FilterCap   Capacity of cuckoo filter. 10K or 100K should be fine.
-Prune       Number of epochs between refreshing maps. 100K is probably goodu
-Log         A string channel for sending log messages.
+LstnAddr    *net.UDPAddr        Listening address:port
+Edges       []netip.AddrPort    Bootstrap peers
+Epoch       time.Duration       Base cycle, lower runs faster, using more bandwidth
+Prune       int                 Interval between refreshing dat & peer maps
+ShardCap    int                 Cuckoo filter capacity
+FilterCap   uint                Dat map capacity
+Log         chan<- []byte       Log messages
+Test        bool                Allow multiple ports per IP
+BackupFname string              Dat and peer table backup filename
 
 
 
@@ -47,7 +54,7 @@ FIELD       DESCRIPTION                                 BYTE LENGTH
 
 OP          Operation code.                             1
 PEERS       List of peers.                              20*NPEER
-VAL         The data.                                   0 | <= 1388 when NPEER=2
+VAL         The data.                                   0 | <= 1308 when NPEER=2
 TIME        Little-endian unix milliseconds.            0 | 8
 SALT        Random bytes used to solve WORK.            0 | 32
 WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
@@ -60,15 +67,15 @@ Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo fi
 
 The key inserted uniquely into the filter:
 
-FNV64A(OP, HASH4(REMOTE_PORT), REMOTE_IP)
+MURMUR3(OP, REMOTE_IP, REMOTE_PORT)
 
-Failing unique insertion, the packet is dropped. The filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch. The number of ports allowed per ip address is limited using a 4-bit multiply-then-shift hash function.
+Failing unique insertion, the packet is dropped. The filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch.
 
 
 
 5.      Peer Discovery & Liveness
 
-The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of direct messages (GETPEER & PEER). A node replies to a GETPEER message with a PEER message with up to NPEER peer descriptors.
+The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of messages (GETPEER & PEER). A node may reply to a GETPEER message with a PEER message with up to NPEER peer descriptors.
 
 
 
@@ -86,17 +93,32 @@ Every PRUNE EPOCH, a user defined (DatCap) number of most massive dats are kept,
 
 
 
-8.      Random Push 
+8.      Sharding
 
-Every SEED/NPEER EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
+The data structure used to store dats is a map[uint8][uint64]. The 8 bit dimension is called the shard, and used to group dats by difficulty of the proof of work, in number of leading zero bits. The 64 bit dimension is derived by hashing the work with Murmur3. Pruing this structure is simpler and much more efficient than pruning a map[uint64][uint64], although there is an increased chance of collisions. This may need addressing in future.
+
+
+
+9.      Random Push 
+
+Every SEED EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
 
 Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
 
-Note: In the current implementation, messages are sent from the main routine and we have not yet finished ensuring resistance to timing attack when sending new dats.
+
+
+10.      Random Pull
+
+Every PULL EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This improves anonymity, at the cost of bandwidth.
 
 
 
-9.      Random Pull
+11.     Random Push of Recent Dat
 
-Every PULL/NPEER EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This further improves anonymity, at the cost of bandwidth.
+Every PUSH EPOCH, each node sends one recent dat to one random peer. The dat is chosen at random from a ring buffer equal in capacity to one shard. The ring buffer is written to when a node receives a novel dat.
 
+
+
+12.     Edges
+
+From the point of view of a node, an edge is an ip:port address used to bootstrap to when starting. This entry will not be removed from the peer table, even if the remote becomes unreachable. Operations 9 through 11 are executed for both edges and normal peers, but separately. The interval for the edges is greater, such that the quality of service does not degrade when many nodes use the same edge. Edges are primarily responsible for bootstrapping the network by sending PEER messages and replying to GETPEER messages.

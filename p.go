@@ -273,7 +273,7 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				npeer = len(prs)
 				lg(cfg.Log, "/d/mem got %d peers, %d dats across %d shards, %.2fGB mem alloc\n", len(prs), ndat, len(dats), float64(memstat.Alloc)/(1<<30))
 			}
-			if npeer > 0 && nepoch%PUSH == 0 { // SEND RANDOM NEW DAT TO RANDOM PEER, EXCLUDING EDGES
+			if npeer > 0 && nepoch%PUSH == 0 { // SEND RANDOM RECENT DAT TO RANDOM PEER, EXCLUDING EDGES
 				rd := ring.rand()
 				if rd != nil {
 					for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, cfg.Epoch) && dotrust(p, l) }) {
