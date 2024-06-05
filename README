@@ -84,7 +84,7 @@ Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECON
 
 7.      Replacement by Mass
 
-Every PRUNE EPOCH, a user defined (DatCap) number of most massive dats are kept, and the remaining dropped.
+Every PRUNE EPOCH, a user defined (ShardCap) number of most massive dats per shard are kept, and the remaining dropped. In this way, mass may be thought of as a property that decays over time.
 
 
 
