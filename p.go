@@ -21,8 +21,8 @@ import (
 	"github.com/intob/godave/dave"
 	ckoo "github.com/panmari/cuckoofilter"
 	"github.com/twmb/murmur3"
-	"golang.org/x/crypto/blake2b"
 	"google.golang.org/protobuf/proto"
+	"lukechampine.com/blake3"
 )
 
 const (
@@ -30,14 +30,13 @@ const (
 	FANOUT   = 2      // Number of peers randomly selected when selecting more than one.
 	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
+	MINWORK  = 8      // Minimum amount of acceptable work in number of leading zero bits.
 	TRUSTEXP = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
 	DELAY    = 28657  // Epochs until new peers may be randomly selected.
 	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
-	PUSH     = 3      // Epcohs between sending one random mew dat to one random peer, excluding edges.
-	SEED     = 7      // Epochs between sending one random dat to one random peer, excluding edges.
-	EDGEPUSH = 1949   // Epochs between sending one random new dat to one random edge peer.
-	EDGESEED = 3889   // Epochs between sending one random dat to one random edge peer.
+	SEED     = 3      // Epochs between sending one random dat to one random peer, excluding edges.
+	PUSH     = 7      // Epcohs between sending one random mew dat to one random peer, excluding edges.
 	PULL     = 9377   // Epochs between pulling a random dat from a random peer. Increases anonymity.
 	GET      = 257    // Epochs between repeating GET messages.
 )
@@ -142,7 +141,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	go writePackets(c, pktout, cfg.Log)
 	var dats map[uint8]map[uint64]Dat
 	if cfg.BackupFname != "" {
-		dats, err = readBackup(cfg.BackupFname, h)
+		dats, err = readBackup(h, cfg)
 		if err != nil {
 			lg(cfg.Log, "/init/read_backup failed to read backup file: %s\n", err)
 		}
@@ -205,10 +204,7 @@ func (d *Dave) Set(dat Dat, rounds int) <-chan struct{} {
 
 func Work(val, tim []byte, d uint8) (work, salt []byte) {
 	salt = make([]byte, 32)
-	h, err := blake2b.New256(nil)
-	if err != nil {
-		return nil, nil
-	}
+	h := blake3.New(32, nil)
 	h.Write(val)
 	h.Write(tim)
 	load := h.Sum(nil)
@@ -226,13 +222,9 @@ func Work(val, tim []byte, d uint8) (work, salt []byte) {
 
 func Check(val, tim, salt, work []byte) int {
 	if len(tim) != 8 || Btt(tim).After(time.Now()) {
-		return -2
-	}
-	h, err := blake2b.New256(nil)
-	if err != nil {
 		return -3
 	}
-	return check(h, val, tim, salt, work)
+	return check(blake3.New(32, nil), val, tim, salt, work)
 }
 
 func Mass(work []byte, t time.Time) float64 {
@@ -273,15 +265,6 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				npeer = len(prs)
 				lg(cfg.Log, "/d/mem got %d peers, %d dats across %d shards, %.2fGB mem alloc\n", len(prs), ndat, len(dats), float64(memstat.Alloc)/(1<<30))
 			}
-			if npeer > 0 && nepoch%PUSH == 0 { // SEND RANDOM RECENT DAT TO RANDOM PEER, EXCLUDING EDGES
-				rd := ring.rand()
-				if rd != nil {
-					for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, cfg.Epoch) && dotrust(p, l) }) {
-						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
-						lg(cfg.Log, "/d/push %x %x %s\n", rp.fp, rd.W, time.Since(rd.Ti))
-					}
-				}
-			}
 			if npeer > 0 && nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER, EXCLUDING EDGES
 				for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, cfg.Epoch) && dotrust(p, l) }) {
 					rd := rnddat(dats)
@@ -291,21 +274,12 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 					}
 				}
 			}
-			if npeer > 0 && nedge > 0 && nepoch%(EDGEPUSH*(npeer/nedge)) == 0 { // SEND RANDOM NEW DAT TO RANDOM EDGE, MODULATED WITH PEER/EDGE RATIO
+			if npeer > 0 && nepoch%PUSH == 0 { // SEND RANDOM RECENT DAT TO RANDOM PEER, EXCLUDING EDGES
 				rd := ring.rand()
 				if rd != nil {
-					for _, redge := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return p.edge && available(p, cfg.Epoch) }) {
-						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(redge.pd)}
-						lg(cfg.Log, "/d/push_edge %x %x\n", redge.fp, rd.W)
-					}
-				}
-			}
-			if npeer > 0 && nedge > 0 && nepoch%(EDGESEED*(npeer/nedge)) == 0 { // SEND RANDOM DAT TO RANDOM EDGE, MODULATED WITH PEER/EDGE RATIO
-				rd := rnddat(dats)
-				if rd != nil {
-					for _, redge := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return p.edge && available(p, cfg.Epoch) }) {
-						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(redge.pd)}
-						lg(cfg.Log, "/d/seed_edge %x %x\n", redge.fp, rd.W)
+					for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return !p.edge && available(p, cfg.Epoch) && dotrust(p, l) }) {
+						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
+						lg(cfg.Log, "/d/push %x %x %s\n", rp.fp, rd.W, time.Since(rd.Ti))
 					}
 				}
 			}
@@ -320,12 +294,13 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 			}
 			if nepoch%PING == 0 { // PING AND DROP
 				for pid, p := range prs {
-					if !p.edge && time.Since(p.seen) > cfg.Epoch*DROP { // DROP UNRESPONSIVE PEER
+					if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch { // DROP UNRESPONSIVE PEER
 						delete(prs, pid)
-						lg(cfg.Log, "/d/ping/deleted %x\n", p.fp)
-					} else if time.Since(p.seen) > cfg.Epoch*PING { // SEND PING
-						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addrfrom(p.pd)}
-						lg(cfg.Log, "/d/ping/sent %x\n", p.fp)
+						lg(cfg.Log, "/d/ping/deleted %s\n", addrfrom(p.pd))
+					} else { //if time.Since(p.seen) > cfg.Epoch*PING { // SEND PING
+						addr := addrfrom(p.pd)
+						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
+						lg(cfg.Log, "/d/ping/getpeer_msg sent to %s\n", addr)
 					}
 				}
 			}
@@ -349,18 +324,18 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 			}
 			switch m.Op {
 			case dave.Op_PEER: // STORE PEERS
-				if time.Since(p.peermsg) >= PING*cfg.Epoch-cfg.Epoch {
+				if time.Since(p.peermsg) >= PING*cfg.Epoch {
 					p.peermsg = time.Now()
 					for _, mpd := range m.Pds {
 						mpdfp := pdfp(h, mpd)
 						_, ok := prs[mpdfp]
 						if !ok {
 							prs[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
-							lg(cfg.Log, "/d/h/peer_msg/add_from_gossip %s %x\n", pk.ip.String(), prs[mpdfp].fp)
+							lg(cfg.Log, "/d/h/peer_msg/add_from_gossip %s from %s\n", addrfrom(mpd), pk.ip.String())
 						}
 					}
 				} else {
-					lg(cfg.Log, "/d/h/peer_msg/unexpected dropped %s %x\n", pk.ip.String(), p.fp)
+					lg(cfg.Log, "/d/h/peer_msg/unexpected dropped from %s %s\n", pk.ip.String(), time.Since(p.peermsg))
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
 				rpeers := rndpeers(prs, p.fp, GETNPEER, func(p *peer, l *peer) bool { return available(p, cfg.Epoch) })
@@ -413,39 +388,33 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, log chan<- []byte) {
 }
 
 func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, map[uint8]map[uint64]Dat, map[uint64]*peer) {
-	type hdat struct {
-		shardid uint8
-		datid   uint64
-		dat     Dat
-	}
-	keep := make([]hdat, cfg.ShardCap*len(dats))
+	newdats := make(map[uint8]map[uint64]Dat)
+	var ndat int
 	for shardid, shard := range dats {
+		type hdat struct {
+			datid uint64
+			dat   Dat
+		}
 		heaviest := make([]hdat, 0)
 		for datid, dat := range shard {
 			if len(heaviest) < cfg.ShardCap {
-				heaviest = append(heaviest, hdat{shardid, datid, dat})
+				heaviest = append(heaviest, hdat{datid, dat})
 				if len(heaviest) == cfg.ShardCap {
 					sort.Slice(heaviest, func(i, j int) bool {
 						return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
 					})
 				}
 			} else if Mass(dat.W, dat.Ti) > Mass(heaviest[0].dat.W, heaviest[0].dat.Ti) {
-				heaviest[0] = hdat{shardid, datid, dat}
+				heaviest[0] = hdat{datid, dat}
 				sort.Slice(heaviest, func(i, j int) bool {
 					return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
 				})
 			}
 		}
-		keep = append(keep, heaviest...)
-	}
-	newdats := make(map[uint8]map[uint64]Dat)
-	for _, hdat := range keep {
-		if hdat.shardid != 0 && hdat.datid != 0 {
-			_, shardExists := newdats[hdat.shardid]
-			if !shardExists {
-				newdats[hdat.shardid] = make(map[uint64]Dat)
-			}
-			newdats[hdat.shardid][hdat.datid] = hdat.dat
+		newdats[shardid] = make(map[uint64]Dat, len(heaviest))
+		for _, d := range heaviest {
+			newdats[shardid][d.datid] = d.dat
+			ndat++
 		}
 	}
 	newpeers := make(map[uint64]*peer)
@@ -453,7 +422,7 @@ func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, ma
 		newpeers[k] = p
 	}
 	writeBackup(newdats, cfg.BackupFname)
-	return len(keep), newdats, newpeers
+	return ndat, newdats, newpeers
 }
 
 func writeBackup(dats map[uint8]map[uint64]Dat, backupFname string) {
@@ -478,9 +447,10 @@ func writeBackup(dats map[uint8]map[uint64]Dat, backupFname string) {
 	buf.Flush()
 }
 
-func readBackup(backupFname string, h hash.Hash64) (map[uint8]map[uint64]Dat, error) {
+func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 	dats := make(map[uint8]map[uint64]Dat)
-	f, err := os.Open(backupFname)
+	workHash := blake3.New(32, nil)
+	f, err := os.Open(cfg.BackupFname)
 	if err != nil {
 		return nil, fmt.Errorf("err opening file: %w", err)
 	}
@@ -502,16 +472,23 @@ func readBackup(backupFname string, h hash.Hash64) (map[uint8]map[uint64]Dat, er
 		n, err = f.Read(datbuf)
 		pos += int64(n)
 		if err != nil {
-			return dats, fmt.Errorf("err reading proto msg: %w", err)
+			lg(cfg.Log, "/read_backup/read err reading length-prefixed msg: %s\n", err)
+			continue
 		}
 		m := &dave.M{}
 		err = proto.Unmarshal(datbuf, m)
 		if err != nil {
-			return dats, fmt.Errorf("err unmarshalling proto msg: %w", err)
+			lg(cfg.Log, "/read_backup/unmarshal err unmarshalling proto msg: %s\n", err)
+			continue
+		}
+		if check(workHash, m.V, m.T, m.S, m.W) < MINWORK {
+			lg(cfg.Log, "/read_backup/check_work failed\n")
+			continue
 		}
 		shardi, dati, err := workid(h, m.W)
 		if err != nil {
-			return dats, fmt.Errorf("err calculating dati or shardi: %w", err)
+			lg(cfg.Log, "/read_backup/calc_workid err calculating dati or shardi: %s\n", err)
+			continue
 		}
 		if _, ok := dats[shardi]; !ok {
 			dats[shardi] = make(map[uint64]Dat)
@@ -605,15 +582,12 @@ func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash6
 }
 
 func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
-	pkts := make(chan *pkt, 100)
+	pkts := make(chan *pkt, 1)
 	go func() {
 		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
 		fh := murmur3.New64()
-		ch, err := blake2b.New256(nil)
-		if err != nil {
-			panic(fmt.Sprintf("failed to init hash: %s", err))
-		}
+		ch := blake3.New(32, nil)
 		f := ckoo.NewFilter(cfg.FilterCap)
 		rtick := time.NewTicker(cfg.Epoch)
 		defer c.Close()
@@ -633,7 +607,7 @@ func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch hash.Hash, bpool, mpool *sync.Pool, cfg *Cfg) *pkt {
+func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpool, mpool *sync.Pool, cfg *Cfg) *pkt {
 	buf := bpool.Get().([]byte)
 	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
@@ -667,7 +641,7 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch hash.Hash, bpool, mp
 	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
 		lg(cfg.Log, "/lstn/rdpkt/drop/npeer packet exceeds pd limit\n")
 		return nil
-	} else if m.Op == dave.Op_DAT && check(ch, m.V, m.T, m.S, m.W) < 1 {
+	} else if m.Op == dave.Op_DAT && check(ch, m.V, m.T, m.S, m.W) < MINWORK {
 		lg(cfg.Log, "/lstn/rdpkt/drop/workcheck failed\n")
 		return nil
 	}
@@ -743,7 +717,7 @@ func workid(h hash.Hash64, work []byte) (uint8, uint64, error) {
 	return nzerobit(work), h.Sum64(), nil
 }
 
-func check(h hash.Hash, val, tim, salt, work []byte) int {
+func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
 	if len(tim) != 8 || Btt(tim).After(time.Now()) {
 		return -2
 	}
