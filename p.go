@@ -63,6 +63,8 @@ type Dave struct {
 	Recv  <-chan *dave.M
 	Send  chan<- *dave.M
 	epoch time.Duration
+	kill  chan struct{}
+	done  chan struct{}
 }
 
 type Cfg struct {
@@ -138,6 +140,10 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	pktout := make(chan *pkt, 1)
 	go writePackets(c, pktout, cfg.Log)
+	backup := make(chan *dave.M, 1)
+	kill := make(chan struct{}, 1)
+	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
+	go writeBackup(backup, kill, done, cfg)
 	var dats map[uint8]map[uint64]Dat
 	if cfg.BackupFname != "" {
 		dats, err = readBackup(h, cfg)
@@ -152,8 +158,13 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
-	go d(pktout, dats, bootstrap, lstn(c, cfg), send, recv, cfg)
-	return &Dave{Recv: recv, Send: send, epoch: cfg.Epoch}, nil
+	go d(dats, bootstrap, lstn(c, cfg), pktout, backup, send, recv, cfg)
+	return &Dave{Recv: recv, Send: send, epoch: cfg.Epoch, kill: kill, done: done}, nil
+}
+
+func (d *Dave) Kill() <-chan struct{} {
+	d.kill <- struct{}{}
+	return d.done
 }
 
 func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
@@ -241,7 +252,7 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
+func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
 	var nepoch, npeer int
 	etick := time.NewTicker(cfg.Epoch)
 	h := murmur3.New64()
@@ -343,6 +354,7 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				if novel {
 					label = "novel"
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
+					backup <- pk.msg
 				}
 				lg(cfg.Log, "/dat/store %s %x %d %x %f\n", label, pk.msg.W, shardid, p.fp, p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
@@ -359,6 +371,7 @@ func d(pktout chan<- *pkt, dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, 
 				}
 			}
 		case m := <-appsend: // SEND PACKET FOR APP
+			backup <- m
 			sendForApp(m, ring, dats, h, prs, pktout, apprecv, cfg)
 		}
 	}
@@ -407,7 +420,6 @@ func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, ma
 			ndat++
 		}
 	}
-	writeBackup(newdats, cfg.BackupFname)
 	newpeers := make(map[uint64]*peer)
 	for k, p := range prs {
 		newpeers[k] = p
@@ -415,26 +427,33 @@ func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, ma
 	return ndat, newdats, newpeers
 }
 
-func writeBackup(dats map[uint8]map[uint64]Dat, backupFname string) {
-	if backupFname == "" {
+func writeBackup(backup <-chan *dave.M, kill <-chan struct{}, done chan<- struct{}, cfg *Cfg) {
+	if cfg.BackupFname == "" {
+		done <- struct{}{}
+		lg(cfg.Log, "/backup disabled\n")
 		return
 	}
-	backupFile, err := os.Create(backupFname)
+	f, err := os.Create(cfg.BackupFname)
 	if err != nil {
 		panic(fmt.Sprintf("err creating backup file: %s", err))
 	}
-	defer backupFile.Close()
-	buf := bufio.NewWriter(backupFile)
-	for _, shard := range dats {
-		for _, dat := range shard {
-			bin, _ := proto.Marshal(&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W})
-			lb := make([]byte, 2)
-			binary.LittleEndian.PutUint16(lb, uint16(len(bin)))
-			buf.Write(lb)
-			buf.Write(bin)
+	buf := bufio.NewWriter(f)
+	for {
+		select {
+		case <-kill:
+			flushErr := buf.Flush()
+			closeErr := f.Close()
+			done <- struct{}{}
+			lg(cfg.Log, "/backup buffer flushed, file closed, errors if any: %s %s\n", flushErr, closeErr)
+			return
+		case m := <-backup:
+			b, _ := proto.Marshal(m)
+			lenb := make([]byte, 2)
+			binary.LittleEndian.PutUint16(lenb, uint16(len(b)))
+			buf.Write(lenb)
+			buf.Write(b)
 		}
 	}
-	buf.Flush()
 }
 
 func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
