@@ -354,7 +354,9 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 				if novel {
 					label = "novel"
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
-					backup <- pk.msg
+					if cfg.BackupFname != "" {
+						backup <- pk.msg
+					}
 				}
 				lg(cfg.Log, "/dat/store %s %x %d %x %f\n", label, pk.msg.W, shardid, p.fp, p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
@@ -371,7 +373,9 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 				}
 			}
 		case m := <-appsend: // SEND PACKET FOR APP
-			backup <- m
+			if cfg.BackupFname != "" {
+				backup <- m
+			}
 			sendForApp(m, ring, dats, h, prs, pktout, apprecv, cfg)
 		}
 	}
