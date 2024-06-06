@@ -35,7 +35,7 @@ const (
 	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
 	SEED     = 3      // Epochs between sending one random dat to one random peer, excluding edges.
-	PUSH     = 257    // Epcohs between sending one random mew dat to one random peer, excluding edges.
+	PUSH     = 17     // Epcohs between sending one random mew dat to one random peer, excluding edges.
 	PULL     = 9377   // Epochs between pulling a random dat from a random peer. Increases anonymity.
 	GET      = 257    // Epochs between repeating GET messages.
 )
@@ -574,7 +574,6 @@ func rnddat(dats map[uint8]map[uint64]Dat) *Dat {
 }
 
 func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, uint8, error) {
-	ring.write(d)
 	shardid, datid, err := workid(h, d.W)
 	if err != nil {
 		return false, shardid, err
@@ -583,11 +582,13 @@ func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash6
 	if !ok {
 		dats[shardid] = make(map[uint64]Dat)
 		dats[shardid][datid] = *d
+		ring.write(d)
 		return true, shardid, nil
 	} else {
 		_, ok := shard[datid]
 		if !ok {
 			shard[datid] = *d
+			ring.write(d)
 			return true, shardid, nil
 		}
 		return false, shardid, nil
