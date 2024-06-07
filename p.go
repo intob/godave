@@ -36,7 +36,6 @@ const (
 	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
 	SEED     = 3      // Epochs between sending one random dat to one random peer, excluding edges.
 	PUSH     = 17     // Epcohs between sending one random mew dat to one random peer, excluding edges.
-	PULL     = 9377   // Epochs between pulling a random dat from a random peer. Increases anonymity.
 	GET      = 257    // Epochs between repeating GET messages.
 )
 
@@ -253,6 +252,7 @@ func Btt(b []byte) time.Time {
 
 func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
 	var nepoch, npeer int
+	var nshard, shardpos uint8
 	etick := time.NewTicker(cfg.Epoch)
 	h := murmur3.New64()
 	ring := &ringbuffer{cap: cfg.ShardCap, buf: make([]Dat, cfg.ShardCap)}
@@ -265,15 +265,21 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 				var ndat int
 				ndat, dats, prs = mem(dats, prs, cfg)
 				npeer = len(prs)
+				nshard = uint8(len(dats))
 				lg(cfg.Log, "/mem got %d peers, %d dats across %d shards\n", len(prs), ndat, len(dats))
 			}
 			if npeer > 0 {
 				if nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER
 					for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
-						rd := rnddat(dats)
-						if rd != nil {
-							pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
-							lg(cfg.Log, "/seed %s %x\n", addrfrom(rp.pd), rd.W)
+						for i := uint8(0); i < nshard; i++ {
+							shardpos = (shardpos + 1) % nshard
+							lg(cfg.Log, "/seed current shard pos %d\n", shardpos)
+							d := rnddat(shardpos, dats)
+							if d != nil {
+								pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addrfrom(rp.pd)}
+								lg(cfg.Log, "/seed %s %x\n", addrfrom(rp.pd), d.W)
+								break
+							}
 						}
 					}
 				} else if nepoch%PUSH == 0 { // SEND RANDOM RECENT DAT TO RANDOM PEER
@@ -282,14 +288,6 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 						for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
 							pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
 							lg(cfg.Log, "/push %x %x %s\n", rp.fp, rd.W, time.Since(rd.Ti))
-						}
-					}
-				} else if nepoch%PULL == 0 { // PULL RANDOM DAT FROM RANDOM PEER
-					rd := rnddat(dats)
-					if rd != nil {
-						for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) }) {
-							pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: rd.W}, addrfrom(rp.pd)}
-							lg(cfg.Log, "/pull %x %x\n", rp.fp, rd.W)
 						}
 					}
 				} else if nepoch%PING == 0 { // PING AND DROP
@@ -347,16 +345,16 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
 				novel, shardid, err := store(ring, dats, dat, h)
 				if err != nil {
-					lg(cfg.Log, "/dat/store error: %s\n", err)
+					lg(cfg.Log, "/store error: %s\n", err)
 				}
 				if novel {
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
-					lg(cfg.Log, "/dat/store novel %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
+					lg(cfg.Log, "/store/novel %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
 				} else {
-					lg(cfg.Log, "/dat/store known %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
+					lg(cfg.Log, "/store/known %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
 				}
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := workid(h, pk.msg.W)
@@ -552,25 +550,22 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 	}
 }
 
-func rnddat(dats map[uint8]map[uint64]Dat) *Dat {
-	if len(dats) == 0 {
-		return nil
-	}
-	rshardpos := uint8(mrand.Uint32() % (uint32(len(dats)) + 1))
+func rnddat(shardpos uint8, dats map[uint8]map[uint64]Dat) *Dat {
 	var cshardpos uint8
 	for _, shard := range dats {
-		if cshardpos == rshardpos {
-			rdati := uint64(len(shard))
-			rdatpos := mrand.Uint64() % (rdati + 1)
-			var cdatpos uint64
-			for _, dat := range shard {
-				if cdatpos == rdatpos {
-					return &dat
-				}
-				cdatpos++
-			}
+		if cshardpos != shardpos {
+			cshardpos++
+			continue
 		}
-		cshardpos++
+		rdati := uint64(len(shard))
+		rdatpos := mrand.Uint64() % (rdati + 1)
+		var cdatpos uint64
+		for _, dat := range shard {
+			if cdatpos == rdatpos {
+				return &dat
+			}
+			cdatpos++
+		}
 	}
 	return nil
 }
