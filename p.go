@@ -148,13 +148,12 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.BackupFname != "" {
 		dats, err = readBackup(h, cfg)
 		if err != nil {
-			lg(cfg.Log, "/init/read_backup failed to read backup file: %s\n", err)
+			lg(cfg.Log, "/backup failed to read backup file: %s\n", err)
 		}
-		lg(cfg.Log, "/init/read_backup read %d dats from file\n", len(dats))
 	}
 	if dats == nil {
 		dats = make(map[uint8]map[uint64]Dat)
-		lg(cfg.Log, "/init/new created empty map\n")
+		lg(cfg.Log, "/init created empty map\n")
 	}
 	send := make(chan *dave.M)
 	recv := make(chan *dave.M, 1)
@@ -315,7 +314,7 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 			} else {
 				p = &peer{pd: pkpd, fp: pkpfp, added: time.Now()}
 				prs[pkpfp] = p
-				lg(cfg.Log, "/peer/add %s %x\n", pk.ip.String(), pkpfp)
+				lg(cfg.Log, "/peer/add %s %x\n", pk.ip, pkpfp)
 			}
 			select {
 			case apprecv <- pk.msg:
@@ -330,11 +329,11 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 						_, ok := prs[mpdfp]
 						if !ok {
 							prs[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
-							lg(cfg.Log, "/peer/add_from_gossip %s from %s\n", addrfrom(mpd), pk.ip.String())
+							lg(cfg.Log, "/peer/add_from_gossip %s from %s\n", addrfrom(mpd), pk.ip)
 						}
 					}
 				} else {
-					lg(cfg.Log, "/peer/unexpected dropped msg from %s %s\n", pk.ip.String(), time.Since(p.peermsg))
+					lg(cfg.Log, "/peer/unexpected dropped msg from %s %s\n", pk.ip, time.Since(p.peermsg))
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
 				rpeers := rndpeers(prs, p.fp, GETNPEER, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) })
@@ -343,22 +342,22 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 					pds[i] = rp.pd
 				}
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
-				lg(cfg.Log, "/peer/reply_to_getpeer %s %x\n", pk.ip.String(), p.fp)
+				lg(cfg.Log, "/peer/reply_to_getpeer %s %x\n", pk.ip, p.fp)
 			case dave.Op_DAT: // STORE
 				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
 				novel, shardid, err := store(ring, dats, dat, h)
 				if err != nil {
 					lg(cfg.Log, "/dat/store error: %s\n", err)
 				}
-				label := "known"
 				if novel {
-					label = "novel"
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
+					lg(cfg.Log, "/dat/store novel %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
+				} else {
+					lg(cfg.Log, "/dat/store known %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
 				}
-				lg(cfg.Log, "/dat/store %s %x %d %x %f\n", label, pk.msg.W, shardid, p.fp, p.trust)
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := workid(h, pk.msg.W)
 				if err == nil {
@@ -367,7 +366,7 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 						dat, ok := shard[dati]
 						if ok { // GOT DAT
 							pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}, pk.ip}
-							lg(cfg.Log, "/dat/reply_to_get %s %x\n", pk.ip.String(), dat.W)
+							lg(cfg.Log, "/dat/reply_to_get %s %x\n", pk.ip, dat.W)
 						}
 					}
 				}
@@ -437,9 +436,9 @@ func writeBackup(backup <-chan *dave.M, kill <-chan struct{}, done chan<- struct
 		lg(cfg.Log, "/backup disabled\n")
 		return
 	}
-	f, err := os.Create(cfg.BackupFname)
+	f, err := os.OpenFile(cfg.BackupFname, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		panic(fmt.Sprintf("err creating backup file: %s", err))
+		panic(fmt.Sprintf("/backup failed to open file: %s\n", err))
 	}
 	buf := bufio.NewWriter(f)
 	for {
@@ -448,7 +447,7 @@ func writeBackup(backup <-chan *dave.M, kill <-chan struct{}, done chan<- struct
 			flushErr := buf.Flush()
 			closeErr := f.Close()
 			done <- struct{}{}
-			lg(cfg.Log, "/backup buffer flushed, file closed, errors if any: %s %s\n", flushErr, closeErr)
+			lg(cfg.Log, "/backup buffer flushed, file closed, errors if any: %v %v\n", flushErr, closeErr)
 			return
 		case m := <-backup:
 			b, _ := proto.Marshal(m)
@@ -474,6 +473,8 @@ func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 	}
 	size := info.Size()
 	var pos int64
+	var ndat uint
+	defer lg(cfg.Log, "/backup read %d dats from file\n", ndat)
 	lb := make([]byte, 2)
 	for pos < size {
 		n, err := f.Read(lb)
@@ -485,28 +486,29 @@ func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 		n, err = f.Read(datbuf)
 		pos += int64(n)
 		if err != nil {
-			lg(cfg.Log, "/read_backup/read err reading length-prefixed msg: %s\n", err)
+			lg(cfg.Log, "/backup read err reading length-prefixed msg: %s\n", err)
 			continue
 		}
 		m := &dave.M{}
 		err = proto.Unmarshal(datbuf, m)
 		if err != nil {
-			lg(cfg.Log, "/read_backup/unmarshal err unmarshalling proto msg: %s\n", err)
+			lg(cfg.Log, "/backup unmarshal err unmarshalling proto msg: %s\n", err)
 			continue
 		}
 		if check(workHash, m.V, m.T, m.S, m.W) < MINWORK {
-			lg(cfg.Log, "/read_backup/check_work failed\n")
+			lg(cfg.Log, "/backup check_work failed\n")
 			continue
 		}
 		shardi, dati, err := workid(h, m.W)
 		if err != nil {
-			lg(cfg.Log, "/read_backup/calc_workid err calculating dati or shardi: %s\n", err)
+			lg(cfg.Log, "/backup failed to calculate dati or shardi: %s\n", err)
 			continue
 		}
 		if _, ok := dats[shardi]; !ok {
 			dats[shardi] = make(map[uint64]Dat)
 		}
 		dats[shardi][dati] = Dat{V: m.V, Ti: Btt(m.T), S: m.S, W: m.W}
+		ndat++
 	}
 	return dats, nil
 }
@@ -519,7 +521,7 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 			go func(rps []*peer) {
 				for _, rp := range rps {
 					pktout <- &pkt{m, addrfrom(rp.pd)}
-					lg(cfg.Log, "/send_for_app/dat sent %x to %x\n", m.W, rp.fp)
+					lg(cfg.Log, "/send_for_app dat sent %x to %x\n", m.W, rp.fp)
 				}
 			}(rndpeers(prs, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 		case dave.Op_GET:
@@ -532,14 +534,14 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 					if ok {
 						found = true
 						apprecv <- &dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}
-						lg(cfg.Log, "/send_for_app/get found locally %x\n", dat.W)
+						lg(cfg.Log, "/send_for_app get found locally %x\n", dat.W)
 					}
 				}
 				if !found {
 					go func(rps []*peer) {
 						for _, rp := range rps {
 							pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
-							lg(cfg.Log, "/send_for_app/get sent %x %x\n", rp.fp, m.W)
+							lg(cfg.Log, "/send_for_app get sent %x %x\n", rp.fp, m.W)
 						}
 					}(rndpeers(prs, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 				}
@@ -632,7 +634,7 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpoo
 	defer mpool.Put(m)
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
-		lg(cfg.Log, "/rdpkt/drop unmarshal err\n")
+		lg(cfg.Log, "/rdpkt failed to unmarshal\n")
 		return nil
 	}
 	fh.Reset()
@@ -648,22 +650,22 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpoo
 	}
 	sum := fh.Sum(nil)
 	if f.Lookup(sum) {
-		lg(cfg.Log, "/rdpkt/drop filter %s from %s\n", m.Op, raddr)
+		lg(cfg.Log, "/rdpkt failed unique filter insertion %s from %s\n", m.Op, raddr)
 		return nil
 	}
 	f.Insert(sum)
 	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
-		lg(cfg.Log, "/rdpkt/drop packet exceeds pd limit\n")
+		lg(cfg.Log, "/rdpkt packet exceeds pd limit\n")
 		return nil
 
 	} else if m.Op == dave.Op_DAT {
 		work := check(ch, m.V, m.T, m.S, m.W)
 		if work < MINWORK {
-			lg(cfg.Log, "/rdpkt/drop work check failed %d from %s\n", work, raddr)
+			lg(cfg.Log, "/rdpkt failed work check: %d from %s\n", work, raddr)
 			return nil
 		}
 	}
-	lg(cfg.Log, "/rdpkt/accepted %s %x from %s\n", m.Op, m.W, raddr)
+	lg(cfg.Log, "/rdpkt accepted %s from %s\n", m.Op, raddr)
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), V: m.V, T: m.T, S: m.S, W: m.W}
 	for i, pd := range m.Pds {
 		cpy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
