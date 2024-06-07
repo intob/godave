@@ -3,6 +3,7 @@ package godave
 import (
 	"bufio"
 	"bytes"
+	"container/heap"
 	crand "crypto/rand"
 	"encoding/binary"
 	"errors"
@@ -13,30 +14,31 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"sort"
 	"sync"
 	"time"
 
 	"github.com/intob/godave/dave"
-	ckoo "github.com/panmari/cuckoofilter"
+	cuckoo "github.com/panmari/cuckoofilter"
 	"github.com/twmb/murmur3"
 	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
 const (
-	BUF      = 1424   // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT   = 2      // Number of peers randomly selected when selecting more than one.
-	PROBE    = 8      // Inverse of probability that an untrusted peer is randomly selected.
-	GETNPEER = 2      // Limit of peer descriptors in a PEER message.
-	MINWORK  = 8      // Minimum amount of acceptable work in number of leading zero bits.
-	TRUSTEXP = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
-	DELAY    = 28657  // Epochs until new peers may be randomly selected.
-	PING     = 14197  // Epochs until silent peers are pinged with a GETPEER message.
-	DROP     = 131071 // Epochs until silent peers are dropped from the peer table.
-	SEED     = 3      // Epochs between sending one random dat to one random peer, excluding edges.
-	PUSH     = 17     // Epcohs between sending one random mew dat to one random peer, excluding edges.
-	GET      = 257    // Epochs between repeating GET messages.
+	BUF        = 1424   // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
+	FANOUT     = 2      // Number of peers randomly selected when selecting more than one.
+	PROBE      = 8      // Inverse of probability that an untrusted peer is randomly selected.
+	GETNPEER   = 2      // Limit of peer descriptors in a PEER message.
+	MINWORK    = 8      // Minimum amount of acceptable work in number of leading zero bits.
+	TRUSTEXP   = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
+	FILTERLOAD = .8     // Maximum load factor of seed filter.
+	DELAY      = 28657  // Epochs until new peers may be randomly selected.
+	PING       = 14197  // Epochs until silent peers are pinged with a GETPEER message.
+	DROP       = 131071 // Epochs until silent peers are dropped from the peer table.
+	SEED       = 3      // Epochs between sending one dat to one peer.
+	SET        = 17     // Epochs between each round of sending a new dat from the app.
+	GET        = 257    // Epochs between each round of getting a new dat for the app.
+	PRUNE      = 26227  // Epochs between pruning the dat store.
 )
 
 var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
@@ -59,23 +61,20 @@ var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits 
 }
 
 type Dave struct {
-	Recv  <-chan *dave.M
-	Send  chan<- *dave.M
-	epoch time.Duration
-	kill  chan struct{}
-	done  chan struct{}
+	Recv       <-chan *dave.M
+	Send       chan<- *dave.M
+	epoch      time.Duration
+	kill, done chan struct{}
 }
 
 type Cfg struct {
-	LstnAddr    *net.UDPAddr     // Listening address:port
-	Edges       []netip.AddrPort // Bootstrap peers
-	Epoch       time.Duration    // Base cycle, lower runs faster, using more bandwidth
-	Prune       int              // Interval between refreshing dat & peer maps
-	ShardCap    int              // Cuckoo filter capacity
-	FilterCap   uint             // Dat map capacity
-	Log         chan<- []byte    // Log messages
-	Test        bool             // Allow multiple ports per IP
-	BackupFname string           // Dat and peer table backup filename
+	LstnAddr      *net.UDPAddr     // Listening address:port
+	Edges         []netip.AddrPort // Bootstrap peers
+	Epoch         time.Duration    // Base cycle, lower runs faster, using more bandwidth
+	ShardCap      uint             // Shard capacity
+	SeedFilterCap uint             // Cuckoo filter capacity
+	Log           chan<- []byte    // Log messages
+	BackupFname   string           // Dat and peer table backup filename
 }
 
 type Dat struct {
@@ -96,36 +95,37 @@ type pkt struct {
 	ip  netip.AddrPort
 }
 
-type ringbuffer struct {
-	head, cap int
-	buf       []Dat
+type pair struct {
+	DatID uint64
+	Dat   Dat
 }
 
-func (r *ringbuffer) write(d *Dat) {
-	r.buf[r.head] = *d
-	r.head = (r.head + 1) % r.cap
-}
+type datheap []*pair
 
-func (r *ringbuffer) rand() *Dat {
-	rdat := r.buf[mrand.Intn(r.cap)]
-	if rdat.W != nil {
-		return nil
-	}
-	return &rdat
+func (h datheap) Len() int { return len(h) }
+func (h datheap) Less(i, j int) bool {
+	return Mass(h[i].Dat.W, h[i].Dat.Ti) < Mass(h[j].Dat.W, h[j].Dat.Ti)
 }
+func (h datheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
+func (h *datheap) Push(x interface{}) { *h = append(*h, x.(*pair)) }
+func (h *datheap) Pop() interface{} {
+	old := *h
+	n := len(old)
+	x := old[n-1]
+	*h = old[0 : n-1]
+	return x
+}
+func (h *datheap) Peek() *pair { return (*h)[0] }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.Epoch == 0 {
 		return nil, errors.New("Cfg.Epoch must not be zero. Try 20us")
 	}
-	if cfg.ShardCap < 1 {
-		return nil, errors.New("Cfg.ShardCap must be at least 1. 5K should be ok")
+	if cfg.ShardCap == 0 {
+		return nil, errors.New("Cfg.ShardCap must not be zero. Depends on your system's available memory. 10K should be ok")
 	}
-	if cfg.FilterCap < 1 {
-		return nil, errors.New("Cfg.FilterCap must not be at least 1. 1K, 10K or 100K is probably good for you ;)")
-	}
-	if cfg.Prune < 1 {
-		return nil, errors.New("Cfg.Prune must be at least 1. 50K or 100K is should be fine")
+	if cfg.SeedFilterCap == 0 {
+		return nil, errors.New("Cfg.SeedFilterCap must not be zero. 100K should be ok")
 	}
 	lg(cfg.Log, "/init cfg: %+v\n", *cfg)
 	c, err := net.ListenUDP("udp", cfg.LstnAddr)
@@ -197,7 +197,7 @@ func (d *Dave) Set(dat Dat, rounds int) <-chan struct{} {
 		d.Send <- m
 		defer close(done)
 		var r int
-		tick := time.NewTicker(PUSH * d.epoch)
+		tick := time.NewTicker(SET * d.epoch)
 		for range tick.C {
 			d.Send <- m
 			r++
@@ -250,50 +250,63 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
-	var nepoch, npeer int
-	var nshard, shardpos uint8
+func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
+	var nepoch, npeer, ndat, shardpos, seedIndex int
+	var seedShard []*Dat
+	var legend *peer
 	etick := time.NewTicker(cfg.Epoch)
 	h := murmur3.New64()
-	ring := &ringbuffer{cap: cfg.ShardCap, buf: make([]Dat, cfg.ShardCap)}
-	lg(cfg.Log, "/init/ring capacity %d\n", ring.cap)
+	filter := cuckoo.NewFilter(cfg.SeedFilterCap)
 	for {
 		select {
 		case <-etick.C:
 			nepoch++
-			if nepoch%cfg.Prune == 0 { // MEMORY MANAGEMENT
-				var ndat int
-				ndat, dats, prs = mem(dats, prs, cfg)
-				npeer = len(prs)
-				nshard = uint8(len(dats))
-				lg(cfg.Log, "/mem got %d peers, %d dats across %d shards\n", len(prs), ndat, len(dats))
-			}
-			if npeer > 0 {
-				if nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER
-					for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
-						for i := uint8(0); i < nshard; i++ {
-							shardpos = (shardpos + 1) % nshard
-							lg(cfg.Log, "/seed current shard pos %d\n", shardpos)
-							d := rnddat(shardpos, dats)
-							if d != nil {
-								pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addrfrom(rp.pd)}
-								lg(cfg.Log, "/seed %s %x\n", addrfrom(rp.pd), d.W)
-								break
+			if nepoch%PRUNE == 0 { // MEMORY MANAGEMENT
+				ndat, dats = pruneDats(dats, int(cfg.ShardCap))
+				legend, peers = prunePeers(peers)
+				npeer = len(peers)
+				lg(cfg.Log, "/mem got %d peers, %d dats across %d shards\n", npeer, ndat, len(dats))
+			} else if npeer > 0 {
+				if ndat > 0 && nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER
+					if seedIndex == len(seedShard) { // BUILD NEXT SEED SHARD
+						seedIndex = 0
+						shardpos = (shardpos + 1) % len(dats)
+						lg(cfg.Log, "/seed next shard %d\n", shardpos)
+						var cshard int
+						for _, s := range dats {
+							if cshard != shardpos {
+								cshard++
+								continue
 							}
+							seedShard = make([]*Dat, 0, len(s))
+							for _, d := range s {
+								seedShard = append(seedShard, &d)
+							}
+							break
 						}
 					}
-				} else if nepoch%PUSH == 0 { // SEND RANDOM RECENT DAT TO RANDOM PEER
-					rd := ring.rand()
-					if rd != nil {
-						for _, rp := range rndpeers(prs, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
-							pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: rd.V, T: Ttb(rd.Ti), S: rd.S, W: rd.W}, addrfrom(rp.pd)}
-							lg(cfg.Log, "/push %x %x %s\n", rp.fp, rd.W, time.Since(rd.Ti))
+					if filter.LoadFactor() > FILTERLOAD {
+						filter.Reset()
+						lg(cfg.Log, "/seed filter reset\n")
+					}
+					d := seedShard[seedIndex]
+					var selp *peer
+					for _, rp := range rndpeers(peers, legend, 0, 3, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
+						selp = rp
+						if filter.Insert(filterKey(d.W, rp.pd.Ip, h)) {
+							break
 						}
+						lg(cfg.Log, "/seed/next peer\n")
+					}
+					if selp != nil {
+						addr := addrfrom(selp.pd)
+						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addr}
+						seedIndex++
 					}
 				} else if nepoch%PING == 0 { // PING AND DROP
-					for pid, p := range prs {
+					for pid, p := range peers {
 						if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch { // DROP UNRESPONSIVE PEER
-							delete(prs, pid)
+							delete(peers, pid)
 							lg(cfg.Log, "/peer/ping/delete %s\n", addrfrom(p.pd))
 						} else { // SEND PING
 							addr := addrfrom(p.pd)
@@ -306,17 +319,13 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 		case pk := <-pktin: // HANDLE INCOMING PACKET
 			pkpd := pdfrom(pk.ip)
 			pkpfp := pdfp(h, pkpd)
-			p, ok := prs[pkpfp]
+			p, ok := peers[pkpfp]
 			if ok {
 				p.seen = time.Now()
 			} else {
 				p = &peer{pd: pkpd, fp: pkpfp, added: time.Now()}
-				prs[pkpfp] = p
+				peers[pkpfp] = p
 				lg(cfg.Log, "/peer/add %s %x\n", pk.ip, pkpfp)
-			}
-			select {
-			case apprecv <- pk.msg:
-			default:
 			}
 			switch pk.msg.Op {
 			case dave.Op_PEER: // STORE PEERS
@@ -324,9 +333,9 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 					p.peermsg = time.Now()
 					for _, mpd := range pk.msg.Pds {
 						mpdfp := pdfp(h, mpd)
-						_, ok := prs[mpdfp]
+						_, ok := peers[mpdfp]
 						if !ok {
-							prs[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
+							peers[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
 							lg(cfg.Log, "/peer/add_from_gossip %s from %s\n", addrfrom(mpd), pk.ip)
 						}
 					}
@@ -334,27 +343,26 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 					lg(cfg.Log, "/peer/unexpected dropped msg from %s %s\n", pk.ip, time.Since(p.peermsg))
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				rpeers := rndpeers(prs, p.fp, GETNPEER, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) })
+				rpeers := rndpeers(peers, legend, p.fp, GETNPEER, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) })
 				pds := make([]*dave.Pd, len(rpeers))
 				for i, rp := range rpeers {
 					pds[i] = rp.pd
 				}
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
 				lg(cfg.Log, "/peer/reply_to_getpeer %s %x\n", pk.ip, p.fp)
-			case dave.Op_DAT: // STORE
+			case dave.Op_DAT: // STORE AND INSERT INTO FILTER
 				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
-				novel, shardid, err := store(ring, dats, dat, h)
+				novel, shardid, err := put(dats, dat, h)
 				if err != nil {
 					lg(cfg.Log, "/store error: %s\n", err)
 				}
+				filter.Insert(filterKey(pk.msg.W, pkpd.Ip, h))
 				if novel {
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
 					lg(cfg.Log, "/store/novel %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
-				} else {
-					lg(cfg.Log, "/store/known %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
 				}
 			case dave.Op_GET: // REPLY WITH DAT
 				shardi, dati, err := workid(h, pk.msg.W)
@@ -370,12 +378,19 @@ func d(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, pktin <-chan *pkt, p
 				}
 			}
 		case m := <-appsend: // SEND PACKET FOR APP
-			if cfg.BackupFname != "" {
+			if cfg.BackupFname != "" && m.Op == dave.Op_DAT {
 				backup <- m
 			}
-			sendForApp(m, ring, dats, h, prs, pktout, apprecv, cfg)
+			sendForApp(m, dats, h, peers, legend, pktout, apprecv, cfg.Log)
 		}
 	}
+}
+
+func filterKey(work, ip []byte, h hash.Hash) []byte {
+	h.Reset()
+	h.Write(work)
+	h.Write(ip)
+	return h.Sum(nil)
 }
 
 func writePackets(c *net.UDPConn, pkts <-chan *pkt, log chan<- []byte) {
@@ -391,41 +406,40 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, log chan<- []byte) {
 	}
 }
 
-func mem(dats map[uint8]map[uint64]Dat, prs map[uint64]*peer, cfg *Cfg) (int, map[uint8]map[uint64]Dat, map[uint64]*peer) {
+func pruneDats(dats map[uint8]map[uint64]Dat, cap int) (int, map[uint8]map[uint64]Dat) {
 	newdats := make(map[uint8]map[uint64]Dat)
 	var ndat int
 	for shardid, shard := range dats {
-		type hdat struct {
-			datid uint64
-			dat   Dat
-		}
-		heaviest := make([]hdat, 0)
+		dh := &datheap{}
+		heap.Init(dh)
 		for datid, dat := range shard {
-			if len(heaviest) < cfg.ShardCap {
-				heaviest = append(heaviest, hdat{datid, dat})
-				if len(heaviest) == cfg.ShardCap {
-					sort.Slice(heaviest, func(i, j int) bool {
-						return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
-					})
-				}
-			} else if Mass(dat.W, dat.Ti) > Mass(heaviest[0].dat.W, heaviest[0].dat.Ti) {
-				heaviest[0] = hdat{datid, dat}
-				sort.Slice(heaviest, func(i, j int) bool {
-					return Mass(heaviest[i].dat.W, heaviest[i].dat.Ti) < Mass(heaviest[j].dat.W, heaviest[j].dat.Ti)
-				})
+			if dh.Len() < cap {
+				heap.Push(dh, &pair{datid, dat})
+			} else if Mass(dat.W, dat.Ti) > Mass(dh.Peek().Dat.W, dh.Peek().Dat.Ti) {
+				heap.Pop(dh)
+				heap.Push(dh, &pair{datid, dat})
 			}
 		}
-		newdats[shardid] = make(map[uint64]Dat, len(heaviest))
-		for _, d := range heaviest {
-			newdats[shardid][d.datid] = d.dat
+		newdats[shardid] = make(map[uint64]Dat, dh.Len())
+		for dh.Len() > 0 {
+			pair := heap.Pop(dh).(*pair)
+			newdats[shardid][pair.DatID] = pair.Dat
 			ndat++
 		}
 	}
+	return ndat, newdats
+}
+
+func prunePeers(peers map[uint64]*peer) (*peer, map[uint64]*peer) {
 	newpeers := make(map[uint64]*peer)
-	for k, p := range prs {
+	var legend *peer
+	for k, p := range peers {
 		newpeers[k] = p
+		if legend == nil || p.trust > legend.trust {
+			legend = p
+		}
 	}
-	return ndat, newdats, newpeers
+	return legend, newpeers
 }
 
 func writeBackup(backup <-chan *dave.M, kill <-chan struct{}, done chan<- struct{}, cfg *Cfg) {
@@ -493,8 +507,12 @@ func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 			lg(cfg.Log, "/backup unmarshal err unmarshalling proto msg: %s\n", err)
 			continue
 		}
+		if m.Op != dave.Op_DAT {
+			lg(cfg.Log, "/backup not a dat\n")
+			continue
+		}
 		if check(workHash, m.V, m.T, m.S, m.W) < MINWORK {
-			lg(cfg.Log, "/backup check_work failed\n")
+			lg(cfg.Log, "/backup work check  failed\n")
 			continue
 		}
 		shardi, dati, err := workid(h, m.W)
@@ -511,17 +529,17 @@ func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 	return dats, nil
 }
 
-func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h hash.Hash64, prs map[uint64]*peer, pktout chan<- *pkt, apprecv chan<- *dave.M, cfg *Cfg) {
+func sendForApp(m *dave.M, dats map[uint8]map[uint64]Dat, h hash.Hash64, peers map[uint64]*peer, legend *peer, pktout chan<- *pkt, apprecv chan<- *dave.M, log chan<- []byte) {
 	if m != nil {
 		switch m.Op {
 		case dave.Op_DAT:
-			store(ring, dats, &Dat{m.V, m.S, m.W, Btt(m.T)}, h)
+			put(dats, &Dat{m.V, m.S, m.W, Btt(m.T)}, h)
 			go func(rps []*peer) {
 				for _, rp := range rps {
 					pktout <- &pkt{m, addrfrom(rp.pd)}
-					lg(cfg.Log, "/send_for_app dat sent %x to %x\n", m.W, rp.fp)
+					lg(log, "/send_for_app dat sent %x to %x\n", m.W, rp.fp)
 				}
-			}(rndpeers(prs, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
+			}(rndpeers(peers, legend, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 		case dave.Op_GET:
 			shardi, dati, err := workid(h, m.W)
 			if err == nil {
@@ -532,16 +550,16 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 					if ok {
 						found = true
 						apprecv <- &dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}
-						lg(cfg.Log, "/send_for_app get found locally %x\n", dat.W)
+						lg(log, "/send_for_app get found locally %x\n", dat.W)
 					}
 				}
 				if !found {
 					go func(rps []*peer) {
 						for _, rp := range rps {
 							pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
-							lg(cfg.Log, "/send_for_app get sent %x %x\n", rp.fp, m.W)
+							lg(log, "/send_for_app get sent %x %x\n", rp.fp, m.W)
 						}
-					}(rndpeers(prs, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
+					}(rndpeers(peers, legend, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 				}
 			}
 		default:
@@ -550,27 +568,7 @@ func sendForApp(m *dave.M, ring *ringbuffer, dats map[uint8]map[uint64]Dat, h ha
 	}
 }
 
-func rnddat(shardpos uint8, dats map[uint8]map[uint64]Dat) *Dat {
-	var cshardpos uint8
-	for _, shard := range dats {
-		if cshardpos != shardpos {
-			cshardpos++
-			continue
-		}
-		rdati := uint64(len(shard))
-		rdatpos := mrand.Uint64() % (rdati + 1)
-		var cdatpos uint64
-		for _, dat := range shard {
-			if cdatpos == rdatpos {
-				return &dat
-			}
-			cdatpos++
-		}
-	}
-	return nil
-}
-
-func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, uint8, error) {
+func put(dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, uint8, error) {
 	shardid, datid, err := workid(h, d.W)
 	if err != nil {
 		return false, shardid, err
@@ -579,13 +577,11 @@ func store(ring *ringbuffer, dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash6
 	if !ok {
 		dats[shardid] = make(map[uint64]Dat)
 		dats[shardid][datid] = *d
-		ring.write(d)
 		return true, shardid, nil
 	} else {
 		_, ok := shard[datid]
 		if !ok {
 			shard[datid] = *d
-			ring.write(d)
 			return true, shardid, nil
 		}
 		return false, shardid, nil
@@ -597,28 +593,19 @@ func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
 	go func() {
 		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
 		mpool := sync.Pool{New: func() any { return &dave.M{} }}
-		fh := murmur3.New64()
 		ch := blake3.New(32, nil)
-		f := ckoo.NewFilter(cfg.FilterCap)
-		rtick := time.NewTicker(SEED * cfg.Epoch)
 		defer c.Close()
 		for {
-			select {
-			case <-rtick.C:
-				f.Reset()
-				lg(cfg.Log, "/lstn filter reset\n")
-			default:
-				p := rdpkt(c, fh, f, ch, &bpool, &mpool, cfg)
-				if p != nil {
-					pkts <- p
-				}
+			p := rdpkt(c, ch, &bpool, &mpool, cfg)
+			if p != nil {
+				pkts <- p
 			}
 		}
 	}()
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpool, mpool *sync.Pool, cfg *Cfg) *pkt {
+func rdpkt(c *net.UDPConn, ch *blake3.Hasher, bpool, mpool *sync.Pool, cfg *Cfg) *pkt {
 	buf := bpool.Get().([]byte)
 	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
@@ -632,23 +619,6 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpoo
 		lg(cfg.Log, "/rdpkt failed to unmarshal\n")
 		return nil
 	}
-	fh.Reset()
-	op := make([]byte, 2)
-	binary.LittleEndian.PutUint16(op, uint16(m.Op.Number()))
-	fh.Write(op)
-	addr := raddr.Addr().As16()
-	fh.Write(addr[:])
-	if cfg.Test {
-		port := make([]byte, 2)
-		binary.LittleEndian.PutUint16(port, raddr.Port())
-		fh.Write(port)
-	}
-	sum := fh.Sum(nil)
-	if f.Lookup(sum) {
-		lg(cfg.Log, "/rdpkt failed unique filter insertion %s from %s\n", m.Op, raddr)
-		return nil
-	}
-	f.Insert(sum)
 	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
 		lg(cfg.Log, "/rdpkt packet exceeds pd limit\n")
 		return nil
@@ -660,7 +630,6 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpoo
 			return nil
 		}
 	}
-	lg(cfg.Log, "/rdpkt accepted %s from %s\n", m.Op, raddr)
 	cpy := &dave.M{Op: m.Op, Pds: make([]*dave.Pd, len(m.Pds)), V: m.V, T: m.T, S: m.S, W: m.W}
 	for i, pd := range m.Pds {
 		cpy.Pds[i] = &dave.Pd{Ip: pd.Ip, Port: pd.Port}
@@ -668,41 +637,30 @@ func rdpkt(c *net.UDPConn, fh hash.Hash, f *ckoo.Filter, ch *blake3.Hasher, bpoo
 	return &pkt{cpy, raddr}
 }
 
-func rndpeers(prs map[uint64]*peer, excludePeerFp uint64, lim int, match func(p, legend *peer) bool) []*peer {
+func rndpeers(prs map[uint64]*peer, legend *peer, excludePeerFp uint64, lim int, match func(p, legend *peer) bool) []*peer {
 	candidates := make([]*peer, 0, len(prs))
-	leg := legend(prs)
-	for k, p := range prs {
-		if k != excludePeerFp && match(p, leg) {
-			candidates = append(candidates, p)
+	for fp, peer := range prs {
+		if fp != excludePeerFp && match(peer, legend) {
+			candidates = append(candidates, peer)
 		}
 	}
-	lencand := len(candidates)
-	if lencand <= lim {
+	if len(candidates) <= lim {
 		return candidates
 	}
 	ans := make([]*peer, lim)
 	for i := 0; i < lim; i++ {
-		r := i + mrand.Intn(lencand-i)
+		r := i + mrand.Intn(len(candidates)-i)
 		ans[i] = candidates[r]
 	}
 	return ans
-}
-
-func legend(prs map[uint64]*peer) (legend *peer) {
-	for _, p := range prs {
-		if legend == nil || p.trust > legend.trust {
-			legend = p
-		}
-	}
-	return legend
 }
 
 func share(k *peer, epoch time.Duration) bool {
 	return time.Since(k.added) > DELAY*epoch
 }
 
-func trust(k *peer, legend *peer) bool {
-	return k.edge || mrand.Intn(PROBE) == 1 || mrand.Float64() < math.Pow(k.trust/legend.trust, TRUSTEXP)
+func trust(p *peer, legend *peer) bool {
+	return p.edge || mrand.Intn(PROBE) == 1 || mrand.Float64() < math.Pow(p.trust/legend.trust, TRUSTEXP)
 }
 
 func addrfrom(pd *dave.Pd) netip.AddrPort {
