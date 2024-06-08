@@ -17,21 +17,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cespare/xxhash"
 	"github.com/intob/godave/dave"
 	cuckoo "github.com/panmari/cuckoofilter"
-	"github.com/twmb/murmur3"
 	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
 const (
 	BUF        = 1424   // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT     = 2      // Number of peers randomly selected when selecting more than one.
+	FANOUT     = 3      // Number of peers randomly selected when selecting more than one.
 	PROBE      = 8      // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER   = 2      // Limit of peer descriptors in a PEER message.
 	MINWORK    = 8      // Minimum amount of acceptable work in number of leading zero bits.
 	TRUSTEXP   = .375   // Exponent to apply to trust score to flatten distribution of peer selection.
-	FILTERLOAD = .8     // Maximum load factor of seed filter.
+	FILTERLOAD = .95    // Maximum load factor of seed filter.
 	DELAY      = 28657  // Epochs until new peers may be randomly selected.
 	PING       = 14197  // Epochs until silent peers are pinged with a GETPEER message.
 	DROP       = 131071 // Epochs until silent peers are dropped from the peer table.
@@ -133,7 +133,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, err
 	}
 	bootstrap := make(map[uint64]*peer)
-	h := murmur3.New64()
+	h := xxhash.New()
 	for _, e := range cfg.Edges {
 		bootstrap[pdfp(h, pdfrom(e))] = &peer{pd: pdfrom(e), fp: pdfp(h, pdfrom(e)), added: time.Now(), seen: time.Now(), edge: true}
 	}
@@ -164,7 +164,6 @@ func (d *Dave) Kill() <-chan struct{} {
 	d.kill <- struct{}{}
 	return d.done
 }
-
 func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
@@ -189,7 +188,6 @@ func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 	}()
 	return c
 }
-
 func (d *Dave) Set(dat Dat, rounds int) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -251,11 +249,12 @@ func Btt(b []byte) time.Time {
 }
 
 func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *dave.M, cfg *Cfg) {
-	var nepoch, npeer, ndat, shardpos, seedIndex int
-	var seedShard []*Dat
+	var nepoch, npeer, ndat, seedCount, seedMax int
+	var seedShardi uint8
+	var seedShard map[uint64]*Dat
 	var legend *peer
 	etick := time.NewTicker(cfg.Epoch)
-	h := murmur3.New64()
+	xxh := xxhash.New()
 	filter := cuckoo.NewFilter(cfg.SeedFilterCap)
 	for {
 		select {
@@ -268,41 +267,36 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt,
 				lg(cfg.Log, "/mem got %d peers, %d dats across %d shards\n", npeer, ndat, len(dats))
 			} else if npeer > 0 {
 				if ndat > 0 && nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER
-					if seedIndex == len(seedShard) { // BUILD NEXT SEED SHARD
-						seedIndex = 0
-						shardpos = (shardpos + 1) % len(dats)
-						lg(cfg.Log, "/seed next shard %d\n", shardpos)
-						var cshard int
-						for _, s := range dats {
-							if cshard != shardpos {
-								cshard++
-								continue
+					if seedCount == seedMax { // BUILD NEXT SEED SHARD
+						for found := false; !found; {
+							seedShardi = (seedShardi + 1) % 255
+							var shard map[uint64]Dat
+							shard, found = dats[uint8(seedShardi)]
+							if found {
+								seedShard = make(map[uint64]*Dat, len(shard))
+								for k, d := range shard {
+									seedShard[k] = &d
+								}
+								seedMax = len(shard)
+								seedCount = 0
+								lg(cfg.Log, "/seed built new shard %d\n", seedShardi)
 							}
-							seedShard = make([]*Dat, 0, len(s))
-							for _, d := range s {
-								seedShard = append(seedShard, &d)
-							}
-							break
 						}
 					}
 					if filter.LoadFactor() > FILTERLOAD {
 						filter.Reset()
 						lg(cfg.Log, "/seed filter reset\n")
 					}
-					d := seedShard[seedIndex]
-					var selp *peer
-					for _, rp := range rndpeers(peers, legend, 0, 3, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
-						selp = rp
-						if filter.Insert(filterKey(d.W, rp.pd.Ip, h)) {
-							break
+					for _, rp := range rndpeers(peers, legend, 0, 1, func(p *peer, l *peer) bool { return share(p, cfg.Epoch) && trust(p, l) }) {
+						for k, d := range seedShard {
+							if filter.Insert(concatWorkIp(d.W, rp.pd.Ip)) {
+								pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addrfrom(rp.pd)}
+								delete(seedShard, k)
+								break
+							}
 						}
-						lg(cfg.Log, "/seed/next peer\n")
 					}
-					if selp != nil {
-						addr := addrfrom(selp.pd)
-						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addr}
-						seedIndex++
-					}
+					seedCount++
 				} else if nepoch%PING == 0 { // PING AND DROP
 					for pid, p := range peers {
 						if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch { // DROP UNRESPONSIVE PEER
@@ -318,7 +312,7 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt,
 			}
 		case pk := <-pktin: // HANDLE INCOMING PACKET
 			pkpd := pdfrom(pk.ip)
-			pkpfp := pdfp(h, pkpd)
+			pkpfp := pdfp(xxh, pkpd)
 			p, ok := peers[pkpfp]
 			if ok {
 				p.seen = time.Now()
@@ -332,7 +326,7 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt,
 				if time.Since(p.peermsg) >= PING*cfg.Epoch {
 					p.peermsg = time.Now()
 					for _, mpd := range pk.msg.Pds {
-						mpdfp := pdfp(h, mpd)
+						mpdfp := pdfp(xxh, mpd)
 						_, ok := peers[mpdfp]
 						if !ok {
 							peers[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
@@ -352,28 +346,26 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt,
 				lg(cfg.Log, "/peer/reply_to_getpeer %s %x\n", pk.ip, p.fp)
 			case dave.Op_DAT: // STORE AND INSERT INTO FILTER
 				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
-				novel, shardid, err := put(dats, dat, h)
+				novel, shardid, err := put(dats, dat, xxh)
 				if err != nil {
 					lg(cfg.Log, "/store error: %s\n", err)
 				}
-				filter.Insert(filterKey(pk.msg.W, pkpd.Ip, h))
+				filter.Insert(concatWorkIp(pk.msg.W, pkpd.Ip))
 				if novel {
 					p.trust += Mass(pk.msg.W, Btt(pk.msg.T))
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
-					lg(cfg.Log, "/store/novel %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
+					lg(cfg.Log, "/store %x %d %s %f\n", pk.msg.W, shardid, pk.ip, p.trust)
 				}
 			case dave.Op_GET: // REPLY WITH DAT
-				shardi, dati, err := workid(h, pk.msg.W)
-				if err == nil {
-					shard, ok := dats[shardi]
-					if ok { // GOT SHARD
-						dat, ok := shard[dati]
-						if ok { // GOT DAT
-							pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}, pk.ip}
-							lg(cfg.Log, "/dat/reply_to_get %s %x\n", pk.ip, dat.W)
-						}
+				shardi, dati := workid(xxh, pk.msg.W)
+				shard, ok := dats[shardi]
+				if ok { // GOT SHARD
+					dat, ok := shard[dati]
+					if ok { // GOT DAT
+						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}, pk.ip}
+						lg(cfg.Log, "/dat/reply_to_get %s %x\n", pk.ip, dat.W)
 					}
 				}
 			}
@@ -381,16 +373,16 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, pktin <-chan *pkt,
 			if cfg.BackupFname != "" && m.Op == dave.Op_DAT {
 				backup <- m
 			}
-			sendForApp(m, dats, h, peers, legend, pktout, apprecv, cfg.Log)
+			sendForApp(m, dats, xxh, peers, legend, pktout, apprecv, cfg.Log)
 		}
 	}
 }
 
-func filterKey(work, ip []byte, h hash.Hash) []byte {
-	h.Reset()
-	h.Write(work)
-	h.Write(ip)
-	return h.Sum(nil)
+func concatWorkIp(work []byte, ip []byte) []byte {
+	buf := make([]byte, 32+16)
+	copy(buf, work)
+	copy(buf[32:], ip)
+	return buf
 }
 
 func writePackets(c *net.UDPConn, pkts <-chan *pkt, log chan<- []byte) {
@@ -515,11 +507,7 @@ func readBackup(h hash.Hash64, cfg *Cfg) (map[uint8]map[uint64]Dat, error) {
 			lg(cfg.Log, "/backup work check  failed\n")
 			continue
 		}
-		shardi, dati, err := workid(h, m.W)
-		if err != nil {
-			lg(cfg.Log, "/backup failed to calculate dati or shardi: %s\n", err)
-			continue
-		}
+		shardi, dati := workid(h, m.W)
 		if _, ok := dats[shardi]; !ok {
 			dats[shardi] = make(map[uint64]Dat)
 		}
@@ -541,26 +529,24 @@ func sendForApp(m *dave.M, dats map[uint8]map[uint64]Dat, h hash.Hash64, peers m
 				}
 			}(rndpeers(peers, legend, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 		case dave.Op_GET:
-			shardi, dati, err := workid(h, m.W)
-			if err == nil {
-				var found bool
-				shard, ok := dats[shardi]
+			shardi, dati := workid(h, m.W)
+			var found bool
+			shard, ok := dats[shardi]
+			if ok {
+				dat, ok := shard[dati]
 				if ok {
-					dat, ok := shard[dati]
-					if ok {
-						found = true
-						apprecv <- &dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}
-						lg(log, "/send_for_app get found locally %x\n", dat.W)
+					found = true
+					apprecv <- &dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}
+					lg(log, "/send_for_app get found locally %x\n", dat.W)
+				}
+			}
+			if !found {
+				go func(rps []*peer) {
+					for _, rp := range rps {
+						pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
+						lg(log, "/send_for_app get sent %x %x\n", rp.fp, m.W)
 					}
-				}
-				if !found {
-					go func(rps []*peer) {
-						for _, rp := range rps {
-							pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
-							lg(log, "/send_for_app get sent %x %x\n", rp.fp, m.W)
-						}
-					}(rndpeers(peers, legend, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
-				}
+				}(rndpeers(peers, legend, 0, FANOUT, func(p *peer, l *peer) bool { return true }))
 			}
 		default:
 			panic(fmt.Sprintf("unsupported operation: send %s", m.Op))
@@ -569,10 +555,7 @@ func sendForApp(m *dave.M, dats map[uint8]map[uint64]Dat, h hash.Hash64, peers m
 }
 
 func put(dats map[uint8]map[uint64]Dat, d *Dat, h hash.Hash64) (bool, uint8, error) {
-	shardid, datid, err := workid(h, d.W)
-	if err != nil {
-		return false, shardid, err
-	}
+	shardid, datid := workid(h, d.W)
 	shard, ok := dats[shardid]
 	if !ok {
 		dats[shardid] = make(map[uint64]Dat)
@@ -681,13 +664,10 @@ func pdfp(h hash.Hash64, pd *dave.Pd) uint64 {
 	return h.Sum64()
 }
 
-func workid(h hash.Hash64, work []byte) (uint8, uint64, error) {
-	if len(work) != 32 {
-		return 0, 0, errors.New("value is not of length 32 bytes")
-	}
+func workid(h hash.Hash64, work []byte) (uint8, uint64) {
 	h.Reset()
 	h.Write(work)
-	return nzerobit(work), h.Sum64(), nil
+	return nzerobit(work), h.Sum64()
 }
 
 func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
