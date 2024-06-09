@@ -12,4 +12,5 @@ require (
 require (
 	github.com/dgryski/go-metro v0.0.0-20211217172704-adc40b04c140 // indirect
 	github.com/klauspost/cpuid/v2 v2.0.9 // indirect
+	github.com/seiflotfy/cuckoofilter v0.0.0-20220411075957-e3b120b3f5fb // indirect
 )
