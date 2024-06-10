@@ -33,14 +33,13 @@ const (
 	FILTERLOAD   = .8     // Maximum load factor of cuckoo filter.
 	FILTERKICKS  = 400    // Maximum number of cuckoo filter kicks.
 	MAXSEEDTRIES = 100    // Maximum number of times to try finding a dat for the peer.
-	DELAY        = 28657  // Epochs until new peers may be randomly selected.
-	UP           = 28657  // Epochs until silent peers are no-longer shared or selected for seeding.
 	DROP         = 131071 // Epochs until silent peers are dropped from the peer table.
-	APP          = 7      // Epochs between each round of sending a message for the app.
+	APP          = 17     // Epochs between each round of sending a message for the app.
+	SEED         = 1      // Epochs between sending one dat to one peer.
 	// The following must be prime, such that no sub-cycles coincide:
-	SEED  = 3     // Epochs between sending one dat to one peer.
-	PING  = 14197 // Epochs until silent peers are pinged with a GETPEER message.
-	PRUNE = 65537 // Epochs between pruning dats & peers.
+	PING        = 14197 // Epochs until silent peers are pinged with a GETPEER message.
+	PRUNE       = 65537 // Epochs between pruning dats & peers.
+	FILTERCHECK = 257
 )
 
 var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
@@ -151,14 +150,14 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		dats = make(map[uint8]map[uint64]Dat)
 		lg(cfg.Log, "/init created empty map")
 	}
-	backup := make(chan *dave.M, 1)
+	backup := make(chan *dave.M, 1000)
 	kill := make(chan struct{}, 1)
 	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
 	go writeBackup(backup, kill, done, cfg)
-	pktout := make(chan *pkt, 1)
+	pktout := make(chan *pkt, 10)
 	go writePackets(c, pktout, cfg.Log)
 	send := make(chan *dave.M)
-	recv := make(chan *Dat, 1)
+	recv := make(chan *Dat, 1000)
 	npeer := &atomic.Int32{}
 	go d(dats, bootstrap, npeer, lstn(c, cfg), pktout, backup, send, recv, cfg)
 	return &Dave{recv: recv, send: send, epoch: cfg.Epoch, kill: kill, done: done, npeer: npeer}, nil
@@ -168,14 +167,13 @@ func (d *Dave) Kill() <-chan struct{} {
 	d.kill <- struct{}{}
 	return d.done
 }
-func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
+func (d *Dave) Get(work []byte, npeer int32, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
-		for d.npeer.Load() < 1 {
+		for d.npeer.Load() < npeer {
 			time.Sleep(APP * d.epoch)
 		}
-		getmsg := &dave.M{Op: dave.Op_GET, W: work}
-		d.send <- getmsg
+		d.send <- &dave.M{Op: dave.Op_GET, W: work}
 		defer close(c)
 		tick := time.NewTicker(APP * d.epoch)
 		timeout := time.NewTimer(timeout)
@@ -189,22 +187,22 @@ func (d *Dave) Get(work []byte, timeout time.Duration) <-chan *Dat {
 					return
 				}
 			case <-tick.C:
-				d.send <- getmsg
+				d.send <- &dave.M{Op: dave.Op_GET, W: work}
 			}
 		}
 	}()
 	return c
 }
-func (d *Dave) Set(dat *Dat, rounds int) <-chan struct{} {
+func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		for d.npeer.Load() < 1 {
+		for d.npeer.Load() < npeer {
 			time.Sleep(APP * d.epoch)
 		}
 		m := &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
 		d.send <- m
 		defer close(done)
-		var r int
+		var r int32
 		tick := time.NewTicker(APP * d.epoch)
 		for range tick.C {
 			d.send <- m
@@ -263,6 +261,7 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, npeer *atomic.Int3
 	var nepoch, ndat int // TODO reconsider types
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
+	trustSum, peerList, peers = prunePeers(peers)
 	etick := time.NewTicker(cfg.Epoch)
 	filter := cuckoo.NewFilter(cfg.FilterCap, FILTERKICKS)
 	for {
@@ -329,47 +328,43 @@ func d(dats map[uint8]map[uint64]Dat, peers map[uint64]*peer, npeer *atomic.Int3
 			}
 		case <-etick.C:
 			nepoch++
-			if nepoch%PRUNE == 0 { // MEMORY MANAGEMENT
+			if nepoch%PING == 0 { // PING AND DROP PEERS
+				if filter.LoadFactor() > FILTERLOAD { // ALSO CHECK FILTER LOAD
+					lg(cfg.Log, "/seed filter reset, load factor reached with %d", filter.Count())
+					filter.Reset()
+				}
+				var dropped bool
+				for pid, p := range peers {
+					if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch {
+						delete(peers, pid)
+						npeer.Add(-1)
+						dropped = true
+						lg(cfg.Log, "/peer/ping/delete %s", addrfrom(p.pd))
+					} else { // SEND PING
+						addr := addrfrom(p.pd)
+						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
+						lg(cfg.Log, "/peer/ping/getpeer_msg sent to %s", addr)
+					}
+				}
+				if dropped {
+					trustSum, peerList, peers = prunePeers(peers)
+				}
+			} else if nepoch%PRUNE == 0 { // MEMORY MANAGEMENT
 				ndat, dats = pruneDats(dats, int(cfg.ShardCap))
 				trustSum, peerList, peers = prunePeers(peers)
 				lg(cfg.Log, "/mem got %d peers, %d dats across %d shards", len(peerList), ndat, len(dats))
-			} else if len(peerList) > 0 {
-				if ndat > 0 && nepoch%SEED == 0 { // SEND RANDOM DAT TO RANDOM PEER
-					if filter.LoadFactor() > FILTERLOAD {
-						lg(cfg.Log, "/seed filter reset, load factor reached with %d", filter.Count())
-						filter.Reset()
-					}
-					var rp *peer
-					for rp == nil {
-						rp = rndpeer(peerList, trustSum)
-					}
+			}
+			if ndat > 0 { // SEED DAT
+				rp := rndpeer(peerList, trustSum)
+				if rp != nil {
 					for i := 0; i < MAXSEEDTRIES; i++ {
 						d := rnddat(dats)
 						if d != nil {
-							key := seedKey(d.W, rp, cfg.Test)
-							if !filter.Lookup(key) {
-								filter.Insert(key)
+							if filter.Insert(seedKey(d.W, rp, cfg.Test)) {
 								pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, addrfrom(rp.pd)}
 								break
 							}
 						}
-					}
-				} else if nepoch%PING == 0 { // PING AND DROP
-					var dropped bool
-					for pid, p := range peers {
-						if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch { // DROP UNRESPONSIVE PEER
-							delete(peers, pid)
-							npeer.Add(-1)
-							dropped = true
-							lg(cfg.Log, "/peer/ping/delete %s", addrfrom(p.pd))
-						} else { // SEND PING
-							addr := addrfrom(p.pd)
-							pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
-							lg(cfg.Log, "/peer/ping/getpeer_msg sent to %s", addr)
-						}
-					}
-					if dropped {
-						trustSum, peerList, peers = prunePeers(peers)
 					}
 				}
 			}
@@ -440,9 +435,7 @@ func prunePeers(peers map[uint64]*peer) (float64, []*peer, map[uint64]*peer) {
 		list = append(list, p)
 		trustSum += p.trust
 	}
-	sort.Slice(list, func(i, j int) bool { // sort by trust descending
-		return list[i].trust > list[j].trust
-	})
+	sort.Slice(list, func(i, j int) bool { return list[i].trust > list[j].trust })
 	return trustSum, list, newpeers
 }
 
@@ -545,12 +538,10 @@ func sendForApp(m *dave.M, dats map[uint8]map[uint64]Dat, peerList []*peer, trus
 		switch m.Op {
 		case dave.Op_DAT:
 			put(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-			rp := rndpeer(peerList, trustSum)
-			if rp != nil {
-				pktout <- &pkt{m, addrfrom(rp.pd)}
-				lg(log, "/send_for_app dat sent %x to %x", m.W, rp.fp)
-			} else {
-				lg(log, "/send_for_app no peer randomly selected, got %d peers", len(peerList))
+			for _, pd := range rndpds(peerList, trustSum, FANOUT, 0) {
+				addr := addrfrom(pd)
+				pktout <- &pkt{m, addr}
+				lg(log, "/send_for_app dat sent to %s", addr)
 			}
 		case dave.Op_GET:
 			shardKey, datKey := keys(m.W)
@@ -565,12 +556,10 @@ func sendForApp(m *dave.M, dats map[uint8]map[uint64]Dat, peerList []*peer, trus
 				}
 			}
 			if !found {
-				rp := rndpeer(peerList, trustSum)
-				if rp != nil {
-					pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addrfrom(rp.pd)}
-					lg(log, "/send_for_app get sent %x %x", rp.fp, m.W)
-				} else {
-					lg(log, "/send_for_app no peer randomly selected, got %d peers", len(peerList))
+				for _, pd := range rndpds(peerList, trustSum, FANOUT, 0) {
+					addr := addrfrom(pd)
+					pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addr}
+					lg(log, "/send_for_app get sent to %s", addr)
 				}
 			}
 		default:
@@ -597,11 +586,10 @@ func put(dats map[uint8]map[uint64]Dat, d *Dat) (bool, uint8, error) {
 }
 
 func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
-	pkts := make(chan *pkt, 1)
+	pkts := make(chan *pkt, 1000)
 	go func() {
 		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
 		ch := blake3.New(32, nil)
-		defer c.Close()
 		for {
 			p := rdpkt(c, ch, &bpool, cfg)
 			if p != nil {
@@ -643,7 +631,7 @@ func rndpeer(list []*peer, trustSum float64) *peer {
 	if len(list) == 0 {
 		return nil
 	}
-	if mrand.Intn(PROBE) == 1 {
+	if mrand.Intn(PROBE) == 0 {
 		return list[mrand.Intn(len(list))]
 	}
 	r := mrand.Float64() * trustSum
@@ -659,6 +647,8 @@ func rndpeer(list []*peer, trustSum float64) *peer {
 func rndpds(list []*peer, trustSum float64, limit int, exclude uint64) []*dave.Pd {
 	if len(list) == 0 {
 		return nil
+	} else if len(list) == 1 {
+		return []*dave.Pd{list[0].pd}
 	}
 	r := mrand.Float64() * trustSum
 	pds := make([]*dave.Pd, 0, limit)
