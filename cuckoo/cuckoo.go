@@ -6,24 +6,22 @@ import (
 	"github.com/cespare/xxhash"
 )
 
-const (
-	bucketSize = 4
-	maxKicks   = 500
-)
+const bucketSize = 4
 
 type Filter struct {
-	buckets                []bucket
-	numBuckets, count, cap uint32
+	buckets                          []bucket
+	numBuckets, count, cap, maxKicks uint32
 }
 
 type bucket [bucketSize]uint8
 
-func NewFilter(cap uint32) *Filter {
+func NewFilter(cap, maxKicks uint32) *Filter {
 	numBuckets := nextPowerOfTwo(cap / bucketSize)
 	return &Filter{
 		buckets:    make([]bucket, numBuckets),
 		numBuckets: numBuckets,
 		cap:        cap,
+		maxKicks:   maxKicks,
 	}
 }
 
@@ -50,7 +48,7 @@ func (f *Filter) Insert(hash uint64) bool {
 		return true
 	}
 	i := i1
-	for n := 0; n < maxKicks; n++ {
+	for n := uint32(0); n < f.maxKicks; n++ {
 		f.buckets[i][0], fp = fp, f.buckets[i][0]
 		i ^= uint32(hash64(uint64(fp))) % uint32(len(f.buckets))
 		if f.insert(fp, i) {

@@ -6,7 +6,7 @@ import (
 )
 
 func TestInsertLookup(t *testing.T) {
-	f := NewFilter(1000)
+	f := NewFilter(1000, 500)
 	hash := rand.Uint64()
 	if f.Lookup(hash) {
 		t.Errorf("empty filter should not contain %x", hash)
@@ -18,7 +18,7 @@ func TestInsertLookup(t *testing.T) {
 }
 
 func TestInsertResetLookup(t *testing.T) {
-	f := NewFilter(1000)
+	f := NewFilter(1000, 500)
 	hash := rand.Uint64()
 	f.Insert(hash)
 	f.Reset()
@@ -28,7 +28,7 @@ func TestInsertResetLookup(t *testing.T) {
 }
 
 func TestFalsePositives(t *testing.T) {
-	f := NewFilter(10000)
+	f := NewFilter(10000, 500)
 	numItems := 1000
 	for i := 0; i < numItems; i++ {
 		f.Insert(rand.Uint64())
@@ -49,16 +49,15 @@ func TestFalsePositives(t *testing.T) {
 const benchmarkItemCount = 1000000
 
 func BenchmarkCuckooFilterInsert(b *testing.B) {
-	cf := NewFilter(uint32(benchmarkItemCount))
+	cf := NewFilter(uint32(benchmarkItemCount), 300)
 	b.ResetTimer()
-
 	for i := 0; i < b.N; i++ {
 		cf.Insert(uint64(rand.Intn(benchmarkItemCount)))
 	}
 }
 
 func BenchmarkCuckooFilterLookup(b *testing.B) {
-	cf := NewFilter(uint32(benchmarkItemCount))
+	cf := NewFilter(uint32(benchmarkItemCount), 300)
 	for i := 0; i < benchmarkItemCount; i++ {
 		cf.Insert(uint64(i))
 	}
@@ -70,7 +69,7 @@ func BenchmarkCuckooFilterLookup(b *testing.B) {
 }
 
 func BenchmarkCuckooFilterInsertLookup(b *testing.B) {
-	cf := NewFilter(uint32(benchmarkItemCount))
+	cf := NewFilter(uint32(benchmarkItemCount), 300)
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
@@ -84,7 +83,7 @@ func BenchmarkCuckooFilterInsertLookup(b *testing.B) {
 }
 
 func BenchmarkCuckooFilterFalsePositiveRate(b *testing.B) {
-	cf := NewFilter(uint32(benchmarkItemCount))
+	cf := NewFilter(uint32(benchmarkItemCount), 300)
 	for i := 0; i < benchmarkItemCount; i++ {
 		cf.Insert(uint64(i))
 	}
@@ -102,7 +101,7 @@ func BenchmarkCuckooFilterFalsePositiveRate(b *testing.B) {
 }
 
 func BenchmarkLoadFactor(b *testing.B) {
-	f := NewFilter(1000000)
+	f := NewFilter(1000000, 500)
 	numItems := 1000000
 	for i := 0; i < numItems; i++ {
 		f.Insert(rand.Uint64())
