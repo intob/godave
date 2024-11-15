@@ -1,5 +1,23 @@
 syntax = "proto3";
 option go_package = "./dave";
-enum Op { GETPEER = 0; PEER = 1; DAT = 2; GET = 3; }
-message M { Op op = 1; repeated Pd pds = 2; bytes v = 3; bytes t = 4; bytes s = 5; bytes w = 6; }
-message Pd { bytes ip = 1; uint32 port = 2; }
+
+enum Op {
+    GETPEER = 0;
+    PEER = 1;
+    DAT = 2;
+    GET = 3;
+}
+
+message M {
+    Op op = 1;
+    repeated Pd pds = 2;
+    bytes v = 3;
+    bytes t = 4;
+    bytes s = 5;
+    bytes w = 6;
+}
+
+message Pd {
+    bytes ip = 1;
+    uint32 port = 2;
+}
