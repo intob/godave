@@ -1,5 +1,2 @@
 .vscode/launch.json
-go.work
-run.sh
-update_*.sh
-hostnames_*
+.DS_Store
