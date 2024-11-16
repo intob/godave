@@ -28,7 +28,6 @@ func (rb *RingBuffer[T]) Write(data T) bool {
 	} else {
 		rb.count++
 	}
-
 	rb.buffer[rb.write] = data
 	rb.write = (rb.write + 1) % rb.size
 	return true
@@ -39,14 +38,12 @@ func (rb *RingBuffer[T]) Read() (T, bool) {
 	if rb.count == 0 {
 		return zero, false
 	}
-
 	data := rb.buffer[rb.read]
 	rb.read = (rb.read + 1) % rb.size
 
 	if rb.read == rb.write {
 		rb.read = 0
 	}
-
 	return data, true
 }
 

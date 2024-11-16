@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -32,9 +33,9 @@ const (
 	MAXWORK      = 64        // Maximum ammount of work in number of leading zero bits. To limit number of ring buffers.
 	MAXTRUST     = 25        // Maximum trust score, ensuring fair trust distribution from feedback.
 	APP          = 10        // Epochs between each round of sending a message for the app.
-	DROP         = 131071    // Epochs until silent peers are dropped from the peer table, and new peers are shared.
+	DROP         = 174763    // Epochs until silent peers are dropped from the peer table, and new peers are shared.
 	PING         = 28657     // Epochs until silent peers are pinged with a GETPEER message.
-	PRUNE        = 65537     // Epochs between pruning dats & peers.
+	PRUNE        = 131071    // Epochs between pruning dats & peers.
 	PUSH         = 3         // Epochs between pushing a dat from a ring buffer.
 	LOGLVL_ERROR = LogLvl(0) // Base log level, for errors & status.
 	LOGLVL_DEBUG = LogLvl(1) // Debugging log level.
@@ -133,8 +134,8 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
 	}
+	var ndat uint32
 	if cfg.BackupFname != "" {
-		var ndat uint
 		ndat, dats, err = readBackup(cfg.BackupFname)
 		if err != nil {
 			lg(cfg, LOGLVL_ERROR, "/backup failed to read backup file: %s", err)
@@ -161,7 +162,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	send := make(chan *dave.M)
 	recv := make(chan *Dat, 100)
 	npeer := &atomic.Int32{}
-	go d(dats, bootstrap, npeer, lstn(udpc, cfg), pktout, backup, send, recv, cfg)
+	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, cfg)
 	return &Dave{recv: recv, send: send, epoch: cfg.Epoch, kill: kill, done: done, npeer: npeer}, nil
 }
 
@@ -241,9 +242,6 @@ func Work(val, tim []byte, d uint8) (work, salt []byte) {
 }
 
 func Check(val, tim, salt, work []byte) int {
-	if len(tim) != 8 || Btt(tim).After(time.Now()) {
-		return -3
-	}
 	return check(blake3.New(32, nil), val, tim, salt, work)
 }
 
@@ -262,9 +260,9 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(dats []map[uint64]Dat, peers map[uint64]*peer, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *Dat, cfg *Cfg) {
+func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *Dat, cfg *Cfg) {
 	npeer.Store(int32(len(peers)))
-	var nepoch, ndat uint32
+	var nepoch uint32
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
 	trustSum, peerList, peers = prunePeers(peers)
@@ -318,6 +316,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, npeer *atomic.Int32, pktin
 					lg(cfg, LOGLVL_ERROR, "/store error: %s", err)
 				}
 				if novel {
+					ndat++
 					trust := peers[pkfp].trust
 					if trust < MAXTRUST {
 						trust += Mass(pk.msg.W, Btt(pk.msg.T))
@@ -384,9 +383,10 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, npeer *atomic.Int32, pktin
 					trustSum, peerList, peers = prunePeers(peers)
 				}
 			} else if nepoch%PRUNE == 0 {
+				tstart := time.Now()
 				ndat, dats = pruneDats(dats, cfg.ShardCap)
 				trustSum, peerList, peers = prunePeers(peers)
-				lg(cfg, LOGLVL_ERROR, "/mem got %d peers, %d dats across %d shards", len(peerList), ndat, len(dats))
+				lg(cfg, LOGLVL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
 			}
 		case m := <-appsend: // SEND PACKET FOR APP
 			if cfg.BackupFname != "" && m.Op == dave.Op_DAT {
@@ -413,24 +413,44 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, cfg *Cfg) {
 func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 	newdats := make([]map[uint64]Dat, MAXWORK-MINWORK)
 	var ndat uint32
-	for shardid, shard := range dats {
-		dh := &datheap{}
-		heap.Init(dh)
-		for datid, dat := range shard {
-			if dh.Len() < cap {
-				heap.Push(dh, &pair{datid, dat})
-			} else if Mass(dat.W, dat.Ti) > Mass(dh.Peek().dat.W, dh.Peek().dat.Ti) {
-				heap.Pop(dh)
-				heap.Push(dh, &pair{datid, dat})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	numWorkers := runtime.GOMAXPROCS(0)
+	jobs := make(chan int, len(dats))
+	for w := 0; w < numWorkers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for shardid := range jobs {
+				dh := &datheap{}
+				heap.Init(dh)
+				for datid, dat := range dats[shardid] {
+					if dh.Len() < cap {
+						heap.Push(dh, &pair{datid, dat})
+					} else if dat.Ti.After(dh.Peek().dat.Ti) {
+						heap.Pop(dh)
+						heap.Push(dh, &pair{datid, dat})
+					}
+				}
+				shardMap := make(map[uint64]Dat, dh.Len())
+				var localCount uint32
+				for dh.Len() > 0 {
+					pair := heap.Pop(dh).(*pair)
+					shardMap[pair.id] = pair.dat
+					localCount++
+				}
+				newdats[shardid] = shardMap
+				mu.Lock()
+				ndat += localCount
+				mu.Unlock()
 			}
-		}
-		newdats[shardid] = make(map[uint64]Dat, dh.Len())
-		for dh.Len() > 0 {
-			pair := heap.Pop(dh).(*pair)
-			newdats[shardid][pair.id] = pair.dat
-			ndat++
-		}
+		}()
 	}
+	for shardid := range dats {
+		jobs <- shardid
+	}
+	close(jobs)
+	wg.Wait()
 	return ndat, newdats
 }
 
@@ -495,7 +515,7 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 	return buf.Flush()
 }
 
-func readBackup(fname string) (uint, []map[uint64]Dat, error) {
+func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 	dats := make([]map[uint64]Dat, MAXWORK-MINWORK)
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
@@ -512,7 +532,7 @@ func readBackup(fname string) (uint, []map[uint64]Dat, error) {
 	}
 	size := info.Size()
 	var pos int64
-	var ndat uint
+	var ndat uint32
 	lb := make([]byte, 2)
 	for pos < size {
 		n, err := f.Read(lb)
@@ -614,7 +634,6 @@ func rdpkt(c *net.UDPConn, ch *blake3.Hasher, bpool *sync.Pool, cfg *Cfg) *pkt {
 	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt packet exceeds pd limit")
 		return nil
-
 	} else if m.Op == dave.Op_DAT {
 		work := check(ch, m.V, m.T, m.S, m.W)
 		if work < MINWORK {
