@@ -26,17 +26,18 @@ import (
 
 const (
 	BUF          = 1424      // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT       = 3         // Number of peers randomly selected when selecting more than one.
+	FANOUT       = 5         // Number of peers randomly selected when selecting more than one.
 	PROBE        = 8         // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER     = 2         // Limit of peer descriptors in a PEER message.
 	MINWORK      = 8         // Minimum amount of acceptable work in number of leading zero bits.
 	MAXWORK      = 64        // Maximum ammount of work in number of leading zero bits. To limit number of ring buffers.
 	MAXTRUST     = 25        // Maximum trust score, ensuring fair trust distribution from feedback.
 	APP          = 10        // Epochs between each round of sending a message for the app.
-	DROP         = 174763    // Epochs until silent peers are dropped from the peer table, and new peers are shared.
+	DROP         = 65537     // Epochs until silent peers are dropped from the peer table, and new peers are shared.
 	PING         = 28657     // Epochs until silent peers are pinged with a GETPEER message.
 	PRUNE        = 131071    // Epochs between pruning dats & peers.
 	PUSH         = 3         // Epochs between pushing a dat from a ring buffer.
+	RINGSIZE     = 1000      // Size of each ring buffer.
 	LOGLVL_ERROR = LogLvl(0) // Base log level, for errors & status.
 	LOGLVL_DEBUG = LogLvl(1) // Debugging log level.
 )
@@ -121,6 +122,7 @@ func (h *datheap) Pop() interface{} {
 func (h *datheap) Peek() *pair { return (*h)[0] }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
+	tstart := time.Now()
 	lg(cfg, LOGLVL_ERROR, "/init cfg: %+v", *cfg)
 	bootstrap := make(map[uint64]*peer)
 	for _, e := range cfg.Edges {
@@ -138,21 +140,20 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if cfg.BackupFname != "" {
 		ndat, dats, err = readBackup(cfg.BackupFname)
 		if err != nil {
-			lg(cfg, LOGLVL_ERROR, "/backup failed to read backup file: %s", err)
-			if ndat > 0 {
-				err = writeFreshBackup(dats, cfg.BackupFname)
-				if err != nil {
-					panic(err)
-				}
-				lg(cfg, LOGLVL_ERROR, "/backup file was corrupted, created fresh backup with %d dats", ndat)
-			}
+			lg(cfg, LOGLVL_ERROR, "/init failed to read backup file: %s", err)
 		}
-		lg(cfg, LOGLVL_ERROR, "/backup read %d dats from file", ndat)
+		lg(cfg, LOGLVL_ERROR, "/init read %d dats from file", ndat)
+		ndat, dats = pruneDats(dats, cfg.ShardCap)
+		err = writeFreshBackup(dats, cfg.BackupFname)
+		if err != nil {
+			panic(err)
+		}
 	}
 	if dats == nil {
 		dats = make([]map[uint64]Dat, MAXWORK-MINWORK)
 		lg(cfg, LOGLVL_ERROR, "/init created empty map")
 	}
+	lg(cfg, LOGLVL_ERROR, "/init pruned %d dats across %d shards, init took %s", ndat, len(dats), time.Since(tstart))
 	backup := make(chan *dave.M, 100)
 	kill := make(chan struct{}, 1)
 	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
@@ -265,13 +266,10 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 	var nepoch uint32
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
-	trustSum, peerList, peers = prunePeers(peers)
 	epochTick := time.NewTicker(cfg.Epoch)
-	rings := make([]*ringbuffer.RingBuffer[*Dat], MAXWORK-MINWORK)
+	statTick := time.NewTicker(5 * time.Second)
+	ring := ringbuffer.NewRingBuffer[*Dat](RINGSIZE)
 	var cshard uint8
-	for i := range rings {
-		rings[i] = ringbuffer.NewRingBuffer[*Dat](1024)
-	}
 	for {
 		select {
 		case pk := <-pktin: // HANDLE INCOMING PACKET
@@ -311,7 +309,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				case apprecv <- dat:
 				default:
 				}
-				novel, shardid, err := put(dats, dat)
+				novel, err := put(dats, dat)
 				if err != nil {
 					lg(cfg, LOGLVL_ERROR, "/store error: %s", err)
 				}
@@ -327,7 +325,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
-					rings[int(shardid)].Write(dat)
+					ring.Write(dat)
 					//lg(cfg, LOGLVL_DEBUG, "/store %x %d %s %f", pk.msg.W, shardid, pk.ip, trust)
 				}
 			case dave.Op_GET: // REPLY WITH DAT
@@ -349,13 +347,13 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
 					//lg(cfg, LOGLVL_DEBUG, "/seed %d %x %s %f", cshard, d.W, raddr, rp.trust)
 				}
-				if nepoch%PUSH == 0 { // INCREMENT SHARD & SEED FROM RING BUFFER
-					d, ok := rings[cshard].Read()
+				if nepoch%PUSH == 0 { // SEED FROM RING BUFFER & INCREMENT SHARD
+					d, ok := ring.Read()
 					if ok {
 						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
-						lg(cfg, LOGLVL_DEBUG, "/push %d %x %s %f", cshard, d.W, raddr, rp.trust)
+						lg(cfg, LOGLVL_DEBUG, "/push %x %s %f", d.W, raddr, rp.trust)
 					} else {
-						lg(cfg, LOGLVL_DEBUG, "/push nothing in ring buffer %d", cshard)
+						lg(cfg, LOGLVL_DEBUG, "/push nothing in ring buffer")
 					}
 					for {
 						cshard = (cshard + 1) % uint8(MAXWORK-MINWORK)
@@ -393,6 +391,8 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				backup <- m
 			}
 			sendForApp(m, dats, peerList, trustSum, pktout, apprecv, cfg)
+		case <-statTick.C:
+			lg(cfg, LOGLVL_ERROR, "/stat got %d peers, %d dats", npeer.Load(), ndat)
 		}
 	}
 }
@@ -593,14 +593,14 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 	}
 }
 
-func put(dats []map[uint64]Dat, d *Dat) (bool, uint8, error) {
+func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
 	shardKey, datKey := keys(d.W)
 	_, ok := dats[shardKey][datKey]
 	if !ok {
 		dats[shardKey][datKey] = *d
-		return true, shardKey, nil
+		return true, nil
 	}
-	return false, shardKey, nil
+	return false, nil
 }
 
 func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
@@ -721,7 +721,7 @@ func keys(work []byte) (uint8, uint64) {
 }
 
 func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
-	if len(tim) != 8 || Btt(tim).After(time.Now()) {
+	if len(tim) != 8 || Btt(tim).After(time.Now().Add(time.Second)) {
 		return -2
 	}
 	h.Reset()
