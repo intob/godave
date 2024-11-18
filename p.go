@@ -623,25 +623,26 @@ func rdpkt(c *net.UDPConn, ch *blake3.Hasher, bpool *sync.Pool, cfg *Cfg) *pkt {
 	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
 	if err != nil {
-		panic(err)
+		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to read from socket")
+		return nil
 	}
-	m := &dave.M{}
-	err = proto.Unmarshal(buf[:n], m)
+	p := &pkt{&dave.M{}, raddr}
+	err = proto.Unmarshal(buf[:n], p.msg)
 	if err != nil {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to unmarshal")
 		return nil
 	}
-	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
+	if p.msg.Op == dave.Op_PEER && len(p.msg.Pds) > GETNPEER {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt packet exceeds pd limit")
 		return nil
-	} else if m.Op == dave.Op_DAT {
-		work := check(ch, m.V, m.T, m.S, m.W)
+	} else if p.msg.Op == dave.Op_DAT {
+		work := check(ch, p.msg.V, p.msg.T, p.msg.S, p.msg.W)
 		if work < MINWORK {
 			lg(cfg, LOGLVL_ERROR, "/rdpkt failed work check: %d from %s", work, raddr)
 			return nil
 		}
 	}
-	return &pkt{m, raddr}
+	return p
 }
 
 func rndpeer(list []*peer, trustSum float64) *peer {
@@ -721,7 +722,7 @@ func keys(work []byte) (uint8, uint64) {
 }
 
 func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
-	if len(tim) != 8 || Btt(tim).After(time.Now().Add(time.Second)) {
+	if len(tim) != 8 || Btt(tim).After(time.Now().Add(time.Second)) { // 1s grace period incase clocks are not accurate
 		return -2
 	}
 	h.Reset()
