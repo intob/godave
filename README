@@ -10,7 +10,7 @@ Packets of data up to 1424 bytes in length are pushed and pulled via a set of op
 
 Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
-A remote peer earns trust when a dat not already in the local hash table is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding and pushes. Trust values are currently not gossiped or weighed into peer sharing.
+A remote peer earns trust when a dat not already in the local hash table is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding and pushes. Trust values are currently not gossiped, as this creates a complex attack vector.
 
 Below is an outline of this implementation, although different implementations could be interoperable. There are many possible optimisations that don't necessitate changing the message format. The project is still in an early enough phase that we can also modify the message format easily.
 
@@ -18,15 +18,14 @@ Below is an outline of this implementation, although different implementations c
 
 1.      Configurable Settings
 
-LstnAddr    *net.UDPAddr        Listening address:port
-Edges       []netip.AddrPort    Bootstrap peers
-Epoch       time.Duration       Base cycle, lower runs faster, using more bandwidth
-Prune       int                 Interval between refreshing dat & peer maps
-ShardCap    int                 Cuckoo filter capacity
-FilterCap   uint                Dat map capacity
-Log         chan<- []byte       Log messages
-Test        bool                Allow multiple ports per IP
-BackupFname string              Dat and peer table backup filename
+UdpLstnAddr     *net.UDPAddr        Listening address:port
+Edges           []netip.AddrPort    Bootstrap peers
+Epoch           time.Duration       Base cycle period, lower runs faster, using more bandwidth
+Prune           int                 Interval between refreshing dat & peer maps
+ShardCap        int                 Shard capacity (number of dats per shard/difficulty level)
+Log             chan<- []byte       Log message output
+LogLvl          LogLvl              Log level
+BackupFname     string              Dat table backup filename
 
 
 
@@ -51,30 +50,20 @@ FIELD       DESCRIPTION                                 BYTE LENGTH
 
 OP          Operation code.                             1
 PEERS       List of peers.                              20*NPEER
-VAL         The data.                                   0 | <= 1308 when NPEER=2
+VAL         The data.                                   0 | <= 1352
 TIME        Little-endian unix milliseconds.            0 | 8
 SALT        Random bytes used to solve WORK.            0 | 32
 WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
 
 
 
-4.      Packet Filter
-
-Dropping packets efficiently is critical for resilience to DoS attack. Cuckoo filters leverage cuckoo hashing to efficiently store fingerprints in a compact hash table, enabling constant-time insertions and lookups. This makes them well-suited for this application. Packets that deviate from the protocol are detected & dropped without further processing.
-
-Key inserted into the filter: MURMUR3(OP, REMOTE_IP, REMOTE_PORT)
-
-Failing unique insertion, the packet is dropped. The filter is reset every epoch, therefore each op-code may be sent once per ip-port per epoch.
-
-
-
-5.      Peer Discovery & Liveness
+4.      Peer Discovery & Liveness
 
 The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of messages (GETPEER & PEER). A node may reply to a GETPEER message with a PEER message with up to NPEER peer descriptors.
 
 
 
-6.      Mass
+5.      Mass
 
 MASS = DIFFICULTY * (1 / AGE_MILLISECONDS)
 
@@ -82,38 +71,32 @@ Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECON
 
 
 
-7.      Replacement by Mass
+6.      Replacement by Mass
 
 Every PRUNE EPOCH, a user defined (ShardCap) number of most massive dats per shard are kept, and the remaining dropped. In this way, mass may be thought of as a property that decays over time.
 
 
 
-8.      Sharding
+7.      Sharding
 
-The data structure used to store dats is a map[uint8][uint64]. The 8 bit dimension is called the shard, and used to group dats by difficulty of the proof of work, in number of leading zero bits. The 64 bit dimension is derived by hashing the work with Murmur3. Pruing this structure is simpler and much more efficient than pruning a map[uint64][uint64], although there is an increased chance of collisions. This may need addressing in future.
+The data structure used to store dats is a [][uint64]. The first dimension is called the shard, and used to group dats by difficulty of the proof of work, in number of leading zero bits. The second dimension is derived by hashing the work with xxHash.
 
 
 
-9.      Random Push 
+8.      Random Push 
 
 Every SEED EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
 
-Propagating dats in this way ensures that an adversary is unable to create a timing-attack to discern the source of a dat, even with a broad view of network traffic.
+Propagating dats in this way ensures that an adversary is unable to create a timing attack to discern the source of a dat, even with a broad view of network traffic.
 
 
 
-10.      Random Pull
+9.     Random Push of Recent Dat
 
-Every PULL EPOCH, a message is sent with op-code GET, and a randomly selected work hash already known. This improves anonymity, at the cost of bandwidth.
-
-
-
-11.     Random Push of Recent Dat
-
-Every PUSH EPOCH, each node sends one recent dat to one random peer. The dat is chosen at random from a ring buffer equal in capacity to one shard. The ring buffer is written to when a node receives a novel dat.
+Every PUSH EPOCH, each node sends one recent dat to one random peer. The dat is read from a ring buffer. The ring buffer is written to when a novel dat is received. This ensures timely dissemination of data, even for large datasets.
 
 
 
-12.     Edges
+10.     Edges
 
-From the point of view of a node, an edge is an ip:port address used to bootstrap to when starting. This entry will not be removed from the peer table, even if the remote becomes unreachable. Operations 9 through 11 are executed for both edges and normal peers, but separately. The interval for the edges is greater, such that the quality of service does not degrade when many nodes use the same edge. The interval for edges is also modified by the peer-to-edge ratio (number of normal peers vs edges). Edges are primarily responsible for bootstrapping the network by sending PEER messages and replying to GETPEER messages.
+An edge is an ip:port address used to bootstrap to when starting. This entry will not be removed from the peer table, even if the remote becomes unreachable.

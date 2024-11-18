@@ -37,7 +37,7 @@ const (
 	PING         = 28657     // Epochs until silent peers are pinged with a GETPEER message.
 	PRUNE        = 131071    // Epochs between pruning dats & peers.
 	PUSH         = 3         // Epochs between pushing a dat from a ring buffer.
-	RINGSIZE     = 1000      // Size of each ring buffer.
+	RINGSIZE     = 1000      // Number of dats to store in ring buffer.
 	LOGLVL_ERROR = LogLvl(0) // Base log level, for errors & status.
 	LOGLVL_DEBUG = LogLvl(1) // Debugging log level.
 )
@@ -74,11 +74,11 @@ type Dave struct {
 type Cfg struct {
 	UdpListenAddr *net.UDPAddr     // Listening address:port
 	Edges         []netip.AddrPort // Bootstrap peers
-	Epoch         time.Duration    // Base cycle, lower runs faster, using more bandwidth
+	Epoch         time.Duration    // Base cycle period, lower runs faster, using more bandwidth
 	ShardCap      int              // Shard capacity
-	Log           chan<- string    // Log messages
-	BackupFname   string           // Dat and peer table backup filename
-	LogLvl
+	Log           chan<- string    // Log message output
+	LogLvl        LogLvl           // Log level
+	BackupFname   string           // Dat table backup filename
 }
 
 type Dat struct {
