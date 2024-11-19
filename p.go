@@ -25,21 +25,22 @@ import (
 )
 
 const (
-	BUF          = 1424      // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT       = 5         // Number of peers randomly selected when selecting more than one.
-	PROBE        = 8         // Inverse of probability that an untrusted peer is randomly selected.
-	GETNPEER     = 2         // Limit of peer descriptors in a PEER message.
-	MINWORK      = 8         // Minimum amount of acceptable work in number of leading zero bits.
-	MAXWORK      = 64        // Maximum ammount of work in number of leading zero bits. To limit number of ring buffers.
-	MAXTRUST     = 25        // Maximum trust score, ensuring fair trust distribution from feedback.
-	APP          = 10        // Epochs between each round of sending a message for the app.
-	DROP         = 65537     // Epochs until silent peers are dropped from the peer table, and new peers are shared.
-	PING         = 28657     // Epochs until silent peers are pinged with a GETPEER message.
-	PRUNE        = 131071    // Epochs between pruning dats & peers.
-	PUSH         = 3         // Epochs between pushing a dat from a ring buffer.
-	RINGSIZE     = 1000      // Number of dats to store in ring buffer.
-	LOGLVL_ERROR = LogLvl(0) // Base log level, for errors & status.
-	LOGLVL_DEBUG = LogLvl(1) // Debugging log level.
+	EPOCH        = 500 * time.Microsecond
+	BUF          = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
+	FANOUT       = 5                // Number of peers randomly selected when selecting more than one.
+	PROBE        = 8                // Inverse of probability that an untrusted peer is randomly selected.
+	GETNPEER     = 2                // Limit of peer descriptors in a PEER message.
+	MINWORK      = 8                // Minimum amount of acceptable work in number of leading zero bits.
+	MAXWORK      = 64               // Maximum ammount of work in number of leading zero bits. To limit number of ring buffers.
+	MAXTRUST     = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
+	APP          = 100              // Epochs between each round of sending a message for the app.
+	PING         = 8 * time.Second  // Time until peers are pinged with a GETPEER message.
+	DROP         = 16 * time.Second // Time until silent peers are dropped from the peer table.
+	SHARE_DELAY  = 20 * time.Second // Time until new peers are shared. Must be greater than DROP.
+	PRUNE        = time.Minute      // Period between pruning dats & peers.
+	RINGSIZE     = 1000             // Number of dats to store in ring buffer.
+	LOGLVL_ERROR = LogLvl(0)        // Base log level, for errors & status.
+	LOGLVL_DEBUG = LogLvl(1)        // Debugging log level.
 )
 
 var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
@@ -66,7 +67,6 @@ type LogLvl int
 type Dave struct {
 	recv       <-chan *Dat
 	send       chan<- *dave.M
-	epoch      time.Duration
 	kill, done chan struct{}
 	npeer      *atomic.Int32
 }
@@ -74,7 +74,6 @@ type Dave struct {
 type Cfg struct {
 	UdpListenAddr *net.UDPAddr     // Listening address:port
 	Edges         []netip.AddrPort // Bootstrap peers
-	Epoch         time.Duration    // Base cycle period, lower runs faster, using more bandwidth
 	ShardCap      int              // Shard capacity
 	Log           chan<- string    // Log message output
 	LogLvl        LogLvl           // Log level
@@ -164,7 +163,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	recv := make(chan *Dat, 100)
 	npeer := &atomic.Int32{}
 	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, cfg)
-	return &Dave{recv: recv, send: send, epoch: cfg.Epoch, kill: kill, done: done, npeer: npeer}, nil
+	return &Dave{recv: recv, send: send, kill: kill, done: done, npeer: npeer}, nil
 }
 
 func (d *Dave) Kill() <-chan struct{} {
@@ -176,11 +175,11 @@ func (d *Dave) Get(work []byte, npeer int32, timeout time.Duration) <-chan *Dat 
 	c := make(chan *Dat, 1)
 	go func() {
 		for d.npeer.Load() < npeer {
-			time.Sleep(APP * d.epoch)
+			time.Sleep(APP * EPOCH)
 		}
 		d.send <- &dave.M{Op: dave.Op_GET, W: work}
 		defer close(c)
-		tick := time.NewTicker(APP * d.epoch)
+		tick := time.NewTicker(APP * EPOCH)
 		timeout := time.NewTimer(timeout)
 		for {
 			select {
@@ -203,13 +202,13 @@ func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		for d.npeer.Load() < npeer {
-			time.Sleep(APP * d.epoch)
+			time.Sleep(APP * EPOCH)
 		}
 		m := &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
 		d.send <- m
 		defer close(done)
 		var r int32
-		tick := time.NewTicker(APP * d.epoch)
+		tick := time.NewTicker(APP * EPOCH)
 		for range tick.C {
 			d.send <- m
 			r++
@@ -263,12 +262,13 @@ func Btt(b []byte) time.Time {
 
 func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *Dat, cfg *Cfg) {
 	npeer.Store(int32(len(peers)))
-	var nepoch uint32
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
-	epochTick := time.NewTicker(cfg.Epoch)
+	epochTick := time.NewTicker(EPOCH)
+	pruneTick := time.NewTicker(PRUNE)
+	pingTick := time.NewTicker(PING)
 	statTick := time.NewTicker(5 * time.Second)
-	ring := ringbuffer.NewRingBuffer[Dat](RINGSIZE)
+	ring := ringbuffer.NewRingBuffer[*Dat](RINGSIZE)
 	var cshard uint8
 	for {
 		select {
@@ -280,13 +280,13 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				peers[pkfp].seen = time.Now()
 			} else {
 				peers[pkfp] = &peer{pd: pkpd, fp: pkfp, added: time.Now(), seen: time.Now()}
+				trustSum, peerList, peers = prunePeers(peers)
 				npeer.Add(1)
 				lg(cfg, LOGLVL_ERROR, "/peer/add %s %x", pk.ip, pkfp)
 			}
 			switch pk.msg.Op {
 			case dave.Op_PEER: // STORE PEERS
-				lastPeerMsg := time.Since(peers[pkfp].peermsg)
-				if lastPeerMsg >= PING*cfg.Epoch {
+				if time.Since(peers[pkfp].peermsg) >= PING-10*time.Millisecond {
 					peers[pkfp].peermsg = time.Now()
 					for _, mpd := range pk.msg.Pds {
 						mpdfp := pdfp(mpd)
@@ -297,11 +297,17 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 							lg(cfg, LOGLVL_ERROR, "/peer/add_from_gossip %s from %s", addrfrom(mpd), pk.ip)
 						}
 					}
+					trustSum, peerList, peers = prunePeers(peers)
 				} else {
-					lg(cfg, LOGLVL_ERROR, "/peer/unexpected dropped msg from %s %s", pk.ip, lastPeerMsg)
+					lg(cfg, LOGLVL_ERROR, "/peer/unexpected dropped msg from %s", pk.ip)
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: rndpds(peerList, trustSum, GETNPEER, pkfp, 2*DROP*cfg.Epoch)}, pk.ip}
+				rps := rndpeers(peerList, trustSum, GETNPEER, pkfp, SHARE_DELAY)
+				pds := make([]*dave.Pd, len(rps))
+				for i, p := range rps {
+					pds[i] = p.pd
+				}
+				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
 				lg(cfg, LOGLVL_DEBUG, "/peer/reply_to_getpeer %s", pk.ip)
 			case dave.Op_DAT: // STORE DAT
 				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
@@ -325,7 +331,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 					if cfg.BackupFname != "" {
 						backup <- pk.msg
 					}
-					ring.Write(*dat)
+					ring.Write(dat)
 					lg(cfg, LOGLVL_DEBUG, "/store %x %s %f", pk.msg.W, pk.ip, trust)
 				}
 			case dave.Op_GET: // REPLY WITH DAT
@@ -336,60 +342,54 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 					lg(cfg, LOGLVL_DEBUG, "/dat/reply_to_get %s %x", pk.ip, dat.W)
 				}
 			}
-		case <-epochTick.C:
-			nepoch++
+		case <-epochTick.C: // SEED
 			rp := rndpeer(peerList, trustSum)
-			if ndat > 0 && rp != nil { // SEED
+			if ndat > 0 && rp != nil {
 				raddr := addrfrom(rp.pd)
 				d := rnddat(dats[cshard])
 				if d != nil {
 					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
-					lg(cfg, LOGLVL_DEBUG, "/seed %d %x %s %f", cshard, d.W, raddr, rp.trust)
 				}
-				if nepoch%PUSH == 0 { // SEED FROM RING BUFFER & INCREMENT SHARD
-					d, ok := ring.Read()
-					if ok {
-						pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
-						lg(cfg, LOGLVL_DEBUG, "/push %x %s %f", d.W, raddr, rp.trust)
-					} else {
-						lg(cfg, LOGLVL_DEBUG, "/push nothing in ring buffer")
-					}
-					for {
-						cshard = (cshard + 1) % uint8(MAXWORK-MINWORK)
-						if len(dats[cshard]) > 0 {
-							break
-						}
+				d, ok := ring.Read()
+				if ok {
+					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
+				} else {
+					lg(cfg, LOGLVL_DEBUG, "/push nothing in ring buffer")
+				}
+				for {
+					cshard = (cshard + 1) % uint8(MAXWORK-MINWORK)
+					if len(dats[cshard]) > 0 {
+						break
 					}
 				}
 			}
-			if nepoch%PING == 0 { // PING & DROP PEERS
-				var dropped bool
-				for pid, p := range peers {
-					if !p.edge && time.Since(p.seen) > DROP*cfg.Epoch {
-						delete(peers, pid)
-						npeer.Add(-1)
-						dropped = true
-						lg(cfg, LOGLVL_ERROR, "/peer/ping/drop %s, not seen for %s", addrfrom(p.pd), time.Since(p.seen))
-					} else if time.Since(p.peermsg) > PING*cfg.Epoch { // SEND PING
-						addr := addrfrom(p.pd)
-						pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
-						lg(cfg, LOGLVL_DEBUG, "/peer/ping/getpeer_msg sent to %s", addr)
-					}
+		case <-pingTick.C: // PING & DROP PEERS
+			var dropped bool
+			for pid, p := range peers {
+				if !p.edge && time.Since(p.seen) > DROP {
+					delete(peers, pid)
+					npeer.Add(-1)
+					dropped = true
+					lg(cfg, LOGLVL_ERROR, "/peer/ping/drop %s, not seen for %s", addrfrom(p.pd), time.Since(p.seen))
+				} else if time.Since(p.peermsg) > PING { // SEND PING
+					addr := addrfrom(p.pd)
+					pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
+					lg(cfg, LOGLVL_DEBUG, "/peer/ping/getpeer_msg sent to %s", addr)
 				}
-				if dropped {
-					trustSum, peerList, peers = prunePeers(peers)
-				}
-			} else if nepoch%PRUNE == 0 {
-				tstart := time.Now()
-				ndat, dats = pruneDats(dats, cfg.ShardCap)
+			}
+			if dropped {
 				trustSum, peerList, peers = prunePeers(peers)
-				lg(cfg, LOGLVL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
 			}
+		case <-pruneTick.C: // PRUNE DATS & PEERS
+			tstart := time.Now()
+			ndat, dats = pruneDats(dats, cfg.ShardCap)
+			trustSum, peerList, peers = prunePeers(peers)
+			lg(cfg, LOGLVL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
 		case m := <-appsend: // SEND PACKET FOR APP
+			sendForApp(m, dats, peerList, trustSum, pktout, apprecv, cfg)
 			if cfg.BackupFname != "" && m.Op == dave.Op_DAT {
 				backup <- m
 			}
-			sendForApp(m, dats, peerList, trustSum, pktout, apprecv, cfg)
 		case <-statTick.C:
 			lg(cfg, LOGLVL_ERROR, "/stat got %d peers, %d dats", npeer.Load(), ndat)
 		}
@@ -568,34 +568,36 @@ func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 }
 
 func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pkt, apprecv chan<- *Dat, cfg *Cfg) {
-	if m != nil {
-		switch m.Op {
-		case dave.Op_DAT:
-			put(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
-			for _, pd := range rndpds(peerList, trustSum, FANOUT, 0, 0) {
-				addr := addrfrom(pd)
-				pktout <- &pkt{m, addr}
-				lg(cfg, LOGLVL_DEBUG, "/send_for_app dat sent to %s", addr)
-			}
-		case dave.Op_GET:
-			shardKey, datKey := keys(m.W)
-			var found bool
-			dat, ok := dats[shardKey][datKey]
-			if ok {
-				found = true
-				apprecv <- &dat
-				lg(cfg, LOGLVL_DEBUG, "/send_for_app get found locally %x", dat.W)
-			}
-			if !found {
-				for _, pd := range rndpds(peerList, trustSum, FANOUT, 0, 0) {
-					addr := addrfrom(pd)
-					pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addr}
-					lg(cfg, LOGLVL_DEBUG, "/send_for_app get sent to %s", addr)
-				}
-			}
-		default:
-			panic(fmt.Sprintf("unsupported operation: send %s", m.Op))
+	if m == nil {
+		return
+	}
+	switch m.Op {
+	case dave.Op_DAT:
+		lg(cfg, LOGLVL_DEBUG, "/send_for_app sending dat %x, trustSum %f", m.W, trustSum)
+		put(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
+		for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
+			addr := addrfrom(p.pd)
+			pktout <- &pkt{m, addr}
+			lg(cfg, LOGLVL_DEBUG, "/send_for_app dat sent to %s", addr)
 		}
+	case dave.Op_GET:
+		shardKey, datKey := keys(m.W)
+		var found bool
+		dat, ok := dats[shardKey][datKey]
+		if ok {
+			found = true
+			apprecv <- &dat
+			lg(cfg, LOGLVL_DEBUG, "/send_for_app get found locally %x", dat.W)
+		}
+		if !found {
+			for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
+				addr := addrfrom(p.pd)
+				pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addr}
+				lg(cfg, LOGLVL_DEBUG, "/send_for_app get sent to %s", addr)
+			}
+		}
+	default:
+		lg(cfg, LOGLVL_ERROR, "/send_for_app unsupported operation: %s", m.Op)
 	}
 }
 
@@ -668,25 +670,25 @@ func rndpeer(list []*peer, trustSum float64) *peer {
 	return nil
 }
 
-func rndpds(list []*peer, trustSum float64, limit int, excludeFp uint64, knownFor time.Duration) []*dave.Pd {
+func rndpeers(list []*peer, trustSum float64, limit int, excludeFp uint64, knownFor time.Duration) []*peer {
 	if len(list) == 0 {
 		return nil
 	}
+	peers := make([]*peer, 0, limit)
 	r := mrand.Float64() * trustSum
-	pds := make([]*dave.Pd, 0, limit)
 	for _, p := range list {
 		r -= p.trust
 		if p.fp == excludeFp || time.Since(p.added) < knownFor {
 			continue
 		}
-		if r <= 0 || mrand.Intn(PROBE) == 0 {
-			pds = append(pds, p.pd)
-			if len(pds) == limit {
-				return pds
+		if trustSum == 0 || r <= 0 || mrand.Intn(PROBE) == 0 {
+			peers = append(peers, p)
+			if len(peers) == limit {
+				return peers
 			}
 		}
 	}
-	return pds
+	return peers
 }
 
 func rnddat(shard map[uint64]Dat) *Dat {
