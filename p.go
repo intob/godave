@@ -626,23 +626,23 @@ func rdpkt(c *net.UDPConn, ch *blake3.Hasher, bpool *sync.Pool, cfg *Cfg) *pkt {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to read from socket")
 		return nil
 	}
-	p := &pkt{&dave.M{}, raddr}
-	err = proto.Unmarshal(buf[:n], p.msg)
+	m := &dave.M{}
+	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to unmarshal")
 		return nil
 	}
-	if p.msg.Op == dave.Op_PEER && len(p.msg.Pds) > GETNPEER {
+	if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
 		lg(cfg, LOGLVL_ERROR, "/rdpkt packet exceeds pd limit")
 		return nil
-	} else if p.msg.Op == dave.Op_DAT {
-		work := check(ch, p.msg.V, p.msg.T, p.msg.S, p.msg.W)
+	} else if m.Op == dave.Op_DAT {
+		work := check(ch, m.V, m.T, m.S, m.W)
 		if work < MINWORK {
 			lg(cfg, LOGLVL_ERROR, "/rdpkt failed work check: %d from %s", work, raddr)
 			return nil
 		}
 	}
-	return p
+	return &pkt{m, raddr}
 }
 
 func rndpeer(list []*peer, trustSum float64) *peer {
