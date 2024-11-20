@@ -32,15 +32,15 @@ func TestPruneDats(t *testing.T) {
 			name: "Single shard under capacity",
 			input: []map[uint64]Dat{
 				{
-					1: Dat{Ti: makeTime(1)},
-					2: Dat{Ti: makeTime(2)},
+					1: Dat{Time: makeTime(1)},
+					2: Dat{Time: makeTime(2)},
 				},
 			},
 			cap: 3,
 			want: []map[uint64]Dat{
 				{
-					1: Dat{Ti: makeTime(1)},
-					2: Dat{Ti: makeTime(2)},
+					1: Dat{Time: makeTime(1)},
+					2: Dat{Time: makeTime(2)},
 				},
 			},
 		},
@@ -48,17 +48,17 @@ func TestPruneDats(t *testing.T) {
 			name: "Single shard over capacity",
 			input: []map[uint64]Dat{
 				{
-					1: Dat{Ti: makeTime(1)},
-					2: Dat{Ti: makeTime(2)},
-					3: Dat{Ti: makeTime(3)},
-					4: Dat{Ti: makeTime(4)},
+					1: Dat{Time: makeTime(1)},
+					2: Dat{Time: makeTime(2)},
+					3: Dat{Time: makeTime(3)},
+					4: Dat{Time: makeTime(4)},
 				},
 			},
 			cap: 2,
 			want: []map[uint64]Dat{
 				{
-					3: Dat{Ti: makeTime(3)},
-					4: Dat{Ti: makeTime(4)},
+					3: Dat{Time: makeTime(3)},
+					4: Dat{Time: makeTime(4)},
 				},
 			},
 		},
@@ -67,8 +67,8 @@ func TestPruneDats(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Create full-sized input and want slices
-			fullInput := make([]map[uint64]Dat, MAXWORK-MINWORK)
-			fullWant := make([]map[uint64]Dat, MAXWORK-MINWORK)
+			fullInput := make([]map[uint64]Dat, 256)
+			fullWant := make([]map[uint64]Dat, 256)
 
 			// Copy the test data into the first position
 			if len(tt.input) > 0 {
@@ -79,7 +79,7 @@ func TestPruneDats(t *testing.T) {
 			}
 
 			// Initialize remaining positions with empty maps
-			for i := 1; i < MAXWORK-MINWORK; i++ {
+			for i := 1; i < 256; i++ {
 				fullInput[i] = make(map[uint64]Dat)
 				fullWant[i] = make(map[uint64]Dat)
 			}
@@ -102,15 +102,15 @@ func TestPruneDats(t *testing.T) {
 				if len(fullInput[shardID]) > tt.cap {
 					var oldest time.Time
 					for _, dat := range shard {
-						if oldest.IsZero() || dat.Ti.Before(oldest) {
-							oldest = dat.Ti
+						if oldest.IsZero() || dat.Time.Before(oldest) {
+							oldest = dat.Time
 						}
 					}
 
 					// Check that we didn't miss any newer timestamps
 					for _, dat := range fullInput[shardID] {
-						if dat.Ti.After(oldest) && !containsTimestamp(shard, dat.Ti) {
-							t.Errorf("missing newer timestamp %v in pruned data", dat.Ti)
+						if dat.Time.After(oldest) && !containsTimestamp(shard, dat.Time) {
+							t.Errorf("missing newer timestamp %v in pruned data", dat.Time)
 						}
 					}
 				}
@@ -122,7 +122,7 @@ func TestPruneDats(t *testing.T) {
 // Helper function to check if a timestamp exists in a shard
 func containsTimestamp(shard map[uint64]Dat, timestamp time.Time) bool {
 	for _, dat := range shard {
-		if dat.Ti.Equal(timestamp) {
+		if dat.Time.Equal(timestamp) {
 			return true
 		}
 	}

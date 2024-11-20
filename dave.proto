@@ -4,17 +4,20 @@ option go_package = "./dave";
 enum Op {
     GETPEER = 0;
     PEER = 1;
-    DAT = 2;
+    PUT = 2;
     GET = 3;
 }
 
 message M {
     Op op = 1;
     repeated Pd pds = 2;
-    bytes v = 3;
-    bytes t = 4;
-    bytes s = 5;
-    bytes w = 6;
+    bytes datKey = 3;
+    bytes val = 4;
+    bytes time = 5;
+    bytes salt = 6;
+    bytes work = 7;
+    bytes pubKey = 8;
+    bytes sig = 9;
 }
 
 message Pd {

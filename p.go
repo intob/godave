@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"container/heap"
+	"crypto/ed25519"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	mrand "math/rand"
 	"net"
@@ -31,7 +33,6 @@ const (
 	PROBE        = 8                // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER     = 2                // Limit of peer descriptors in a PEER message.
 	MINWORK      = 8                // Minimum amount of acceptable work in number of leading zero bits.
-	MAXWORK      = 64               // Maximum ammount of work in number of leading zero bits. To limit number of ring buffers.
 	MAXTRUST     = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
 	APP          = 100              // Epochs between each round of sending a message for the app.
 	PING         = 8 * time.Second  // Time until peers are pinged with a GETPEER message.
@@ -81,8 +82,9 @@ type Cfg struct {
 }
 
 type Dat struct {
-	V, S, W []byte // Val, Salt, Work
-	Ti      time.Time
+	Key, Val, Salt, Work, Sig []byte
+	Time                      time.Time
+	PubKey                    ed25519.PublicKey
 }
 
 type peer struct {
@@ -107,7 +109,7 @@ type datheap []*pair
 
 func (h datheap) Len() int { return len(h) }
 func (h datheap) Less(i, j int) bool {
-	return Mass(h[i].dat.W, h[i].dat.Ti) < Mass(h[j].dat.W, h[j].dat.Ti)
+	return Mass(h[i].dat.Work, h[i].dat.Time) < Mass(h[j].dat.Work, h[j].dat.Time)
 }
 func (h datheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *datheap) Push(x interface{}) { *h = append(*h, x.(*pair)) }
@@ -131,7 +133,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, err
 	}
-	dats := make([]map[uint64]Dat, MAXWORK-MINWORK)
+	dats := make([]map[uint64]Dat, 256)
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
 	}
@@ -145,11 +147,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		ndat, dats = pruneDats(dats, cfg.ShardCap)
 		err = writeFreshBackup(dats, cfg.BackupFname)
 		if err != nil {
-			panic(err)
+			return nil, fmt.Errorf("failed to write fresh backup: %s", err)
 		}
 	}
 	if dats == nil {
-		dats = make([]map[uint64]Dat, MAXWORK-MINWORK)
+		dats = make([]map[uint64]Dat, 256)
 		lg(cfg, LOGLVL_ERROR, "/init created empty map")
 	}
 	lg(cfg, LOGLVL_ERROR, "/init pruned %d dats across %d shards, init took %s", ndat, len(dats), time.Since(tstart))
@@ -171,13 +173,13 @@ func (d *Dave) Kill() <-chan struct{} {
 	return d.done
 }
 
-func (d *Dave) Get(work []byte, npeer int32, timeout time.Duration) <-chan *Dat {
+func (d *Dave) Get(datKey []byte, npeer int32, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
 		for d.npeer.Load() < npeer {
 			time.Sleep(APP * EPOCH)
 		}
-		d.send <- &dave.M{Op: dave.Op_GET, W: work}
+		d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey}
 		defer close(c)
 		tick := time.NewTicker(APP * EPOCH)
 		timeout := time.NewTimer(timeout)
@@ -186,12 +188,12 @@ func (d *Dave) Get(work []byte, npeer int32, timeout time.Duration) <-chan *Dat 
 			case <-timeout.C:
 				return
 			case dat := <-d.recv:
-				if bytes.Equal(dat.W, work) {
+				if bytes.Equal(dat.Key, datKey) {
 					c <- dat
 					return
 				}
 			case <-tick.C:
-				d.send <- &dave.M{Op: dave.Op_GET, W: work}
+				d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey}
 			}
 		}
 	}()
@@ -204,7 +206,7 @@ func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
 		for d.npeer.Load() < npeer {
 			time.Sleep(APP * EPOCH)
 		}
-		m := &dave.M{Op: dave.Op_DAT, V: dat.V, S: dat.S, W: dat.W, T: Ttb(dat.Ti)}
+		m := &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}
 		d.send <- m
 		defer close(done)
 		var r int32
@@ -221,9 +223,10 @@ func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
 	return done
 }
 
-func Work(val, tim []byte, d uint8) (work, salt []byte) {
+func Work(key, val, tim []byte, d uint8) (work, salt []byte) {
 	salt = make([]byte, 8)
 	h := blake3.New(32, nil)
+	h.Write(key)
 	h.Write(val)
 	h.Write(tim)
 	load := h.Sum(nil)
@@ -241,8 +244,8 @@ func Work(val, tim []byte, d uint8) (work, salt []byte) {
 	}
 }
 
-func Check(val, tim, salt, work []byte) int {
-	return check(blake3.New(32, nil), val, tim, salt, work)
+func Check(key, val, tim, salt, work []byte) (uint8, error) {
+	return check(blake3.New(32, nil), key, val, tim, salt, work)
 }
 
 func Mass(work []byte, t time.Time) float64 {
@@ -309,55 +312,58 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				}
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
 				lg(cfg, LOGLVL_DEBUG, "/peer/reply_to_getpeer %s", pk.ip)
-			case dave.Op_DAT: // STORE DAT
-				dat := &Dat{pk.msg.V, pk.msg.S, pk.msg.W, Btt(pk.msg.T)}
+			case dave.Op_PUT: // STORE DAT
+				dat := &Dat{Key: pk.msg.DatKey, Val: pk.msg.Val, Salt: pk.msg.Salt, Work: pk.msg.Work, Sig: pk.msg.Sig, Time: Btt(pk.msg.Time), PubKey: pk.msg.PubKey}
 				select {
 				case apprecv <- dat:
 				default:
 				}
+				// TODO: ENSURE PUB KEYS MATCH IF ALREADY EXISTS
 				novel, err := put(dats, dat)
 				if err != nil {
-					lg(cfg, LOGLVL_ERROR, "/store error: %s", err)
+					lg(cfg, LOGLVL_DEBUG, "/store error: %s", err)
+					continue
 				}
 				if novel {
 					ndat++
-					trust := peers[pkfp].trust
-					if trust < MAXTRUST {
-						trust += Mass(pk.msg.W, Btt(pk.msg.T))
-						if trust > MAXTRUST {
-							trust = MAXTRUST
-						}
-					}
-					if cfg.BackupFname != "" {
-						backup <- pk.msg
-					}
-					ring.Write(dat)
-					lg(cfg, LOGLVL_DEBUG, "/store %x %s %f", pk.msg.W, pk.ip, trust)
 				}
+				trust := peers[pkfp].trust
+				if trust < MAXTRUST {
+					trust += Mass(pk.msg.Work, Btt(pk.msg.Time))
+					if trust > MAXTRUST {
+						trust = MAXTRUST
+					}
+				}
+				if cfg.BackupFname != "" {
+					backup <- pk.msg
+				}
+				ring.Write(dat)
+				lg(cfg, LOGLVL_DEBUG, "/store %x %s %f", pk.msg.Work, pk.ip, trust)
+
 			case dave.Op_GET: // REPLY WITH DAT
-				shardKey, datKey := keys(pk.msg.W)
+				shardKey, datKey := keys(pk.msg.DatKey)
 				dat, ok := dats[shardKey][datKey]
 				if ok { // GOT DAT
-					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: dat.V, T: Ttb(dat.Ti), S: dat.S, W: dat.W}, pk.ip}
-					lg(cfg, LOGLVL_DEBUG, "/dat/reply_to_get %s %x", pk.ip, dat.W)
+					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, pk.ip}
+					lg(cfg, LOGLVL_DEBUG, "/dat/reply_to_get %s %x", pk.ip, dat.Work)
 				}
 			}
 		case <-epochTick.C: // SEED
 			rp := rndpeer(peerList, trustSum)
 			if ndat > 0 && rp != nil {
 				raddr := addrfrom(rp.pd)
-				d := rnddat(dats[cshard])
-				if d != nil {
-					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
+				dat := rnddat(dats[cshard])
+				if dat != nil {
+					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, raddr}
 				}
-				d, ok := ring.Read()
+				dat, ok := ring.Read()
 				if ok {
-					pktout <- &pkt{&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W}, raddr}
+					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, raddr}
 				} else {
 					lg(cfg, LOGLVL_DEBUG, "/push nothing in ring buffer")
 				}
 				for {
-					cshard = (cshard + 1) % uint8(MAXWORK-MINWORK)
+					cshard++
 					if len(dats[cshard]) > 0 {
 						break
 					}
@@ -387,7 +393,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 			lg(cfg, LOGLVL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
 		case m := <-appsend: // SEND PACKET FOR APP
 			sendForApp(m, dats, peerList, trustSum, pktout, apprecv, cfg)
-			if cfg.BackupFname != "" && m.Op == dave.Op_DAT {
+			if cfg.BackupFname != "" && m.Op == dave.Op_PUT {
 				backup <- m
 			}
 		case <-statTick.C:
@@ -411,7 +417,7 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, cfg *Cfg) {
 }
 
 func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
-	newdats := make([]map[uint64]Dat, MAXWORK-MINWORK)
+	newdats := make([]map[uint64]Dat, 256)
 	var ndat uint32
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -426,7 +432,7 @@ func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 				for datid, dat := range dats[shardid] {
 					if dh.Len() < cap {
 						heap.Push(dh, &pair{datid, dat})
-					} else if dat.Ti.After(dh.Peek().dat.Ti) {
+					} else if dat.Time.After(dh.Peek().dat.Time) {
 						heap.Pop(dh)
 						heap.Push(dh, &pair{datid, dat})
 					}
@@ -508,7 +514,7 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 	buf := bufio.NewWriter(f)
 	for _, shard := range dats {
 		for _, d := range shard {
-			b, err := proto.Marshal(&dave.M{Op: dave.Op_DAT, V: d.V, T: Ttb(d.Ti), S: d.S, W: d.W})
+			b, err := proto.Marshal(&dave.M{Op: dave.Op_PUT, DatKey: d.Key, Val: d.Val, Time: Ttb(d.Time), Salt: d.Salt, Work: d.Work, PubKey: d.PubKey, Sig: d.Sig})
 			if err != nil {
 				return err
 			}
@@ -522,11 +528,11 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 }
 
 func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
-	dats := make([]map[uint64]Dat, MAXWORK-MINWORK)
+	dats := make([]map[uint64]Dat, 256)
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
 	}
-	workHash := blake3.New(32, nil)
+	hasher := blake3.New(32, nil)
 	f, err := os.Open(fname)
 	if err != nil {
 		return 0, nil, fmt.Errorf("err opening file: %w", err)
@@ -557,11 +563,15 @@ func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 		if err != nil {
 			return ndat, dats, fmt.Errorf("err unmarshalling proto msg: %w", err)
 		}
-		if check(workHash, m.V, m.T, m.S, m.W) < MINWORK {
+		work, err := check(hasher, m.DatKey, m.Val, m.Time, m.Salt, m.Work)
+		if err != nil {
 			continue
 		}
-		shardKey, datKey := keys(m.W)
-		dats[shardKey][datKey] = Dat{V: m.V, Ti: Btt(m.T), S: m.S, W: m.W}
+		if work < MINWORK {
+			continue
+		}
+		shard, datKey := keys(m.DatKey)
+		dats[shard][datKey] = Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey}
 		ndat++
 	}
 	return ndat, dats, nil
@@ -572,27 +582,26 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 		return
 	}
 	switch m.Op {
-	case dave.Op_DAT:
-		lg(cfg, LOGLVL_DEBUG, "/send_for_app sending dat %x, trustSum %f", m.W, trustSum)
-		put(dats, &Dat{m.V, m.S, m.W, Btt(m.T)})
+	case dave.Op_PUT:
+		put(dats, &Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey})
 		for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 			addr := addrfrom(p.pd)
 			pktout <- &pkt{m, addr}
 			lg(cfg, LOGLVL_DEBUG, "/send_for_app dat sent to %s", addr)
 		}
 	case dave.Op_GET:
-		shardKey, datKey := keys(m.W)
+		shardKey, datKey := keys(m.DatKey)
 		var found bool
 		dat, ok := dats[shardKey][datKey]
 		if ok {
 			found = true
 			apprecv <- &dat
-			lg(cfg, LOGLVL_DEBUG, "/send_for_app get found locally %x", dat.W)
+			lg(cfg, LOGLVL_DEBUG, "/send_for_app get found locally %s", dat.Key)
 		}
 		if !found {
 			for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 				addr := addrfrom(p.pd)
-				pktout <- &pkt{&dave.M{Op: dave.Op_GET, W: m.W}, addr}
+				pktout <- &pkt{m, addr}
 				lg(cfg, LOGLVL_DEBUG, "/send_for_app get sent to %s", addr)
 			}
 		}
@@ -602,12 +611,22 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 }
 
 func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
-	shardKey, datKey := keys(d.W)
-	_, ok := dats[shardKey][datKey]
+	shard, key := keys(d.Key)
+	current, ok := dats[shard][key]
 	if !ok {
-		dats[shardKey][datKey] = *d
+		dats[shard][key] = *d
 		return true, nil
 	}
+	if !current.PubKey.Equal(d.PubKey) {
+		return false, errors.New("pub keys don't match, rejected")
+	}
+	if current.Time.After(d.Time) {
+		return false, errors.New("current is newer")
+	}
+	if current.Time == d.Time && bytes.Equal(current.Val, d.Val) {
+		return false, errors.New("already stored")
+	}
+	dats[shard][key] = *d
 	return false, nil
 }
 
@@ -615,42 +634,57 @@ func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
 	pkts := make(chan *pkt, 100)
 	go func() {
 		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
-		ch := blake3.New(32, nil)
+		h := blake3.New(32, nil)
 		for {
-			p := rdpkt(c, ch, &bpool, cfg)
-			if p != nil {
-				pkts <- p
+			p, err := rdpkt(c, h, &bpool)
+			if err != nil {
+				lg(cfg, LOGLVL_ERROR, "/rdpkt %s", err)
+				continue
 			}
+			pkts <- p
 		}
 	}()
 	return pkts
 }
 
-func rdpkt(c *net.UDPConn, ch *blake3.Hasher, bpool *sync.Pool, cfg *Cfg) *pkt {
+func rdpkt(c *net.UDPConn, h *blake3.Hasher, bpool *sync.Pool) (*pkt, error) {
 	buf := bpool.Get().([]byte)
 	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 	n, raddr, err := c.ReadFromUDPAddrPort(buf)
 	if err != nil {
-		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to read from socket")
-		return nil
+		return nil, fmt.Errorf("failed to read from socket: %s", err)
 	}
 	m := &dave.M{}
 	err = proto.Unmarshal(buf[:n], m)
 	if err != nil {
-		lg(cfg, LOGLVL_ERROR, "/rdpkt failed to unmarshal")
-		return nil
+		return nil, fmt.Errorf("failed to unmarshal: %s", err)
 	}
-	if m.Op == dave.Op_DAT {
-		work := check(ch, m.V, m.T, m.S, m.W)
+	if m.Op == dave.Op_PUT {
+		work, err := check(h, m.DatKey, m.Val, m.Time, m.Salt, m.Work)
+		if err != nil {
+			return nil, fmt.Errorf("failed work check: %s", err)
+		}
 		if work < MINWORK {
-			lg(cfg, LOGLVL_ERROR, "/rdpkt failed work check: %d from %s", work, raddr)
-			return nil
+			return nil, fmt.Errorf("work is insufficient: %d from %s", work, raddr)
+		}
+		pubKey, err := unmarshalEd25519(m.PubKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to unmarshal pub key: %s", err)
+		}
+		if !ed25519.Verify(pubKey, m.Work, m.Sig) {
+			return nil, fmt.Errorf("invalid signature")
 		}
 	} else if m.Op == dave.Op_PEER && len(m.Pds) > GETNPEER {
-		lg(cfg, LOGLVL_ERROR, "/rdpkt packet exceeds pd limit")
-		return nil
+		return nil, errors.New("packet exceeds pd limit")
 	}
-	return &pkt{m, raddr}
+	return &pkt{m, raddr}, nil
+}
+
+func unmarshalEd25519(publicKeyBytes []byte) (ed25519.PublicKey, error) {
+	if len(publicKeyBytes) != ed25519.PublicKeySize {
+		return nil, fmt.Errorf("ed25519: public key must be %d bytes", ed25519.PublicKeySize)
+	}
+	return ed25519.PublicKey(publicKeyBytes), nil
 }
 
 func rndpeer(list []*peer, trustSum float64) *peer {
@@ -725,15 +759,23 @@ func pdfp(pd *dave.Pd) uint64 {
 	return h.Sum64()
 }
 
-func keys(work []byte) (uint8, uint64) {
-	return min(MAXWORK, nzerobit(work)) - MINWORK, xxhash.Sum64(work)
+// TODO: improve this, as collisions are too likely.
+// Only datKey is used to compute map key, so that users with different
+// pub keys can share data.
+func keys(datKey []byte) (uint8, uint64) {
+	sum64 := xxhash.Sum64(datKey)
+	return uint8(sum64 >> 56), sum64
 }
 
-func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
-	if len(tim) != 8 || Btt(tim).After(time.Now().Add(time.Second)) { // 1s grace period incase clocks are not accurate
-		return -2
+func check(h *blake3.Hasher, key, val, tim, salt, work []byte) (uint8, error) {
+	if len(key) > 32 {
+		return 0, errors.New("key must be of size 32B or less")
+	}
+	if len(tim) != 8 || Btt(tim).After(time.Now()) {
+		return 0, errors.New("time is invalid")
 	}
 	h.Reset()
+	h.Write(key)
 	h.Write(val)
 	h.Write(tim)
 	load := h.Sum(nil)
@@ -741,9 +783,9 @@ func check(h *blake3.Hasher, val, tim, salt, work []byte) int {
 	h.Write(salt)
 	h.Write(load)
 	if !bytes.Equal(h.Sum(nil), work) {
-		return -1
+		return 0, errors.New("hash is invalid")
 	}
-	return int(nzerobit(work))
+	return nzerobit(work), nil
 }
 
 func nzerobit(key []byte) uint8 {
