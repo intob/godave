@@ -432,7 +432,7 @@ func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 				for datid, dat := range dats[shardid] {
 					if dh.Len() < cap {
 						heap.Push(dh, &pair{datid, dat})
-					} else if dat.Time.After(dh.Peek().dat.Time) {
+					} else if Mass(dat.Work, dat.Time) > Mass(dh.Peek().dat.Work, dh.Peek().dat.Time) {
 						heap.Pop(dh)
 						heap.Push(dh, &pair{datid, dat})
 					}
