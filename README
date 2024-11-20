@@ -4,15 +4,13 @@
 | |_| | (_| |\ V /  __/
 |____/ \__,_| \_/ \___|
 
-Dave is a distributed hash table. It may also be described as an anonymised packet-sharing peer-to-peer network protocol. This is a thin layer over UDP, with many possible decentralised applications.
+Dave is a distributed key-value store. This is a thin layer over UDP, with many possible decentralised applications.
 
-Packets of data up to 1424 bytes in length are pushed and pulled via a set of operations continuously executed at random. We call these packets "dats".
+Packets up to 1424 bytes in length are continuously distributed at random. We call these packets "dats".
 
 Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
 
-A remote peer earns trust when a dat not already in the local hash table is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding and pushes. Trust values are currently not gossiped, as this creates a complex attack vector.
-
-Below is an outline of this implementation, although different implementations could be interoperable. There are many possible optimisations that don't necessitate changing the message format. The project is still in an early enough phase that we can also modify the message format easily.
+A remote peer earns trust when a new or updated dat is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding. Trust values are currently not gossiped, as this creates a complex attack vector.
 
 
 
@@ -33,7 +31,7 @@ BackupFname     string              Dat table backup filename
 
 GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
 PEER        Packet containing NPEER peer descriptors.
-DAT         Packet containing a value, time, and output of the cost function: work, salt.
+PUT         Packet containing a key, value, time, proof-of-work, salt, signature, and public key.
 GET         Packet containing the work hash, remote should reply with a message of op-code DAT, if available.
 
 
@@ -50,10 +48,12 @@ FIELD       DESCRIPTION                                 BYTE LENGTH
 
 OP          Operation code.                             1
 PEERS       List of peers.                              20*NPEER
-VAL         The data.                                   0 | <= 1352
+VAL         The data.                                   0 | <= 1288
 TIME        Little-endian unix milliseconds.            0 | 8
 SALT        Random bytes used to solve WORK.            0 | 32
 WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
+SIG         Ed25519 signature of work.                  0 | 32
+PUBKEY      Ed25519 public key.                         0 | 32
 
 
 
@@ -79,13 +79,13 @@ Every PRUNE EPOCH, a user defined (ShardCap) number of most massive dats per sha
 
 7.      Sharding
 
-The data structure used to store dats is a [][uint64]. The first dimension is called the shard, and used to group dats by difficulty of the proof of work, in number of leading zero bits. The second dimension is derived by hashing the work with xxHash.
+The data structure used to store dats is a [][uint64]. The first dimension is called the shard. Sharding is done to make pruning the map more efficient, as shards can be processed concurrently. The keys are computed by hashing the key with xxHash. The shard is derived by right-shifting the key's hash 56 bits.
 
 
 
 8.      Random Push 
 
-Every SEED EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
+Every EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
 
 Propagating dats in this way ensures that an adversary is unable to create a timing attack to discern the source of a dat, even with a broad view of network traffic.
 
@@ -93,7 +93,7 @@ Propagating dats in this way ensures that an adversary is unable to create a tim
 
 9.     Random Push of Recent Dat
 
-Every PUSH EPOCH, each node sends one recent dat to one random peer. The dat is read from a ring buffer. The ring buffer is written to when a novel dat is received. This ensures timely dissemination of data, even for large datasets.
+Every EPOCH, each node sends one recent dat to one random peer. The dat is read from a ring buffer. The ring buffer is written to when a novel or updated dat is received. This ensures timely dissemination of data, even for large datasets.
 
 
 
