@@ -313,7 +313,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
 				lg(cfg, LOGLVL_DEBUG, "/peer/reply_to_getpeer %s", pk.ip)
 			case dave.Op_PUT: // STORE DAT
-				dat := &Dat{Key: pk.msg.DatKey, Val: pk.msg.Val, Salt: pk.msg.Salt, Work: pk.msg.Work, Sig: pk.msg.Sig, Time: Btt(pk.msg.Time), PubKey: pk.msg.PubKey}
+				dat := &Dat{pk.msg.DatKey, pk.msg.Val, pk.msg.Salt, pk.msg.Work, pk.msg.Sig, Btt(pk.msg.Time), pk.msg.PubKey}
 				select {
 				case apprecv <- dat:
 				default:
