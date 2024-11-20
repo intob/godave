@@ -52,7 +52,7 @@ VAL         The data.                                   0 | <= 1288
 TIME        Little-endian unix milliseconds.            0 | 8
 SALT        Random bytes used to solve WORK.            0 | 32
 WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
-SIG         Ed25519 signature of work.                  0 | 32
+SIG         Ed25519 signature of work.                  0 | 64
 PUBKEY      Ed25519 public key.                         0 | 32
 
 

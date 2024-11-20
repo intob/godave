@@ -27,9 +27,10 @@ import (
 )
 
 const (
-	EPOCH        = 500 * time.Microsecond
+	EPOCH        = time.Millisecond
 	BUF          = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
 	FANOUT       = 5                // Number of peers randomly selected when selecting more than one.
+	ROUNDS       = 5                // Number of rounds to repeat sending new dats.
 	PROBE        = 8                // Inverse of probability that an untrusted peer is randomly selected.
 	GETNPEER     = 2                // Limit of peer descriptors in a PEER message.
 	MINWORK      = 8                // Minimum amount of acceptable work in number of leading zero bits.
@@ -70,6 +71,7 @@ type Dave struct {
 	send       chan<- *dave.M
 	kill, done chan struct{}
 	npeer      *atomic.Int32
+	appRecv    <-chan *Dat
 }
 
 type Cfg struct {
@@ -163,14 +165,19 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	go writePackets(udpc, pktout, cfg)
 	send := make(chan *dave.M)
 	recv := make(chan *Dat, 100)
+	appRecv := make(chan *Dat, 100)
 	npeer := &atomic.Int32{}
-	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, cfg)
+	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, appRecv, cfg)
 	return &Dave{recv: recv, send: send, kill: kill, done: done, npeer: npeer}, nil
 }
 
 func (d *Dave) Kill() <-chan struct{} {
 	d.kill <- struct{}{}
 	return d.done
+}
+
+func (d *Dave) Recv() <-chan *Dat {
+	return d.appRecv
 }
 
 func (d *Dave) Get(datKey []byte, npeer int32, timeout time.Duration) <-chan *Dat {
@@ -200,7 +207,7 @@ func (d *Dave) Get(datKey []byte, npeer int32, timeout time.Duration) <-chan *Da
 	return c
 }
 
-func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
+func (d *Dave) Set(dat *Dat, npeer int32) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		for d.npeer.Load() < npeer {
@@ -214,7 +221,7 @@ func (d *Dave) Set(dat *Dat, rounds, npeer int32) <-chan struct{} {
 		for range tick.C {
 			d.send <- m
 			r++
-			if r == rounds {
+			if r == ROUNDS {
 				done <- struct{}{}
 				return
 			}
@@ -263,7 +270,7 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, appsend <-chan *dave.M, apprecv chan<- *Dat, cfg *Cfg) {
+func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
 	npeer.Store(int32(len(peers)))
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
@@ -314,15 +321,18 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				lg(cfg, LOGLVL_DEBUG, "/peer/reply_to_getpeer %s", pk.ip)
 			case dave.Op_PUT: // STORE DAT
 				dat := &Dat{pk.msg.DatKey, pk.msg.Val, pk.msg.Salt, pk.msg.Work, pk.msg.Sig, Btt(pk.msg.Time), pk.msg.PubKey}
-				select {
-				case apprecv <- dat:
-				default:
-				}
-				// TODO: ENSURE PUB KEYS MATCH IF ALREADY EXISTS
 				novel, err := put(dats, dat)
 				if err != nil {
 					lg(cfg, LOGLVL_DEBUG, "/store error: %s", err)
 					continue
+				}
+				select {
+				case recv <- dat:
+				default:
+				}
+				select {
+				case appRecv <- dat:
+				default:
 				}
 				if novel {
 					ndat++
@@ -391,8 +401,8 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 			ndat, dats = pruneDats(dats, cfg.ShardCap)
 			trustSum, peerList, peers = prunePeers(peers)
 			lg(cfg, LOGLVL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
-		case m := <-appsend: // SEND PACKET FOR APP
-			sendForApp(m, dats, peerList, trustSum, pktout, apprecv, cfg)
+		case m := <-send: // SEND PACKET FOR APP
+			sendForApp(m, dats, peerList, trustSum, pktout, recv, cfg)
 			if cfg.BackupFname != "" && m.Op == dave.Op_PUT {
 				backup <- m
 			}
@@ -417,7 +427,7 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, cfg *Cfg) {
 }
 
 func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
-	newdats := make([]map[uint64]Dat, 256)
+	newdats := make([]map[uint64]Dat, len(dats))
 	var ndat uint32
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -577,7 +587,7 @@ func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 	return ndat, dats, nil
 }
 
-func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pkt, apprecv chan<- *Dat, cfg *Cfg) {
+func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pkt, recv chan<- *Dat, cfg *Cfg) {
 	if m == nil {
 		return
 	}
@@ -595,7 +605,7 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 		dat, ok := dats[shardKey][datKey]
 		if ok {
 			found = true
-			apprecv <- &dat
+			recv <- &dat
 			lg(cfg, LOGLVL_DEBUG, "/send_for_app get found locally %s", dat.Key)
 		}
 		if !found {
