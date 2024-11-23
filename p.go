@@ -184,10 +184,10 @@ func (d *Dave) PeerCount() int32 {
 	return d.npeer.Load()
 }
 
-func (d *Dave) Get(datKey []byte, timeout time.Duration) <-chan *Dat {
+func (d *Dave) Get(pubKey ed25519.PublicKey, datKey []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
 	go func() {
-		d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey}
+		d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey, PubKey: pubKey}
 		defer close(c)
 		tick := time.NewTicker(APP * EPOCH)
 		timeout := time.NewTimer(timeout)
@@ -201,7 +201,7 @@ func (d *Dave) Get(datKey []byte, timeout time.Duration) <-chan *Dat {
 					return
 				}
 			case <-tick.C:
-				d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey}
+				d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey, PubKey: pubKey}
 			}
 		}
 	}()
@@ -349,8 +349,8 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				lg(cfg, LOGLEVEL_DEBUG, "/store %x %s %f", pk.msg.Work, pk.ip, trust)
 
 			case dave.Op_GET: // REPLY WITH DAT
-				shardKey, datKey := keys(pk.msg.DatKey)
-				dat, ok := dats[shardKey][datKey]
+				shard, mapKey := keys(pk.msg.PubKey, pk.msg.DatKey)
+				dat, ok := dats[shard][mapKey]
 				if ok { // GOT DAT
 					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, pk.ip}
 					lg(cfg, LOGLEVEL_DEBUG, "/dat/reply_to_get %s %x", pk.ip, dat.Work)
@@ -578,8 +578,8 @@ func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 		if work < MINWORK {
 			continue
 		}
-		shard, datKey := keys(m.DatKey)
-		dats[shard][datKey] = Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey}
+		shard, mapKey := keys(m.PubKey, m.DatKey)
+		dats[shard][mapKey] = Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey}
 		ndat++
 	}
 	return ndat, dats, nil
@@ -598,9 +598,9 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 			lg(cfg, LOGLEVEL_DEBUG, "/send_for_app dat sent to %s", addr)
 		}
 	case dave.Op_GET:
-		shardKey, datKey := keys(m.DatKey)
+		shard, mapKey := keys(m.PubKey, m.DatKey)
 		var found bool
-		dat, ok := dats[shardKey][datKey]
+		dat, ok := dats[shard][mapKey]
 		if ok {
 			found = true
 			recv <- &dat
@@ -619,10 +619,10 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 }
 
 func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
-	shard, key := keys(d.Key)
-	current, ok := dats[shard][key]
+	shard, mapKey := keys(d.PubKey, d.Key)
+	current, ok := dats[shard][mapKey]
 	if !ok {
-		dats[shard][key] = *d
+		dats[shard][mapKey] = *d
 		return true, nil
 	}
 	if !current.PubKey.Equal(d.PubKey) {
@@ -634,7 +634,7 @@ func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
 	if current.Time == d.Time && bytes.Equal(current.Val, d.Val) {
 		return false, errors.New("already stored")
 	}
-	dats[shard][key] = *d
+	dats[shard][mapKey] = *d
 	return false, nil
 }
 
@@ -767,11 +767,11 @@ func pdfp(pd *dave.Pd) uint64 {
 	return h.Sum64()
 }
 
-// TODO: improve this, as collisions are too likely.
-// Only datKey is used to compute map key, so that users with different
-// pub keys can share data.
-func keys(datKey []byte) (uint8, uint64) {
-	sum64 := xxhash.Sum64(datKey)
+func keys(pubKey, datKey []byte) (uint8, uint64) {
+	h := xxhash.New()
+	h.Write(pubKey)
+	h.Write(datKey)
+	sum64 := h.Sum64()
 	return uint8(sum64 >> 56), sum64
 }
 
