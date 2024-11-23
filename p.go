@@ -33,7 +33,7 @@ const (
 	ROUNDS         = 5                // Number of rounds to repeat sending new dats.
 	PROBE          = 8                // Inverse of probability that an untrusted peer is randomly selected.
 	NPEER_LIMIT    = 2                // Maximum number of peer descriptors in a PEER message.
-	MINWORK        = 8                // Minimum amount of acceptable work in number of leading zero bits.
+	MINWORK        = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	MAXTRUST       = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
 	APP            = 25               // Epochs between each round of sending a message for the app.
 	PING           = 8 * time.Second  // Time until peers are pinged with a GETPEER message.
@@ -228,7 +228,20 @@ func (d *Dave) Set(dat *Dat) <-chan struct{} {
 	return done
 }
 
-func Work(key, val, tim []byte, d uint8) (work, salt []byte) {
+// DoWork computes a proof-of-work, either on a single core or on all cores,
+// depending on the difficulty level. For lower difficulty levels (< 12),
+// the single-core implementation performs best.
+func DoWork(key, val, tim []byte, d uint8) (work []byte, salt []byte) {
+	if d >= 12 {
+		return doWorkAllCores(key, val, tim, d)
+	} else {
+		return doWorkSingleCore(key, val, tim, d)
+	}
+}
+
+// doWork computes a proof-of-work on a single core.
+// For low difficulty settings (< 12), this outperforms the multi-core implementation.
+func doWorkSingleCore(key, val, tim []byte, d uint8) (work, salt []byte) {
 	salt = make([]byte, 8)
 	h := blake3.New(32, nil)
 	h.Write(key)
@@ -247,6 +260,52 @@ func Work(key, val, tim []byte, d uint8) (work, salt []byte) {
 		}
 		counter++
 	}
+}
+
+// doWorkAllCores computes a proof-of-work using all cores.
+// For higher difficulty settings (>= 12), this outperforms the single-core implementation.
+func doWorkAllCores(key, val, tim []byte, d uint8) (work, salt []byte) {
+	numCPU := runtime.NumCPU()
+	runtime.GOMAXPROCS(numCPU)
+	type Result struct{ work, salt []byte }
+	resultChan := make(chan Result)
+	quit := make(chan struct{})
+	h := blake3.New(32, nil)
+	h.Write(key)
+	h.Write(val)
+	h.Write(tim)
+	load := h.Sum(nil)
+	for i := 0; i < numCPU; i++ {
+		go func(offset uint64) {
+			salt := make([]byte, 8)
+			h := blake3.New(32, nil)
+			counter := offset
+			for {
+				select {
+				case <-quit:
+					return
+				default:
+					*(*uint64)(unsafe.Pointer(&salt[0])) = counter
+					h.Reset()
+					h.Write(salt)
+					h.Write(load)
+					work := h.Sum(nil)
+
+					if nzerobit(work) >= d {
+						select {
+						case resultChan <- Result{work: work, salt: salt}:
+						case <-quit:
+						}
+						return
+					}
+					counter += uint64(numCPU)
+				}
+			}
+		}(uint64(i))
+	}
+	result := <-resultChan
+	close(quit)
+	return result.work, result.salt
 }
 
 func Check(key, val, tim, salt, work []byte) (uint8, error) {

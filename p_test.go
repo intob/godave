@@ -234,28 +234,32 @@ func BenchmarkPruneDats(b *testing.B) {
 
 const hashStr = "000001db4044b9c5bf5247b463fe0f5e181e424d151d9f03fb9f3720d4795f18"
 
-// The original rolled up version is faster.
-func BenchmarkNzerobit(b *testing.B) {
-	hash, err := hex.DecodeString(hashStr)
-	if err != nil {
-		panic(err)
-	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		nzerobit(hash)
-	}
-}
+/*
 
-func BenchmarkNzerobitUnrolled(b *testing.B) {
-	hash, err := hex.DecodeString(hashStr)
-	if err != nil {
-		panic(err)
+// The original rolled up version is faster.
+
+	func BenchmarkNzerobit(b *testing.B) {
+		hash, err := hex.DecodeString(hashStr)
+		if err != nil {
+			panic(err)
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			nzerobit(hash)
+		}
 	}
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		nzerobitUnrolled(hash)
+
+	func BenchmarkNzerobitUnrolled(b *testing.B) {
+		hash, err := hex.DecodeString(hashStr)
+		if err != nil {
+			panic(err)
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			nzerobitUnrolled(hash)
+		}
 	}
-}
+*/
 
 func TestNzerobit(t *testing.T) {
 	hash, err := hex.DecodeString(hashStr)
@@ -304,4 +308,18 @@ func nzerobitUnrolled(key []byte) uint8 {
 	}
 
 	return count
+}
+
+func BenchmarkWork(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		doWorkSingleCore([]byte("test"), []byte("val"), Ttb(time.Now()), 12)
+	}
+}
+
+func BenchmarkWork2(b *testing.B) {
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		doWorkAllCores([]byte("test"), []byte("val"), Ttb(time.Now()), 12)
+	}
 }
