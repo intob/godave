@@ -17,25 +17,24 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unsafe"
 
 	xxhash "github.com/cespare/xxhash/v2"
 	"github.com/intob/godave/dave"
+	"github.com/intob/godave/pktproc"
+	"github.com/intob/godave/pow"
 	"github.com/intob/godave/ringbuffer"
 	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
 const (
-	EPOCH          = time.Millisecond
+	EPOCH          = 200 * time.Microsecond
 	BUF            = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
 	FANOUT         = 5                // Number of peers randomly selected when selecting more than one.
-	ROUNDS         = 5                // Number of rounds to repeat sending new dats.
 	PROBE          = 8                // Inverse of probability that an untrusted peer is randomly selected.
 	NPEER_LIMIT    = 2                // Maximum number of peer descriptors in a PEER message.
 	MINWORK        = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	MAXTRUST       = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
-	APP            = 25               // Epochs between each round of sending a message for the app.
 	PING           = 8 * time.Second  // Time until peers are pinged with a GETPEER message.
 	DROP           = 16 * time.Second // Time until silent peers are dropped from the peer table.
 	SHARE_DELAY    = 20 * time.Second // Time until new peers are shared. Must be greater than DROP.
@@ -44,25 +43,6 @@ const (
 	LOGLEVEL_ERROR = LogLevel(0)      // Base log level, for errors & status.
 	LOGLEVEL_DEBUG = LogLevel(1)      // Debugging log level.
 )
-
-var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits in a byte
-	8, 7, 6, 6, 5, 5, 5, 5, 4, 4, 4, 4, 4, 4, 4, 4,
-	3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3,
-	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-	2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-}
 
 type LogLevel int
 
@@ -97,11 +77,6 @@ type peer struct {
 	trust                float64
 }
 
-type pkt struct {
-	msg *dave.M
-	ip  netip.AddrPort
-}
-
 type pair struct {
 	id  uint64
 	dat Dat
@@ -111,7 +86,7 @@ type datheap []*pair
 
 func (h datheap) Len() int { return len(h) }
 func (h datheap) Less(i, j int) bool {
-	return Mass(h[i].dat.Work, h[i].dat.Time) < Mass(h[j].dat.Work, h[j].dat.Time)
+	return mass(h[i].dat.Work, h[i].dat.Time) < mass(h[j].dat.Work, h[j].dat.Time)
 }
 func (h datheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *datheap) Push(x interface{}) { *h = append(*h, x.(*pair)) }
@@ -156,7 +131,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	kill := make(chan struct{}, 1)
 	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
 	go writeBackup(backup, kill, done, cfg)
-	pktout := make(chan *pkt, 100)
+	pktout := make(chan *pktproc.Packet, 100)
 	go writePackets(udpc, pktout, cfg)
 	send := make(chan *dave.M)
 	recv := make(chan *Dat, 100)
@@ -180,7 +155,7 @@ func (d *Dave) Get(pubKey ed25519.PublicKey, datKey []byte, timeout time.Duratio
 	go func() {
 		d.send <- &dave.M{Op: dave.Op_GET, DatKey: datKey, PubKey: pubKey}
 		defer close(c)
-		tick := time.NewTicker(APP * EPOCH)
+		tick := time.NewTicker(25 * EPOCH)
 		timeout := time.NewTimer(timeout)
 		for {
 			select {
@@ -202,123 +177,13 @@ func (d *Dave) Get(pubKey ed25519.PublicKey, datKey []byte, timeout time.Duratio
 func (d *Dave) Put(dat *Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		m := &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}
-		d.send <- m
+		d.send <- &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: pow.Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}
 		defer close(done)
-		var r int32
-		tick := time.NewTicker(APP * EPOCH)
-		for range tick.C {
-			d.send <- m
-			r++
-			if r == ROUNDS {
-				done <- struct{}{}
-				return
-			}
-		}
 	}()
 	return done
 }
 
-// DoWork computes a proof-of-work, either on a single core or on all cores,
-// depending on the difficulty level. For lower difficulty levels (< 12),
-// the single-core implementation performs best.
-func DoWork(key, val, tim []byte, d uint8) (work []byte, salt []byte) {
-	if d >= 12 {
-		return doWorkAllCores(key, val, tim, d)
-	} else {
-		return doWorkSingleCore(key, val, tim, d)
-	}
-}
-
-// doWork computes a proof-of-work on a single core.
-// For low difficulty settings (< 12), this outperforms the multi-core implementation.
-func doWorkSingleCore(key, val, tim []byte, d uint8) (work, salt []byte) {
-	salt = make([]byte, 8)
-	h := blake3.New(32, nil)
-	h.Write(key)
-	h.Write(val)
-	h.Write(tim)
-	load := h.Sum(nil)
-	counter := uint64(0)
-	for {
-		*(*uint64)(unsafe.Pointer(&salt[0])) = counter
-		h.Reset()
-		h.Write(salt)
-		h.Write(load)
-		work = h.Sum(nil)
-		if nzerobit(work) >= d {
-			return work, salt
-		}
-		counter++
-	}
-}
-
-// doWorkAllCores computes a proof-of-work using all cores.
-// For higher difficulty settings (>= 12), this outperforms the single-core implementation.
-func doWorkAllCores(key, val, tim []byte, d uint8) (work, salt []byte) {
-	numCPU := runtime.NumCPU()
-	runtime.GOMAXPROCS(numCPU)
-	type Result struct{ work, salt []byte }
-	resultChan := make(chan Result)
-	quit := make(chan struct{})
-	h := blake3.New(32, nil)
-	h.Write(key)
-	h.Write(val)
-	h.Write(tim)
-	load := h.Sum(nil)
-	for i := 0; i < numCPU; i++ {
-		go func(offset uint64) {
-			salt := make([]byte, 8)
-			h := blake3.New(32, nil)
-			counter := offset
-			for {
-				select {
-				case <-quit:
-					return
-				default:
-					*(*uint64)(unsafe.Pointer(&salt[0])) = counter
-					h.Reset()
-					h.Write(salt)
-					h.Write(load)
-					work := h.Sum(nil)
-
-					if nzerobit(work) >= d {
-						select {
-						case resultChan <- Result{work: work, salt: salt}:
-						case <-quit:
-						}
-						return
-					}
-					counter += uint64(numCPU)
-				}
-			}
-		}(uint64(i))
-	}
-	result := <-resultChan
-	close(quit)
-	return result.work, result.salt
-}
-
-func Check(key, val, tim, salt, work []byte) (uint8, error) {
-	return check(blake3.New(32, nil), key, val, tim, salt, work)
-}
-
-func Mass(work []byte, t time.Time) float64 {
-	return float64(nzerobit(work)) * (1 / float64(time.Since(t).Milliseconds()))
-}
-
-func Ttb(t time.Time) []byte {
-	milli := t.UnixNano() / 1000000
-	bytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(bytes, uint64(milli))
-	return bytes
-}
-
-func Btt(b []byte) time.Time {
-	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
-}
-
-func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
+func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64, pktin <-chan *pktproc.Packet, pktout chan<- *pktproc.Packet, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
 	npeer.Store(int64(len(peers)))
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
@@ -331,7 +196,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 	for {
 		select {
 		case pk := <-pktin: // HANDLE INCOMING PACKET
-			pkpd := pdfrom(pk.ip)
+			pkpd := pdfrom(pk.AddrPort)
 			pkfp := pdfp(pkpd)
 			_, ok := peers[pkfp]
 			if ok {
@@ -340,24 +205,24 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				peers[pkfp] = &peer{pd: pkpd, fp: pkfp, added: time.Now(), seen: time.Now()}
 				trustSum, peerList, peers = prunePeers(peers)
 				npeer.Add(1)
-				lg(cfg, LOGLEVEL_ERROR, "/peer/add %s %x", pk.ip, pkfp)
+				lg(cfg, LOGLEVEL_ERROR, "/peer/add %s %x", pk.AddrPort, pkfp)
 			}
-			switch pk.msg.Op {
+			switch pk.Msg.Op {
 			case dave.Op_PEER: // STORE PEERS
 				if time.Since(peers[pkfp].peermsg) >= PING-10*time.Millisecond {
 					peers[pkfp].peermsg = time.Now()
-					for _, mpd := range pk.msg.Pds {
+					for _, mpd := range pk.Msg.Pds {
 						mpdfp := pdfp(mpd)
 						_, ok := peers[mpdfp]
 						if !ok {
 							peers[mpdfp] = &peer{pd: mpd, fp: mpdfp, added: time.Now(), seen: time.Now()}
 							npeer.Add(1)
-							lg(cfg, LOGLEVEL_ERROR, "/peer/add_from_gossip %s from %s", addrfrom(mpd), pk.ip)
+							lg(cfg, LOGLEVEL_ERROR, "/peer/add_from_gossip %s from %s", addrfrom(mpd), pk.AddrPort)
 						}
 					}
 					trustSum, peerList, peers = prunePeers(peers)
 				} else {
-					lg(cfg, LOGLEVEL_ERROR, "/peer/unexpected dropped msg from %s", pk.ip)
+					lg(cfg, LOGLEVEL_ERROR, "/peer/unexpected dropped msg from %s", pk.AddrPort)
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
 				rps := rndpeers(peerList, trustSum, NPEER_LIMIT, pkfp, SHARE_DELAY)
@@ -365,10 +230,10 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				for i, p := range rps {
 					pds[i] = p.pd
 				}
-				pktout <- &pkt{&dave.M{Op: dave.Op_PEER, Pds: pds}, pk.ip}
-				lg(cfg, LOGLEVEL_DEBUG, "/peer/reply_to_getpeer %s", pk.ip)
+				pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: pk.AddrPort}
+				lg(cfg, LOGLEVEL_DEBUG, "/peer/reply_to_getpeer %s", pk.AddrPort)
 			case dave.Op_PUT: // STORE DAT
-				dat := &Dat{pk.msg.DatKey, pk.msg.Val, pk.msg.Salt, pk.msg.Work, pk.msg.Sig, Btt(pk.msg.Time), pk.msg.PubKey}
+				dat := &Dat{pk.Msg.DatKey, pk.Msg.Val, pk.Msg.Salt, pk.Msg.Work, pk.Msg.Sig, pow.Btt(pk.Msg.Time), pk.Msg.PubKey}
 				novel, err := put(dats, dat)
 				if err != nil {
 					lg(cfg, LOGLEVEL_DEBUG, "/store error: %s", err)
@@ -387,23 +252,23 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				}
 				trust := peers[pkfp].trust
 				if trust < MAXTRUST {
-					trust += Mass(pk.msg.Work, Btt(pk.msg.Time))
+					trust += mass(pk.Msg.Work, pow.Btt(pk.Msg.Time))
 					if trust > MAXTRUST {
 						trust = MAXTRUST
 					}
 				}
 				if cfg.BackupFname != "" {
-					backup <- pk.msg
+					backup <- pk.Msg
 				}
 				ring.Write(dat)
-				lg(cfg, LOGLEVEL_DEBUG, "/store %x %s %f", pk.msg.Work, pk.ip, trust)
+				lg(cfg, LOGLEVEL_DEBUG, "/store %x %s %f", pk.Msg.Work, pk.AddrPort, trust)
 
 			case dave.Op_GET: // REPLY WITH DAT
-				shard, mapKey := keys(pk.msg.PubKey, pk.msg.DatKey)
+				shard, mapKey := keys(pk.Msg.PubKey, pk.Msg.DatKey)
 				dat, ok := dats[shard][mapKey]
 				if ok { // GOT DAT
-					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, pk.ip}
-					lg(cfg, LOGLEVEL_DEBUG, "/dat/reply_to_get %s %x", pk.ip, dat.Work)
+					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: pk.AddrPort}
+					lg(cfg, LOGLEVEL_DEBUG, "/dat/reply_to_get %s %x", pk.AddrPort, dat.Work)
 				}
 			}
 		case <-epochTick.C: // SEED
@@ -412,11 +277,11 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				raddr := addrfrom(rp.pd)
 				dat := rnddat(dats[cshard])
 				if dat != nil {
-					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, raddr}
+					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
 				}
 				dat, ok := ring.Read()
 				if ok {
-					pktout <- &pkt{&dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, raddr}
+					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
 				} else {
 					lg(cfg, LOGLEVEL_DEBUG, "/push nothing in ring buffer")
 				}
@@ -431,9 +296,9 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 					dropped = true
 					lg(cfg, LOGLEVEL_ERROR, "/peer/ping/drop %s, not seen for %s", addrfrom(p.pd), time.Since(p.seen))
 				} else if time.Since(p.peermsg) > PING { // SEND PING
-					addr := addrfrom(p.pd)
-					pktout <- &pkt{&dave.M{Op: dave.Op_GETPEER}, addr}
-					lg(cfg, LOGLEVEL_DEBUG, "/peer/ping/getpeer_msg sent to %s", addr)
+					raddr := addrfrom(p.pd)
+					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: raddr}
+					lg(cfg, LOGLEVEL_DEBUG, "/peer/ping/getpeer_msg sent to %s", raddr)
 				}
 			}
 			if dropped {
@@ -455,14 +320,14 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 	}
 }
 
-func writePackets(c *net.UDPConn, pkts <-chan *pkt, cfg *Cfg) {
+func writePackets(c *net.UDPConn, pkts <-chan *pktproc.Packet, cfg *Cfg) {
 	for pkt := range pkts {
-		bin, err := proto.Marshal(pkt.msg)
+		bin, err := proto.Marshal(pkt.Msg)
 		if err != nil {
 			lg(cfg, LOGLEVEL_ERROR, "/dispatch error: %s", err)
 			continue
 		}
-		_, err = c.WriteToUDPAddrPort(bin, pkt.ip)
+		_, err = c.WriteToUDPAddrPort(bin, pkt.AddrPort)
 		if err != nil {
 			lg(cfg, LOGLEVEL_ERROR, "/dispatch error: %s", err)
 		}
@@ -485,7 +350,7 @@ func pruneDats(dats []map[uint64]Dat, cap int, ndat *atomic.Int64) []map[uint64]
 				for datid, dat := range dats[shardid] {
 					if dh.Len() < cap {
 						heap.Push(dh, &pair{datid, dat})
-					} else if Mass(dat.Work, dat.Time) > Mass(dh.Peek().dat.Work, dh.Peek().dat.Time) {
+					} else if mass(dat.Work, dat.Time) > mass(dh.Peek().dat.Work, dh.Peek().dat.Time) {
 						heap.Pop(dh)
 						heap.Push(dh, &pair{datid, dat})
 					}
@@ -570,7 +435,7 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 	buf := bufio.NewWriter(f)
 	for _, shard := range dats {
 		for _, d := range shard {
-			b, err := proto.Marshal(&dave.M{Op: dave.Op_PUT, DatKey: d.Key, Val: d.Val, Time: Ttb(d.Time), Salt: d.Salt, Work: d.Work, PubKey: d.PubKey, Sig: d.Sig})
+			b, err := proto.Marshal(&dave.M{Op: dave.Op_PUT, DatKey: d.Key, Val: d.Val, Time: pow.Ttb(d.Time), Salt: d.Salt, Work: d.Work, PubKey: d.PubKey, Sig: d.Sig})
 			if err != nil {
 				return err
 			}
@@ -584,11 +449,6 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 }
 
 func readBackup(fname string) (uint64, []map[uint64]Dat, error) {
-	dats := make([]map[uint64]Dat, 256)
-	for i := range dats {
-		dats[i] = make(map[uint64]Dat)
-	}
-	hasher := blake3.New(32, nil)
 	f, err := os.Open(fname)
 	if err != nil {
 		return 0, nil, fmt.Errorf("err opening file: %w", err)
@@ -602,6 +462,11 @@ func readBackup(fname string) (uint64, []map[uint64]Dat, error) {
 	var pos int64
 	var ndat uint64
 	lb := make([]byte, 2)
+	hasher := blake3.New(32, nil)
+	dats := make([]map[uint64]Dat, 256)
+	for i := range dats {
+		dats[i] = make(map[uint64]Dat)
+	}
 	for pos < size {
 		n, err := f.Read(lb)
 		pos += int64(n)
@@ -619,30 +484,30 @@ func readBackup(fname string) (uint64, []map[uint64]Dat, error) {
 		if err != nil {
 			return ndat, dats, fmt.Errorf("err unmarshalling proto msg: %w", err)
 		}
-		work, err := check(hasher, m.DatKey, m.Val, m.Time, m.Salt, m.Work)
+		err = pow.Check(hasher, m)
 		if err != nil {
 			continue
 		}
-		if work < MINWORK {
+		if pow.Nzerobit(m.Work) < MINWORK {
 			continue
 		}
 		shard, mapKey := keys(m.PubKey, m.DatKey)
-		dats[shard][mapKey] = Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey}
+		dats[shard][mapKey] = Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, pow.Btt(m.Time), m.PubKey}
 		ndat++
 	}
 	return ndat, dats, nil
 }
 
-func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pkt, recv chan<- *Dat, cfg *Cfg) {
+func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pktproc.Packet, recv chan<- *Dat, cfg *Cfg) {
 	if m == nil {
 		return
 	}
 	switch m.Op {
 	case dave.Op_PUT:
-		put(dats, &Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, Btt(m.Time), m.PubKey})
+		put(dats, &Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, pow.Btt(m.Time), m.PubKey})
 		for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 			addr := addrfrom(p.pd)
-			pktout <- &pkt{m, addr}
+			pktout <- &pktproc.Packet{Msg: m, AddrPort: addr}
 			lg(cfg, LOGLEVEL_DEBUG, "/send_for_app dat sent to %s", addr)
 		}
 	case dave.Op_GET:
@@ -657,7 +522,7 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 		if !found {
 			for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 				addr := addrfrom(p.pd)
-				pktout <- &pkt{m, addr}
+				pktout <- &pktproc.Packet{Msg: m, AddrPort: addr}
 				lg(cfg, LOGLEVEL_DEBUG, "/send_for_app get sent to %s", addr)
 			}
 		}
@@ -686,54 +551,36 @@ func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
 	return false, nil
 }
 
-func lstn(c *net.UDPConn, cfg *Cfg) <-chan *pkt {
-	pkts := make(chan *pkt, 100)
-	go func() {
-		bpool := sync.Pool{New: func() any { return make([]byte, BUF) }}
-		h := blake3.New(32, nil)
-		for {
-			p, err := rdpkt(c, h, &bpool)
-			if err != nil {
-				lg(cfg, LOGLEVEL_ERROR, "/rdpkt %s", err)
-				continue
-			}
-			pkts <- p
-		}
-	}()
-	return pkts
+func lstn(sock pktproc.SocketReader, cfg *Cfg) <-chan *pktproc.Packet {
+	proc := pktproc.NewPacketProcessor(&pktproc.PacketProcessorCfg{
+		NumWorkers:   runtime.NumCPU(),
+		BufSize:      1424,
+		FilterFunc:   packetFilter,
+		SocketReader: sock,
+	})
+	return proc.ResultChan()
 }
 
-func rdpkt(c *net.UDPConn, h *blake3.Hasher, bpool *sync.Pool) (*pkt, error) {
-	buf := bpool.Get().([]byte)
-	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-	n, raddr, err := c.ReadFromUDPAddrPort(buf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read from socket: %s", err)
-	}
-	m := &dave.M{}
-	err = proto.Unmarshal(buf[:n], m)
-	if err != nil {
-		return nil, fmt.Errorf("failed to unmarshal: %s", err)
-	}
+func packetFilter(m *dave.M, h *blake3.Hasher) error {
 	if m.Op == dave.Op_PUT {
-		work, err := check(h, m.DatKey, m.Val, m.Time, m.Salt, m.Work)
-		if err != nil {
-			return nil, fmt.Errorf("failed work check: %s", err)
+		if pow.Nzerobit(m.Work) < MINWORK {
+			return fmt.Errorf("work is insufficient: %x", m.Work)
 		}
-		if work < MINWORK {
-			return nil, fmt.Errorf("work is insufficient: %d from %s", work, raddr)
+		err := pow.Check(h, m)
+		if err != nil {
+			return fmt.Errorf("work is invalid: %s", err)
 		}
 		pubKey, err := unmarshalEd25519(m.PubKey)
 		if err != nil {
-			return nil, fmt.Errorf("failed to unmarshal pub key: %s", err)
+			return fmt.Errorf("failed to unmarshal pub key: %s", err)
 		}
 		if !ed25519.Verify(pubKey, m.Work, m.Sig) {
-			return nil, fmt.Errorf("invalid signature")
+			return fmt.Errorf("signature is invalid")
 		}
 	} else if m.Op == dave.Op_PEER && len(m.Pds) > NPEER_LIMIT {
-		return nil, errors.New("packet exceeds pd limit")
+		return errors.New("packet exceeds pd limit")
 	}
-	return &pkt{m, raddr}, nil
+	return nil
 }
 
 func unmarshalEd25519(publicKeyBytes []byte) (ed25519.PublicKey, error) {
@@ -823,36 +670,8 @@ func keys(pubKey, datKey []byte) (uint8, uint64) {
 	return uint8(sum64 >> 56), sum64
 }
 
-func check(h *blake3.Hasher, key, val, tim, salt, work []byte) (uint8, error) {
-	if len(key) > 32 {
-		return 0, errors.New("key must be of size 32B or less")
-	}
-	if len(tim) != 8 || Btt(tim).After(time.Now()) {
-		return 0, errors.New("time is invalid")
-	}
-	h.Reset()
-	h.Write(key)
-	h.Write(val)
-	h.Write(tim)
-	load := h.Sum(nil)
-	h.Reset()
-	h.Write(salt)
-	h.Write(load)
-	if !bytes.Equal(h.Sum(nil), work) {
-		return 0, errors.New("hash is invalid")
-	}
-	return nzerobit(work), nil
-}
-
-func nzerobit(key []byte) uint8 {
-	var count uint8
-	for _, b := range key {
-		count += zeroTable[b]
-		if b != 0 {
-			return count
-		}
-	}
-	return count
+func mass(work []byte, t time.Time) float64 {
+	return float64(pow.Nzerobit(work)) * (1 / float64(time.Since(t).Milliseconds()))
 }
 
 func lg(cfg *Cfg, lvl LogLevel, msg string, args ...any) {
