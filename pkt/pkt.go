@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/intob/godave/dave"
+	"github.com/intob/godave/logger"
 	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
@@ -29,14 +30,14 @@ type PacketProcessor struct {
 	resultChan chan *Packet
 	bpool      *sync.Pool
 	filterFunc func(m *dave.M, h *blake3.Hasher) error
-	logs       chan<- string
+	logger     *logger.Logger
 }
 
 type PacketProcessorCfg struct {
 	NumWorkers, BufSize int
 	FilterFunc          func(m *dave.M, h *blake3.Hasher) error
-	SocketReader        SocketReader
-	Logs                chan<- string
+	Socket              SocketReader
+	Logger              *logger.Logger
 }
 
 func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
@@ -45,18 +46,18 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 		resultChan: make(chan *Packet, 1000),
 		bpool:      &sync.Pool{New: func() any { return make([]byte, cfg.BufSize) }},
 		filterFunc: cfg.FilterFunc,
-		logs:       cfg.Logs,
+		logger:     cfg.Logger,
 	}
 	for i := 0; i < cfg.NumWorkers; i++ {
 		go pp.worker()
 	}
-	go func(socketReader SocketReader) {
+	go func(socket SocketReader) {
 		for {
 			buf := pp.bpool.Get().([]byte)
-			n, raddr, err := socketReader.ReadFromUDPAddrPort(buf)
+			n, raddr, err := socket.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-				pp.logs <- fmt.Sprintf("/pkt failed to read from socket: %s", err)
+				pp.logger.Error("failed to read from socket: %s", err)
 				continue
 			}
 			data := make([]byte, n)
@@ -64,11 +65,11 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 			pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
 			pp.workQueue <- &rawPacket{data, raddr}
 		}
-	}(cfg.SocketReader)
+	}(cfg.Socket)
 	return pp
 }
 
-func (pp *PacketProcessor) ResultChan() <-chan *Packet { return pp.resultChan }
+func (pp *PacketProcessor) Packets() <-chan *Packet { return pp.resultChan }
 
 func (pp *PacketProcessor) worker() {
 	h := blake3.New(32, nil)
@@ -77,7 +78,7 @@ func (pp *PacketProcessor) worker() {
 		if err == nil {
 			pp.resultChan <- packet
 		} else {
-			pp.logs <- fmt.Sprintf("/pkt failed to process packet: %s", err)
+			pp.logger.Error("failed to process packet: %s", err)
 		}
 	}
 }

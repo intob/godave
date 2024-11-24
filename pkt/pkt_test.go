@@ -67,15 +67,14 @@ func BenchmarkProcessor(b *testing.B) {
 		b.Error(err)
 	}
 	proc := NewPacketProcessor(&PacketProcessorCfg{
-		NumWorkers:   runtime.NumCPU(),
-		BufSize:      1424,
-		FilterFunc:   packetFilter,
-		SocketReader: &mockReader{pkt, netip.MustParseAddrPort("127.0.0.1:6102")},
+		NumWorkers: runtime.NumCPU(),
+		BufSize:    1424,
+		FilterFunc: packetFilter,
+		Socket:     &mockReader{pkt, netip.MustParseAddrPort("127.0.0.1:6102")},
 	})
-	packetChan := proc.ResultChan()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		<-packetChan
+		<-proc.Packets()
 	}
 }
 
