@@ -1,4 +1,4 @@
-package pktproc
+package pkt
 
 import (
 	"fmt"
@@ -29,25 +29,15 @@ type PacketProcessor struct {
 	resultChan chan *Packet
 	bpool      *sync.Pool
 	filterFunc func(m *dave.M, h *blake3.Hasher) error
+	logs       chan<- string
 }
 
 type PacketProcessorCfg struct {
 	NumWorkers, BufSize int
 	FilterFunc          func(m *dave.M, h *blake3.Hasher) error
 	SocketReader        SocketReader
+	Logs                chan<- string
 }
-
-func (pp *PacketProcessor) worker() {
-	h := blake3.New(32, nil)
-	for raw := range pp.workQueue {
-		packet, err := pp.processPacket(raw, h)
-		if err == nil {
-			pp.resultChan <- packet
-		}
-	}
-}
-
-func (pp *PacketProcessor) ResultChan() <-chan *Packet { return pp.resultChan }
 
 func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 	pp := &PacketProcessor{
@@ -55,6 +45,7 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 		resultChan: make(chan *Packet, 1000),
 		bpool:      &sync.Pool{New: func() any { return make([]byte, cfg.BufSize) }},
 		filterFunc: cfg.FilterFunc,
+		logs:       cfg.Logs,
 	}
 	for i := 0; i < cfg.NumWorkers; i++ {
 		go pp.worker()
@@ -65,9 +56,9 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 			n, raddr, err := socketReader.ReadFromUDPAddrPort(buf)
 			if err != nil {
 				pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
+				pp.logs <- fmt.Sprintf("/pkt failed to read from socket: %s", err)
 				continue
 			}
-			// TODO: use buf from pool directly if it performs better, as in current implementation
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
@@ -75,6 +66,20 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 		}
 	}(cfg.SocketReader)
 	return pp
+}
+
+func (pp *PacketProcessor) ResultChan() <-chan *Packet { return pp.resultChan }
+
+func (pp *PacketProcessor) worker() {
+	h := blake3.New(32, nil)
+	for raw := range pp.workQueue {
+		packet, err := pp.processPacket(raw, h)
+		if err == nil {
+			pp.resultChan <- packet
+		} else {
+			pp.logs <- fmt.Sprintf("/pkt failed to process packet: %s", err)
+		}
+	}
 }
 
 func (pp *PacketProcessor) processPacket(raw *rawPacket, h *blake3.Hasher) (*Packet, error) {

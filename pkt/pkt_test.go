@@ -1,4 +1,4 @@
-package pktproc
+package pkt
 
 import (
 	"crypto/ed25519"

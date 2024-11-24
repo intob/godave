@@ -20,7 +20,7 @@ import (
 
 	xxhash "github.com/cespare/xxhash/v2"
 	"github.com/intob/godave/dave"
-	"github.com/intob/godave/pktproc"
+	"github.com/intob/godave/pkt"
 	"github.com/intob/godave/pow"
 	"github.com/intob/godave/ringbuffer"
 	"google.golang.org/protobuf/proto"
@@ -131,13 +131,13 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	kill := make(chan struct{}, 1)
 	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
 	go writeBackup(backup, kill, done, cfg)
-	pktout := make(chan *pktproc.Packet, 100)
+	pktout := make(chan *pkt.Packet, 100)
 	go writePackets(udpc, pktout, cfg)
 	send := make(chan *dave.M)
 	recv := make(chan *Dat, 100)
 	appRecv := make(chan *Dat, 100)
 	npeer := &atomic.Int64{}
-	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, appRecv, cfg)
+	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg.Logs), pktout, backup, send, recv, appRecv, cfg)
 	return &Dave{recv: recv, send: send, kill: kill, done: done, npeer: npeer, ndat: ndat}, nil
 }
 
@@ -183,7 +183,7 @@ func (d *Dave) Put(dat *Dat) <-chan struct{} {
 	return done
 }
 
-func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64, pktin <-chan *pktproc.Packet, pktout chan<- *pktproc.Packet, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
+func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64, pktin <-chan *pkt.Packet, pktout chan<- *pkt.Packet, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
 	npeer.Store(int64(len(peers)))
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
@@ -230,7 +230,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				for i, p := range rps {
 					pds[i] = p.pd
 				}
-				pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: pk.AddrPort}
+				pktout <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: pk.AddrPort}
 				lg(cfg, LOGLEVEL_DEBUG, "/peer/reply_to_getpeer %s", pk.AddrPort)
 			case dave.Op_PUT: // STORE DAT
 				dat := &Dat{pk.Msg.DatKey, pk.Msg.Val, pk.Msg.Salt, pk.Msg.Work, pk.Msg.Sig, pow.Btt(pk.Msg.Time), pk.Msg.PubKey}
@@ -267,7 +267,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				shard, mapKey := keys(pk.Msg.PubKey, pk.Msg.DatKey)
 				dat, ok := dats[shard][mapKey]
 				if ok { // GOT DAT
-					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: pk.AddrPort}
+					pktout <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: pk.AddrPort}
 					lg(cfg, LOGLEVEL_DEBUG, "/dat/reply_to_get %s %x", pk.AddrPort, dat.Work)
 				}
 			}
@@ -277,11 +277,11 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				raddr := addrfrom(rp.pd)
 				dat := rnddat(dats[cshard])
 				if dat != nil {
-					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
+					pktout <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
 				}
 				dat, ok := ring.Read()
 				if ok {
-					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
+					pktout <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: raddr}
 				} else {
 					lg(cfg, LOGLEVEL_DEBUG, "/push nothing in ring buffer")
 				}
@@ -297,7 +297,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 					lg(cfg, LOGLEVEL_ERROR, "/peer/ping/drop %s, not seen for %s", addrfrom(p.pd), time.Since(p.seen))
 				} else if time.Since(p.peermsg) > PING { // SEND PING
 					raddr := addrfrom(p.pd)
-					pktout <- &pktproc.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: raddr}
+					pktout <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: raddr}
 					lg(cfg, LOGLEVEL_DEBUG, "/peer/ping/getpeer_msg sent to %s", raddr)
 				}
 			}
@@ -320,7 +320,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 	}
 }
 
-func writePackets(c *net.UDPConn, pkts <-chan *pktproc.Packet, cfg *Cfg) {
+func writePackets(c *net.UDPConn, pkts <-chan *pkt.Packet, cfg *Cfg) {
 	for pkt := range pkts {
 		bin, err := proto.Marshal(pkt.Msg)
 		if err != nil {
@@ -498,7 +498,7 @@ func readBackup(fname string) (uint64, []map[uint64]Dat, error) {
 	return ndat, dats, nil
 }
 
-func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pktproc.Packet, recv chan<- *Dat, cfg *Cfg) {
+func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum float64, pktout chan<- *pkt.Packet, recv chan<- *Dat, cfg *Cfg) {
 	if m == nil {
 		return
 	}
@@ -507,7 +507,7 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 		put(dats, &Dat{m.DatKey, m.Val, m.Salt, m.Work, m.Sig, pow.Btt(m.Time), m.PubKey})
 		for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 			addr := addrfrom(p.pd)
-			pktout <- &pktproc.Packet{Msg: m, AddrPort: addr}
+			pktout <- &pkt.Packet{Msg: m, AddrPort: addr}
 			lg(cfg, LOGLEVEL_DEBUG, "/send_for_app dat sent to %s", addr)
 		}
 	case dave.Op_GET:
@@ -522,7 +522,7 @@ func sendForApp(m *dave.M, dats []map[uint64]Dat, peerList []*peer, trustSum flo
 		if !found {
 			for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
 				addr := addrfrom(p.pd)
-				pktout <- &pktproc.Packet{Msg: m, AddrPort: addr}
+				pktout <- &pkt.Packet{Msg: m, AddrPort: addr}
 				lg(cfg, LOGLEVEL_DEBUG, "/send_for_app get sent to %s", addr)
 			}
 		}
@@ -551,12 +551,13 @@ func put(dats []map[uint64]Dat, d *Dat) (bool, error) {
 	return false, nil
 }
 
-func lstn(sock pktproc.SocketReader, cfg *Cfg) <-chan *pktproc.Packet {
-	proc := pktproc.NewPacketProcessor(&pktproc.PacketProcessorCfg{
+func lstn(sock pkt.SocketReader, logs chan<- string) <-chan *pkt.Packet {
+	proc := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
 		NumWorkers:   runtime.NumCPU(),
 		BufSize:      1424,
 		FilterFunc:   packetFilter,
 		SocketReader: sock,
+		Logs:         logs,
 	})
 	return proc.ResultChan()
 }
