@@ -420,12 +420,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64,
 				} else {
 					lg(cfg, LOGLEVEL_DEBUG, "/push nothing in ring buffer")
 				}
-				for {
-					cshard++
-					if len(dats[cshard]) > 0 {
-						break
-					}
-				}
+				cshard++ // overflows to 0
 			}
 		case <-pingTick.C: // PING & DROP PEERS
 			var dropped bool
