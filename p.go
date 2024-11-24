@@ -67,11 +67,11 @@ var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits 
 type LogLevel int
 
 type Dave struct {
-	recv       <-chan *Dat
-	send       chan<- *dave.M
-	kill, done chan struct{}
-	npeer      *atomic.Int32
-	appRecv    <-chan *Dat
+	recv        <-chan *Dat
+	send        chan<- *dave.M
+	kill, done  chan struct{}
+	npeer, ndat *atomic.Int64
+	appRecv     <-chan *Dat
 }
 
 type Cfg struct {
@@ -80,7 +80,7 @@ type Cfg struct {
 	ShardCap      int              // Shard capacity
 	BackupFname   string           // Dat table backup filename
 	LogLevel      LogLevel         // Log level
-	Log           chan<- string    // Log message output
+	Logs          chan<- string    // Log message output
 }
 
 type Dat struct {
@@ -125,7 +125,6 @@ func (h *datheap) Pop() interface{} {
 func (h *datheap) Peek() *pair { return (*h)[0] }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
-	tstart := time.Now()
 	lg(cfg, LOGLEVEL_ERROR, "/init cfg: %+v", *cfg)
 	bootstrap := make(map[uint64]*peer)
 	for _, e := range cfg.Edges {
@@ -139,24 +138,20 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
 	}
-	var ndat uint32
+	ndat := &atomic.Int64{}
 	if cfg.BackupFname != "" {
-		ndat, dats, err = readBackup(cfg.BackupFname)
+		var ndatFromBackup uint64
+		ndatFromBackup, dats, err = readBackup(cfg.BackupFname)
 		if err != nil {
 			lg(cfg, LOGLEVEL_ERROR, "/init failed to read backup file: %s", err)
 		}
-		lg(cfg, LOGLEVEL_ERROR, "/init read %d dats from file", ndat)
-		ndat, dats = pruneDats(dats, cfg.ShardCap)
+		lg(cfg, LOGLEVEL_ERROR, "/init read %d dats from file", ndatFromBackup)
+		dats = pruneDats(dats, cfg.ShardCap, ndat)
 		err = writeFreshBackup(dats, cfg.BackupFname)
 		if err != nil {
 			return nil, fmt.Errorf("failed to write fresh backup: %s", err)
 		}
 	}
-	if dats == nil {
-		dats = make([]map[uint64]Dat, 256)
-		lg(cfg, LOGLEVEL_ERROR, "/init created empty map")
-	}
-	lg(cfg, LOGLEVEL_ERROR, "/init pruned %d dats across %d shards, init took %s", ndat, len(dats), time.Since(tstart))
 	backup := make(chan *dave.M, 100)
 	kill := make(chan struct{}, 1)
 	done := make(chan struct{}, 1) // buffer allows writeBackup routine to end when backup disabled
@@ -166,9 +161,9 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	send := make(chan *dave.M)
 	recv := make(chan *Dat, 100)
 	appRecv := make(chan *Dat, 100)
-	npeer := &atomic.Int32{}
+	npeer := &atomic.Int64{}
 	go d(dats, bootstrap, ndat, npeer, lstn(udpc, cfg), pktout, backup, send, recv, appRecv, cfg)
-	return &Dave{recv: recv, send: send, kill: kill, done: done, npeer: npeer}, nil
+	return &Dave{recv: recv, send: send, kill: kill, done: done, npeer: npeer, ndat: ndat}, nil
 }
 
 func (d *Dave) Kill() <-chan struct{} {
@@ -176,13 +171,9 @@ func (d *Dave) Kill() <-chan struct{} {
 	return d.done
 }
 
-func (d *Dave) Recv() <-chan *Dat {
-	return d.appRecv
-}
-
-func (d *Dave) PeerCount() int32 {
-	return d.npeer.Load()
-}
+func (d *Dave) Recv() <-chan *Dat { return d.appRecv }
+func (d *Dave) PeerCount() int64  { return d.npeer.Load() }
+func (d *Dave) DatCount() int64   { return d.ndat.Load() }
 
 func (d *Dave) Get(pubKey ed25519.PublicKey, datKey []byte, timeout time.Duration) <-chan *Dat {
 	c := make(chan *Dat, 1)
@@ -208,7 +199,7 @@ func (d *Dave) Get(pubKey ed25519.PublicKey, datKey []byte, timeout time.Duratio
 	return c
 }
 
-func (d *Dave) Set(dat *Dat) <-chan struct{} {
+func (d *Dave) Put(dat *Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		m := &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}
@@ -327,8 +318,8 @@ func Btt(b []byte) time.Time {
 	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
 }
 
-func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic.Int32, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
-	npeer.Store(int32(len(peers)))
+func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat, npeer *atomic.Int64, pktin <-chan *pkt, pktout chan<- *pkt, backup chan<- *dave.M, send <-chan *dave.M, recv, appRecv chan<- *Dat, cfg *Cfg) {
+	npeer.Store(int64(len(peers)))
 	var peerList []*peer // sorted by trust score, updated during prune
 	var trustSum float64
 	epochTick := time.NewTicker(EPOCH)
@@ -392,7 +383,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 				default:
 				}
 				if novel {
-					ndat++
+					ndat.Add(1)
 				}
 				trust := peers[pkfp].trust
 				if trust < MAXTRUST {
@@ -417,7 +408,7 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 			}
 		case <-epochTick.C: // SEED
 			rp := rndpeer(peerList, trustSum)
-			if ndat > 0 && rp != nil {
+			if ndat.Load() > 0 && rp != nil {
 				raddr := addrfrom(rp.pd)
 				dat := rnddat(dats[cshard])
 				if dat != nil {
@@ -455,16 +446,16 @@ func d(dats []map[uint64]Dat, peers map[uint64]*peer, ndat uint32, npeer *atomic
 			}
 		case <-pruneTick.C: // PRUNE DATS & PEERS
 			tstart := time.Now()
-			ndat, dats = pruneDats(dats, cfg.ShardCap)
+			dats = pruneDats(dats, cfg.ShardCap, ndat)
 			trustSum, peerList, peers = prunePeers(peers)
-			lg(cfg, LOGLEVEL_ERROR, "/prune got %d peers, %d dats across %d shards, took %s", len(peerList), ndat, len(dats), time.Since(tstart))
+			lg(cfg, LOGLEVEL_ERROR, "/prune got %d peers, %d dats, took %s", len(peerList), ndat.Load(), time.Since(tstart))
 		case m := <-send: // SEND PACKET FOR APP
 			sendForApp(m, dats, peerList, trustSum, pktout, recv, cfg)
 			if cfg.BackupFname != "" && m.Op == dave.Op_PUT {
 				backup <- m
 			}
 		case <-statTick.C:
-			lg(cfg, LOGLEVEL_ERROR, "/stat got %d peers, %d dats", npeer.Load(), ndat)
+			lg(cfg, LOGLEVEL_ERROR, "/stat got %d peers, %d dats", npeer.Load(), ndat.Load())
 		}
 	}
 }
@@ -483,9 +474,9 @@ func writePackets(c *net.UDPConn, pkts <-chan *pkt, cfg *Cfg) {
 	}
 }
 
-func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
+func pruneDats(dats []map[uint64]Dat, cap int, ndat *atomic.Int64) []map[uint64]Dat {
+	var count int64
 	newdats := make([]map[uint64]Dat, len(dats))
-	var ndat uint32
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	jobs := make(chan int, len(dats))
@@ -505,7 +496,7 @@ func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 					}
 				}
 				shardMap := make(map[uint64]Dat, dh.Len())
-				var localCount uint32
+				var localCount int64
 				for dh.Len() > 0 {
 					pair := heap.Pop(dh).(*pair)
 					shardMap[pair.id] = pair.dat
@@ -513,7 +504,7 @@ func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 				}
 				newdats[shardid] = shardMap
 				mu.Lock()
-				ndat += localCount
+				count += localCount
 				mu.Unlock()
 			}
 		}()
@@ -523,7 +514,10 @@ func pruneDats(dats []map[uint64]Dat, cap int) (uint32, []map[uint64]Dat) {
 	}
 	close(jobs)
 	wg.Wait()
-	return ndat, newdats
+	if ndat != nil {
+		ndat.Store(count)
+	}
+	return newdats
 }
 
 func prunePeers(peers map[uint64]*peer) (float64, []*peer, map[uint64]*peer) {
@@ -594,7 +588,7 @@ func writeFreshBackup(dats []map[uint64]Dat, fname string) error {
 	return buf.Flush()
 }
 
-func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
+func readBackup(fname string) (uint64, []map[uint64]Dat, error) {
 	dats := make([]map[uint64]Dat, 256)
 	for i := range dats {
 		dats[i] = make(map[uint64]Dat)
@@ -611,7 +605,7 @@ func readBackup(fname string) (uint32, []map[uint64]Dat, error) {
 	}
 	size := info.Size()
 	var pos int64
-	var ndat uint32
+	var ndat uint64
 	lb := make([]byte, 2)
 	for pos < size {
 		n, err := f.Read(lb)
@@ -869,7 +863,7 @@ func nzerobit(key []byte) uint8 {
 func lg(cfg *Cfg, lvl LogLevel, msg string, args ...any) {
 	if lvl <= cfg.LogLevel {
 		select {
-		case cfg.Log <- fmt.Sprintf(msg, args...):
+		case cfg.Logs <- fmt.Sprintf(msg, args...):
 		default:
 		}
 	}

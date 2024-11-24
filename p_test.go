@@ -32,15 +32,15 @@ func TestPruneDats(t *testing.T) {
 			name: "Single shard under capacity",
 			input: []map[uint64]Dat{
 				{
-					1: Dat{Time: makeTime(1)},
-					2: Dat{Time: makeTime(2)},
+					1: Dat{Time: makeTime(1), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					2: Dat{Time: makeTime(2), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
 				},
 			},
 			cap: 3,
 			want: []map[uint64]Dat{
 				{
-					1: Dat{Time: makeTime(1)},
-					2: Dat{Time: makeTime(2)},
+					1: Dat{Time: makeTime(1), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					2: Dat{Time: makeTime(2), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
 				},
 			},
 		},
@@ -48,17 +48,17 @@ func TestPruneDats(t *testing.T) {
 			name: "Single shard over capacity",
 			input: []map[uint64]Dat{
 				{
-					1: Dat{Time: makeTime(1)},
-					2: Dat{Time: makeTime(2)},
-					3: Dat{Time: makeTime(3)},
-					4: Dat{Time: makeTime(4)},
+					1: Dat{Time: makeTime(1), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					2: Dat{Time: makeTime(2), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					3: Dat{Time: makeTime(3), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					4: Dat{Time: makeTime(4), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
 				},
 			},
 			cap: 2,
 			want: []map[uint64]Dat{
 				{
-					3: Dat{Time: makeTime(3)},
-					4: Dat{Time: makeTime(4)},
+					3: Dat{Time: makeTime(3), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
+					4: Dat{Time: makeTime(4), Work: []byte{0, 0, 0, 0, 0, 0, 0, 0}},
 				},
 			},
 		},
@@ -84,7 +84,7 @@ func TestPruneDats(t *testing.T) {
 				fullWant[i] = make(map[uint64]Dat)
 			}
 
-			_, got := pruneDats(fullInput, tt.cap)
+			got := pruneDats(fullInput, tt.cap, nil)
 
 			if !reflect.DeepEqual(got, fullWant) {
 				t.Errorf("pruneDats() = %v, want %v", got, fullWant)
