@@ -33,7 +33,11 @@ func (l *Logger) Log(level LogLevel, msg string, args ...any) {
 	if level > l.level {
 		return
 	}
-	l.output <- fmt.Sprintf(l.prefix+msg, args...)
+	select {
+	case l.output <- fmt.Sprintf(l.prefix+msg, args...):
+	default:
+	}
+
 }
 
 func (l *Logger) Error(msg string, args ...any) {

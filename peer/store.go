@@ -5,7 +5,6 @@ import (
 	mrand "math/rand"
 	"net/netip"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
@@ -17,95 +16,111 @@ type StoreCfg struct {
 	Probe      int
 	MaxTrust   float64
 	PruneEvery time.Duration
+	DropAfter  time.Duration
+	Ping       time.Duration
 	Logger     *logger.Logger
+}
+
+type Store struct {
+	table              map[uint64]*Peer
+	list               []*Peer // sorted by trust descending
+	trustSum, maxTrust float64
+	probe              int
+	dropAfter          time.Duration
+	logger             *logger.Logger
+	ping               time.Duration
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
-		table:  make(map[uint64]*Peer),
-		list:   make([]*Peer, 0),
-		probe:  cfg.Probe,
-		logger: cfg.Logger,
+		table:     make(map[uint64]*Peer),
+		list:      make([]*Peer, 0),
+		probe:     cfg.Probe,
+		maxTrust:  cfg.MaxTrust,
+		dropAfter: cfg.DropAfter,
+		ping:      cfg.Ping,
+		logger:    cfg.Logger,
 	}
-	go func() {
-		tick := time.NewTicker(cfg.PruneEvery)
-		for range tick.C {
-			s.prune()
-		}
-	}()
 	return s
 }
 
-type Store struct {
-	table    map[uint64]*Peer
-	mu       sync.RWMutex
-	list     []*Peer // sorted by trust descending
-	trustSum float64
-	probe    int
-	logger   *logger.Logger
-}
-
 func (s *Store) Count() int {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return len(s.table)
+	return len(s.list)
 }
 
 // Adds or updates the peer
-func (s *Store) Seen(addrPort netip.AddrPort) *Peer {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) Seen(addrPort netip.AddrPort) uint64 {
 	fp := fingerprint(addrPort)
 	peer, exists := s.table[fp]
 	if exists {
 		peer.seen = time.Now()
-		return peer
+		return peer.fp
 	}
-	s.table[fp] = &Peer{
+	peer = &Peer{
 		fp:       fp,
 		addrPort: addrPort,
-		pd:       pdFrom(addrPort),
 		added:    time.Now(),
+		seen:     time.Now(), // otherwise, peer is dropped
 	}
-	return s.table[fp]
+	s.table[fp] = peer
+	s.list = append(s.list, peer)
+	s.logger.Error("added peer %s", peer)
+	return peer.fp
 }
 
 func (s *Store) AddEdge(addrPort netip.AddrPort) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	fp := fingerprint(addrPort)
-	s.table[fp] = &Peer{
+	peer := &Peer{
 		edge:     true,
 		fp:       fp,
 		addrPort: addrPort,
-		pd:       pdFrom(addrPort),
 		added:    time.Now(),
+		seen:     time.Now(),
 	}
+	s.table[peer.fp] = peer
+	s.list = append(s.list, peer)
 }
 
-func (s *Store) AddPd(pd *dave.Pd) (*Peer, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *Store) AddPd(pd *dave.Pd) {
 	addrPort := addrPortFrom(pd)
 	fp := fingerprint(addrPort)
-	peer, exists := s.table[fp]
+	_, exists := s.table[fp]
 	if exists {
-		return peer, false
+		return
 	}
-	s.table[fp] = &Peer{
+	peer := &Peer{
 		fp:       fp,
 		addrPort: addrPort,
-		pd:       pd,
 		added:    time.Now(),
+		seen:     time.Now(),
 	}
-	return s.table[fp], true
+	s.table[fp] = peer
+	s.list = append(s.list, peer)
+	s.logger.Error("peer added from gossip %s", peer)
 }
 
-func (s *Store) Drop(peer *Peer) {
-	s.mu.Lock()
-	delete(s.table, peer.fp)
-	s.mu.Unlock()
-	s.prune()
+func (s *Store) AddTrust(fp uint64, delta float64) {
+	peer, exists := s.table[fp]
+	if !exists {
+		return
+	}
+	peer.trust += delta
+	if peer.trust > s.maxTrust {
+		peer.trust = s.maxTrust
+	}
+}
+
+// returns true if message is no sooner than expected
+func (s *Store) IsPeerMessageExpected(fp uint64) bool {
+	peer, exists := s.table[fp]
+	if !exists {
+		return false
+	}
+	if time.Since(peer.lastPeerMsgReceived) < s.ping-10*time.Millisecond {
+		return false
+	}
+	peer.lastPeerMsgReceived = time.Now()
+	return true
 }
 
 func (s *Store) List() []*Peer {
@@ -117,7 +132,8 @@ func (s *Store) RandPeer() *Peer {
 		return nil
 	}
 	if mrand.Intn(s.probe) == 0 {
-		return s.list[mrand.Intn(len(s.list))]
+		peer := s.list[mrand.Intn(len(s.list))]
+		return peer
 	}
 	r := mrand.Float64() * s.trustSum
 	for _, peer := range s.list {
@@ -129,19 +145,19 @@ func (s *Store) RandPeer() *Peer {
 	return nil
 }
 
-func (s *Store) RandPeers(limit int, exclude *Peer, knownFor time.Duration) []*Peer {
+func (s *Store) RandPeers(limit int, excludeFp uint64, knownFor time.Duration) []Peer {
 	if len(s.list) == 0 {
 		return nil
 	}
-	selected := make([]*Peer, 0, limit)
+	selected := make([]Peer, 0, limit)
 	r := mrand.Float64() * s.trustSum
 	for _, peer := range s.list {
 		r -= peer.trust
-		if peer.fp == exclude.fp || time.Since(peer.added) < knownFor {
+		if peer.fp == excludeFp || time.Since(peer.added) < knownFor || time.Since(peer.seen) > s.dropAfter {
 			continue
 		}
 		if s.trustSum == 0 || r <= 0 || mrand.Intn(s.probe) == 0 {
-			selected = append(selected, peer)
+			selected = append(selected, *peer)
 			if len(selected) == limit {
 				return selected
 			}
@@ -150,30 +166,44 @@ func (s *Store) RandPeers(limit int, exclude *Peer, knownFor time.Duration) []*P
 	return selected
 }
 
-func (s *Store) prune() {
-	start := time.Now()
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	newTable := make(map[uint64]*Peer, len(s.table))
-	newList := make([]*Peer, 0, len(s.table))
+// drops inactive peers
+func (s *Store) Prune() {
+	activeCount := 0
+	for _, p := range s.table {
+		if time.Since(p.seen) < s.dropAfter || p.edge {
+			activeCount++
+		}
+	}
+	if activeCount == len(s.table) {
+		s.logger.Error("pruning skipped, got %d peers", activeCount)
+		return
+	}
+	newTable := make(map[uint64]*Peer, activeCount)
+	newList := make([]*Peer, 0, activeCount)
 	var trustSum float64
 	for k, p := range s.table {
-		newTable[k] = p
-		newList = append(newList, p)
-		trustSum += p.trust
+		if time.Since(p.seen) < s.dropAfter || p.edge {
+			newTable[k] = p
+			newList = append(newList, p)
+			trustSum += p.trust
+		} else {
+			s.logger.Error("dropped %s", p.addrPort)
+		}
 	}
-	sort.Slice(newList, func(i, j int) bool { return newList[i].trust > newList[j].trust })
+	sort.Slice(newList, func(i, j int) bool {
+		return newList[i].trust > newList[j].trust
+	})
 	s.table = newTable
 	s.list = newList
 	s.trustSum = trustSum
-	s.logger.Error("pruned %d peers in %s", len(newList), time.Since(start))
+	s.logger.Error("pruned %d peers", len(s.list))
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
 	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(pd.Ip)), uint16(pd.Port))
 }
 
-func pdFrom(addrport netip.AddrPort) *dave.Pd {
+func PdFrom(addrport netip.AddrPort) *dave.Pd {
 	ip := addrport.Addr().As16()
 	return &dave.Pd{Ip: ip[:], Port: uint32(addrport.Port())}
 }

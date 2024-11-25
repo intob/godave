@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	EPOCH          = 200 * time.Microsecond
+	EPOCH          = time.Millisecond
 	BUF_SIZE       = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
 	FANOUT         = 5                // Number of peers randomly selected when selecting more than one.
 	PROBE          = 8                // Inverse of probability that an untrusted peer is randomly selected.
@@ -41,9 +41,9 @@ type LogLevel int
 
 type Dave struct {
 	Store      *store.Store
-	Peers      *peer.Store
 	kill, done chan struct{}
 	packetOut  chan *pkt.Packet
+	send       chan *store.Dat
 	logger     *logger.Logger
 }
 
@@ -61,15 +61,10 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, err
 	}
 	dave := &Dave{
-		Peers: peer.NewStore(&peer.StoreCfg{
-			Probe:      PROBE,
-			MaxTrust:   MAX_TRUST,
-			PruneEvery: PRUNE,
-			Logger:     cfg.Logger.WithPrefix("/peer_store"),
-		}),
-		packetOut: make(chan *pkt.Packet, 100),
 		kill:      make(chan struct{}, 1),
 		done:      make(chan struct{}, 1),
+		packetOut: make(chan *pkt.Packet, 100),
+		send:      make(chan *store.Dat),
 		logger:    cfg.Logger.WithPrefix("/main"),
 	}
 	dave.Store, err = store.New(&store.StoreCfg{
@@ -83,8 +78,15 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init store: %w", err)
 	}
+	peers := peer.NewStore(&peer.StoreCfg{
+		Probe:      PROBE,
+		MaxTrust:   MAX_TRUST,
+		PruneEvery: PRUNE,
+		DropAfter:  DROP,
+		Logger:     cfg.Logger.WithPrefix("/peer_store"),
+	})
 	for _, edge := range cfg.Edges {
-		dave.Peers.AddEdge(edge)
+		peers.AddEdge(edge)
 	}
 	incoming := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
 		NumWorkers: runtime.NumCPU(),
@@ -93,8 +95,8 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		Socket:     socket,
 		Logger:     cfg.Logger.WithPrefix("/packet_proc"),
 	})
-	go dave.run(incoming.Packets(), dave.packetOut)
-	go dave.writePackets(socket, dave.packetOut)
+	go dave.run(peers, incoming.Packets())
+	go dave.writePackets(socket)
 	return dave, nil
 }
 
@@ -103,66 +105,46 @@ func (d *Dave) Kill() <-chan struct{} {
 	return d.done
 }
 
-func (d *Dave) Put(dat *store.Dat) <-chan struct{} {
+func (d *Dave) Put(dat store.Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
-		// TODO: refactor peer table and use here
-		// send messages to d.packetOut
-		//d.send <- &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: pow.Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}
 		defer close(done)
+		_, err := d.Store.Put(&dat)
+		if err != nil {
+			return
+		}
+		d.send <- &dat
 	}()
 	return done
 }
 
-/*
-func (d *Dave) sendForApp(m *dave.M, peerList []*peer, trustSum float64, pktout chan<- *pkt.Packet, cfg *Cfg) {
-	if m == nil {
-		return
-	}
-	switch m.Op {
-	case dave.Op_PUT:
-		d.Store.Put(&store.Dat{Key: m.DatKey, Val: m.Val, Salt: m.Salt, Work: m.Work, Sig: m.Sig, Time: pow.Btt(m.Time), PubKey: m.PubKey})
-		for _, p := range rndpeers(peerList, trustSum, FANOUT, 0, 0) {
-			addr := addrfrom(p.pd)
-			pktout <- &pkt.Packet{Msg: m, AddrPort: addr}
-			lg(cfg, LOGLEVEL_DEBUG, "/send_for_app dat sent to %s", addr)
-		}
-	default:
-		lg(cfg, LOGLEVEL_ERROR, "/send_for_app unsupported operation: %s", m.Op)
-	}
-}
-*/
-
-func (d *Dave) run(packetIn <-chan *pkt.Packet, packetOut chan<- *pkt.Packet) {
-	epochTick := time.NewTicker(EPOCH)
+func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 	pingTick := time.NewTicker(PING)
+	epochTick := time.NewTicker(EPOCH)
 	ring := ringbuffer.NewRingBuffer[*store.Dat](RINGSIZE)
 	var cshard uint8
 	for {
 		select {
 		case packet := <-packetIn: // HANDLE INCOMING PACKET
-			peer := d.Peers.Seen(packet.AddrPort)
+			remoteFp := peers.Seen(packet.AddrPort)
 			switch packet.Msg.Op {
 			case dave.Op_PEER: // STORE PEERS
-				if time.Since(peer.LastPeerMsg()) >= PING-10*time.Millisecond {
-					peer.GotPeerMsg()
+				d.logger.Debug("got PEER message from %d", remoteFp)
+				if peers.IsPeerMessageExpected(remoteFp) {
 					for _, pd := range packet.Msg.Pds {
-						newPeer, added := d.Peers.AddPd(pd)
-						if added {
-							d.logger.Error("peer added from gossip %s from %s", newPeer, peer)
-						}
+						peers.AddPd(pd)
 					}
 				} else {
 					d.logger.Error("unexpected PEER message from %s", packet.AddrPort)
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randPeers := d.Peers.RandPeers(NPEER_LIMIT, peer, SHARE_DELAY)
+				randPeers := peers.RandPeers(NPEER_LIMIT, remoteFp, SHARE_DELAY)
 				pds := make([]*dave.Pd, len(randPeers))
 				for i, p := range randPeers {
-					pds[i] = p.Pd()
+					pds[i] = peer.PdFrom(p.AddrPort())
 				}
-				packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: packet.AddrPort}
-				d.logger.Debug("replied to GETPEER from %s", packet.AddrPort)
+				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: packet.AddrPort}
+				d.logger.Debug("replied to GETPEER from %d", remoteFp)
 			case dave.Op_PUT: // STORE DAT
 				dat := &store.Dat{
 					Key:    packet.Msg.DatKey,
@@ -179,42 +161,53 @@ func (d *Dave) run(packetIn <-chan *pkt.Packet, packetOut chan<- *pkt.Packet) {
 					continue
 				}
 				if novel {
-					peer.AddTrust(store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)), MAX_TRUST)
+					peers.AddTrust(remoteFp, store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)))
 				}
 				ring.Write(dat) // even if not novel, if there is no error from call to Store.Put, it's a valid update
 				d.logger.Debug("stored %x %s", packet.Msg.Work, packet.AddrPort)
 			}
 		case <-epochTick.C: // SEED
-			randPeer := d.Peers.RandPeer()
-			if randPeer != nil {
-				dat := d.Store.Rand(cshard)
-				if dat != nil {
-					packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
-				}
-				dat, ok := ring.Read()
-				if ok {
-					packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
-				}
-				cshard++ // overflows to 0
+			randPeer := peers.RandPeer()
+			if randPeer == nil {
+				continue
 			}
-		case <-pingTick.C: // PING & DROP PEERS
-			for _, p := range d.Peers.List() {
-				if !p.Edge() && time.Since(p.LastSeen()) > DROP {
-					d.logger.Error("dropped %s, not seen for %s", p, time.Since(p.LastSeen()))
-					d.Peers.Drop(p)
-					continue
+			dat := d.Store.Rand(cshard)
+			if dat != nil {
+				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
+			}
+			dat, ok := ring.Read()
+			if ok {
+				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
+			}
+			cshard++ // overflows to 0
+		case <-pingTick.C:
+			peers.Prune()
+			for _, p := range peers.List() {
+				if time.Since(p.LastPeerMsgReceived()) > PING {
+					d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: p.AddrPort()}
+					d.logger.Debug("ping sent to %s", p.AddrPort())
 				}
-				if time.Since(p.LastPeerMsg()) > PING { // Send ping
-					packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: p.AddrPort()}
-					d.logger.Debug("ping sent to %s", p)
+			}
+		case dat := <-d.send:
+			sentTo := make(map[uint64]struct{})
+			targetPeers := min(FANOUT, peers.Count())
+			for len(sentTo) < targetPeers {
+				randPeers := peers.RandPeers(FANOUT, 0, 0)
+				for _, peer := range randPeers {
+					_, sentAlready := sentTo[peer.Fp()]
+					if !sentAlready {
+						d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: pow.Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: peer.AddrPort()}
+						sentTo[peer.Fp()] = struct{}{}
+						d.logger.Error("sent to %s", peer)
+					}
 				}
 			}
 		}
 	}
 }
 
-func (d *Dave) writePackets(socket *net.UDPConn, packets <-chan *pkt.Packet) {
-	for pkt := range packets {
+func (d *Dave) writePackets(socket *net.UDPConn) {
+	for pkt := range d.packetOut {
 		bin, err := proto.Marshal(pkt.Msg)
 		if err != nil {
 			d.logger.Error("dispatch error: %s", err)
