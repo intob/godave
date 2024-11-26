@@ -87,7 +87,3 @@ Edge nodes serve as bootstrap peers with special properties:
 - Configurable pruning intervals
 - Ring buffer for recent data
 - Trust-based resource allocation
-
-Citations:
-[1] https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/12516202/cf1409e3-8677-4b3a-8d56-f2701d171abb/paste.txt
-[2] https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/12516202/0668448f-2209-4403-b5a5-84399198f0df/paste-2.txt
