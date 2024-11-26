@@ -153,7 +153,9 @@ func (s *Store) RandPeers(limit int, excludeFp uint64, knownFor time.Duration) [
 	r := mrand.Float64() * s.trustSum
 	for _, peer := range s.list {
 		r -= peer.trust
-		if peer.fp == excludeFp || time.Since(peer.added) < knownFor || time.Since(peer.seen) > s.dropAfter {
+		if peer.fp == excludeFp ||
+			time.Since(peer.added) < knownFor ||
+			time.Since(peer.seen) > s.dropAfter {
 			continue
 		}
 		if s.trustSum == 0 || r <= 0 || mrand.Intn(s.probe) == 0 {

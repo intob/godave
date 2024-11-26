@@ -66,3 +66,40 @@ func TestConcurrentPut(t *testing.T) {
 		t.FailNow()
 	}
 }
+
+func TestList(t *testing.T) {
+	store, err := New(&StoreCfg{
+		ShardCap:   100000,
+		PruneEvery: 5 * time.Second,
+		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+	})
+	if err != nil {
+		t.Error(err)
+	}
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Error(err)
+	}
+	wg := sync.WaitGroup{}
+	for i := 0; i < NUM_ROUTINE; i++ {
+		wg.Add(1)
+		go func(routine int) {
+			defer wg.Done()
+			for j := 0; j < NUM_PUT; j++ {
+				store.Put(&Dat{
+					Key:    []byte(fmt.Sprintf("routine_%d_test_%d", routine, j)),
+					Val:    []byte("test"),
+					Time:   time.Now(),
+					PubKey: pubKey,
+				})
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	dats := store.List(pubKey, []byte(fmt.Sprintf("routine_%d", NUM_ROUTINE-1)))
+
+	if len(dats) != NUM_PUT {
+		t.FailNow()
+	}
+}

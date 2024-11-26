@@ -89,7 +89,7 @@ func New(cfg *StoreCfg) (*Store, error) {
 		shardCap:       cfg.ShardCap,
 		count:          atomic.Uint32{},
 		backupFilename: cfg.BackupFilename,
-		backup:         make(chan *Dat, 100),
+		backup:         make(chan *Dat, 1000),
 		logger:         cfg.Logger,
 		kill:           cfg.Kill,
 		done:           cfg.Done,
@@ -117,8 +117,8 @@ func New(cfg *StoreCfg) (*Store, error) {
 	if err != nil {
 		s.logger.Error("error reading backup: %s", err)
 	}
-	s.prune()
-	s.logger.Error("read %d dats from backup", s.count.Load())
+	s.prune() // TODO: prune frequently while reading backup
+	s.logger.Error("read %d dats from %s", s.count.Load(), s.backupFilename)
 	err = s.writeFreshBackup()
 	if err != nil {
 		return nil, err
@@ -164,16 +164,51 @@ func (s *Store) Put(dat *Dat) (bool, error) {
 	return false, nil
 }
 
-func (s *Store) Get(pubKey ed25519.PublicKey, datKey []byte) (*Dat, bool) {
+func (s *Store) Get(pubKey ed25519.PublicKey, datKey []byte) (Dat, bool) {
 	shardIndex, key := Keys(pubKey, datKey)
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	dat, ok := shard.table[key]
-	if !ok {
-		return nil, false
+	return dat, ok
+}
+
+func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix []byte) []Dat {
+	resultChan := make(chan Dat, 1)
+	jobs := make(chan int, len(s.shards))
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for shardIndex := range jobs {
+				shard := s.shards[shardIndex]
+				shard.mu.Lock()
+				for _, dat := range shard.table {
+					if !bytes.Equal(dat.PubKey, pubKey) {
+						continue
+					}
+					if !bytes.HasPrefix(dat.Key, datKeyPrefix) {
+						continue
+					}
+					resultChan <- dat
+				}
+			}
+		}()
 	}
-	return &dat, true
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+	for j := 0; j < len(s.shards); j++ {
+		jobs <- j
+	}
+	close(jobs)
+	results := make([]Dat, 0, 100)
+	for result := range resultChan {
+		results = append(results, result)
+	}
+	return results
 }
 
 func Keys(pubKey ed25519.PublicKey, datKey []byte) (uint8, uint64) {
@@ -219,9 +254,41 @@ func (s *Store) readBackup() error {
 		if err != nil {
 			continue
 		}
-		s.Put(&Dat{Key: m.DatKey, Val: m.Val, Time: pow.Btt(m.Time), Salt: m.Salt, Work: m.Work, Sig: m.Sig, PubKey: m.PubKey})
+		s.putFromBackup(&Dat{
+			Key:    m.DatKey,
+			Val:    m.Val,
+			Time:   pow.Btt(m.Time),
+			Salt:   m.Salt,
+			Work:   m.Work,
+			Sig:    m.Sig,
+			PubKey: m.PubKey,
+		})
 	}
 	return nil
+}
+
+// Similar to Put but does not send to backup buffer
+func (s *Store) putFromBackup(dat *Dat) {
+	shardIndex, key := Keys(dat.PubKey, dat.Key)
+	shard := s.shards[shardIndex]
+	shard.mu.Lock()
+	defer shard.mu.Unlock()
+	current, exists := shard.table[key]
+	if !exists {
+		shard.table[key] = *dat
+		s.count.Add(1)
+		return
+	}
+	if !current.PubKey.Equal(dat.PubKey) {
+		return
+	}
+	if current.Time.After(dat.Time) {
+		return
+	}
+	if current.Time == dat.Time && bytes.Equal(current.Val, dat.Val) {
+		return
+	}
+	shard.table[key] = *dat
 }
 
 // Recreate backup after pruning
