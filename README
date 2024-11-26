@@ -1,102 +1,93 @@
- ____                      
-|  _ \  __ ___   _____  
-| | | |/ _` \ \ / / _ \ 
-| |_| | (_| |\ V /  __/
-|____/ \__,_| \_/ \___|
+# Dave - Distributed Key-Value Store
 
-Dave is a distributed key-value store. This is a thin layer over UDP, with many possible decentralised applications.
+Dave is a decentralized key-value store built on UDP, designed for efficient data distribution and storage prioritization using proof-of-work.
 
-Packets up to 1424 bytes in length are continuously distributed at random. We call these packets "dats".
+## Core Features
 
-Storage is prioritised according to the age and difficulty of the proof-of-work. We call this "mass".
+- Distributed key-value storage over UDP
+- Proof-of-work based data prioritization
+- Trust-based peer selection
+- Configurable sharding for concurrent processing
+- Automatic peer discovery and management
+- Data backup and recovery
 
-A remote peer earns trust when a new or updated dat is received. The amount of trust earned is equal to the mass of the dat. Trust is used to modify the probability of a peer being randomly selected for a small subset of operations, such as seeding. Trust values are currently not gossiped, as this creates a complex attack vector.
+## Architecture
 
+### Network Protocol
 
+- **Maximum Packet Size**: 1424 bytes to avoid fragmentation[1]
+- **Transport**: UDP with protobuf serialization
+- **Peer Management**: Dynamic peer discovery with trust scoring
+- **Data Distribution**: Random push model for anonymity
 
-1.      Configurable Settings
+### Storage System
 
-UdpLstnAddr     *net.UDPAddr        Listening address:port
-Edges           []netip.AddrPort    Bootstrap peers
-Epoch           time.Duration       Base cycle period, lower runs faster, using more bandwidth
-Prune           int                 Interval between refreshing dat & peer maps
-ShardCap        int                 Shard capacity (number of dats per shard/difficulty level)
-Log             chan<- []byte       Log message output
-LogLvl          LogLvl              Log level
-BackupFname     string              Dat table backup filename
+- **Sharding**: Concurrent processing with configurable shard capacity[2]
+- **Data Prioritization**: Mass-based storage prioritization
+- **Mass Calculation**: `Mass = Difficulty * (1 / Age_Milliseconds)`
+- **Backup**: Automatic data persistence with configurable backup files
 
+## Configuration
 
+```go
+type Cfg struct {
+    PrivateKey      ed25519.PrivateKey
+    UdpListenAddr   *net.UDPAddr
+    Edges           []netip.AddrPort
+    ShardCap        int
+    BackupFilename  string
+    Logger          *logger.Logger
+}
+```
 
-2.      Message Operation Codes
+## Protocol Operations
 
-GETPEER     Packet containing only the op-code. Remote should reply with NPEER random peer descriptors.
-PEER        Packet containing NPEER peer descriptors.
-PUT         Packet containing a key, value, time, proof-of-work, salt, signature, and public key.
-GET         Packet containing the work hash, remote should reply with a message of op-code DAT, if available.
+- **PING/PONG**: Peer liveness and discovery
+- **PUT**: Store data with proof-of-work
+- **GET**: Retrieve stored data
 
+## Trust System
 
+- Trust earned based on valid data contributions
+- Maximum trust cap for fair resource distribution
+- Trust influences peer selection probability
+- No trust gossip to prevent attack vectors
 
-3.      Binary Serialisation
+## Data Distribution
 
-A message is serialized into binary using protobuf.
+- Random push model for sender anonymity
+- Recent data prioritization using ring buffer
+- Configurable fanout for data propagation
+- Edge peers for network bootstrapping
 
-Transpiling Protobuf Spec for Go:
-#!/bin/bash
-protoc --go_out=. dave.proto
+## Pruning and Maintenance
 
-FIELD       DESCRIPTION                                 BYTE LENGTH
+- Periodic pruning of inactive peers
+- Mass-based data retention
+- Concurrent shard processing
+- Automatic backup management
 
-OP          Operation code.                             1
-PEERS       List of peers.                              20*NPEER
-VAL         The data.                                   0 | <= 1288
-TIME        Little-endian unix milliseconds.            0 | 8
-SALT        Random bytes used to solve WORK.            0 | 32
-WORK        BLAKE2B256(SALT, BLAKE2B256(VAL, TIME)).    0 | 32
-SIG         Ed25519 signature of work.                  0 | 64
-PUBKEY      Ed25519 public key.                         0 | 32
+## Security Features
 
+- Ed25519 signatures for data authenticity
+- Proof-of-work for spam prevention
+- Trust-based peer selection
+- Sender anonymity through random push
 
+## Edge Nodes
 
-4.      Peer Discovery & Liveness
+Edge nodes serve as bootstrap peers with special properties:
+- Permanent retention in peer table
+- Immunity to normal pruning rules
+- Online/offline state tracking
 
-The protocol ensures a cohesive network by combining liveness and peer discovery into a single pair of messages (GETPEER & PEER). A node may reply to a GETPEER message with a PEER message with up to NPEER peer descriptors.
+## Performance Considerations
 
+- Concurrent shard processing
+- Configurable pruning intervals
+- Ring buffer for recent data
+- Trust-based resource allocation
 
-
-5.      Mass
-
-MASS = DIFFICULTY * (1 / AGE_MILLISECONDS)
-
-Where DIFFICULTY is the number of leading zero bytes in WORK, amd AGE_MILLISECONDS is calculated from message TIME and current time.
-
-
-
-6.      Replacement by Mass
-
-Every PRUNE EPOCH, a user defined (ShardCap) number of most massive dats per shard are kept, and the remaining dropped. In this way, mass may be thought of as a property that decays over time.
-
-
-
-7.      Sharding
-
-The data structure used to store dats is a [][uint64]. The first dimension is called the shard. Sharding is done to make pruning the map more efficient, as shards can be processed concurrently. The keys are computed by hashing the key with xxHash. The shard is derived by right-shifting the key's hash 56 bits.
-
-
-
-8.      Random Push 
-
-Every EPOCH, each node sends one random dat to one random peer, excluding edges. This ensures reliable distribution and sender anonymitiy.
-
-Propagating dats in this way ensures that an adversary is unable to create a timing attack to discern the source of a dat, even with a broad view of network traffic.
-
-
-
-9.     Random Push of Recent Dat
-
-Every EPOCH, each node sends one recent dat to one random peer. The dat is read from a ring buffer. The ring buffer is written to when a novel or updated dat is received. This ensures timely dissemination of data, even for large datasets.
-
-
-
-10.     Edges
-
-An edge is an ip:port address used to bootstrap to when starting. This entry will not be removed from the peer table, even if the remote becomes unreachable.
+Citations:
+[1] https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/12516202/cf1409e3-8677-4b3a-8d56-f2701d171abb/paste.txt
+[2] https://ppl-ai-file-upload.s3.amazonaws.com/web/direct-files/12516202/0668448f-2209-4403-b5a5-84399198f0df/paste-2.txt
