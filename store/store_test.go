@@ -96,9 +96,7 @@ func TestList(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
 	dats := store.List(pubKey, []byte(fmt.Sprintf("routine_%d", NUM_ROUTINE-1)))
-
 	if len(dats) != NUM_PUT {
 		t.FailNow()
 	}

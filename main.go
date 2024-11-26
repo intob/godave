@@ -23,15 +23,16 @@ import (
 const (
 	EPOCH          = time.Millisecond
 	BUF_SIZE       = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT         = 5                // Number of peers randomly selected when selecting more than one.
-	PROBE          = 8                // Inverse of probability that an untrusted peer is randomly selected.
-	NPEER_LIMIT    = 2                // Maximum number of peer descriptors in a PEER message.
+	FANOUT         = 5                // Number of peers randomly selected when sending new dats.
+	PROBE          = 12               // Inverse of probability that a peer is selected regardless of trust.
+	NPEER_LIMIT    = 3                // Maximum number of peer descriptors in a PEER message.
 	MIN_WORK       = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	MAX_TRUST      = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
 	PING           = 8 * time.Second  // Time until peers are pinged with a GETPEER message.
 	DROP           = 16 * time.Second // Time until silent peers are dropped from the peer table.
-	SHARE_DELAY    = 20 * time.Second // Time until new peers are shared. Must be greater than DROP.
-	PRUNE          = 10 * time.Second // Period between pruning dats & peers.
+	SHARE_DELAY    = 2 * DROP         // Time until new peers are shared. Must be greater than DROP.
+	PRUNE_DATS     = 20 * time.Second // Period between pruning dats.
+	PRUNE_PEERS    = PING             // Period between pruning peers.
 	RINGSIZE       = 1000             // Number of dats to store in ring buffer.
 	LOGLEVEL_ERROR = LogLevel(0)      // Base log level, for errors & status.
 	LOGLEVEL_DEBUG = LogLevel(1)      // Debugging log level.
@@ -48,11 +49,11 @@ type Dave struct {
 }
 
 type Cfg struct {
-	UdpListenAddr *net.UDPAddr
-	Edges         []netip.AddrPort // Bootstrap peers
-	ShardCap      int
-	BackupFname   string
-	Logger        *logger.Logger
+	UdpListenAddr  *net.UDPAddr
+	Edges          []netip.AddrPort // Bootstrap peers
+	ShardCap       int
+	BackupFilename string
+	Logger         *logger.Logger
 }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
@@ -65,13 +66,13 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		done:      make(chan struct{}, 1),
 		packetOut: make(chan *pkt.Packet, 100),
 		send:      make(chan *store.Dat),
-		logger:    cfg.Logger.WithPrefix("/main"),
+		logger:    cfg.Logger,
 	}
 	dave.Store, err = store.New(&store.StoreCfg{
 		ShardCap:       cfg.ShardCap,
-		PruneEvery:     10 * time.Second,
-		BackupFilename: cfg.BackupFname,
-		Logger:         cfg.Logger.WithPrefix("/dat_store"),
+		PruneEvery:     PRUNE_DATS,
+		BackupFilename: cfg.BackupFilename,
+		Logger:         cfg.Logger.WithPrefix("/dats"),
 		Kill:           dave.kill,
 		Done:           dave.done,
 	})
@@ -81,9 +82,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	peers := peer.NewStore(&peer.StoreCfg{
 		Probe:      PROBE,
 		MaxTrust:   MAX_TRUST,
-		PruneEvery: PRUNE,
+		PruneEvery: PRUNE_PEERS,
 		DropAfter:  DROP,
-		Logger:     cfg.Logger.WithPrefix("/peer_store"),
+		ListDelay:  SHARE_DELAY,
+		Ping:       PING,
+		Logger:     cfg.Logger.WithPrefix("/peers"),
 	})
 	for _, edge := range cfg.Edges {
 		peers.AddEdge(edge)
@@ -109,7 +112,7 @@ func (d *Dave) Put(dat store.Dat) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, err := d.Store.Put(&dat)
+		err := d.Store.Put(&dat)
 		if err != nil {
 			return
 		}
@@ -134,16 +137,17 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 					for _, pd := range packet.Msg.Pds {
 						peers.AddPd(pd)
 					}
-				} else {
-					d.logger.Error("unexpected PEER message from %s", packet.AddrPort)
 				}
 			case dave.Op_GETPEER: // GIVE PEERS
-				randPeers := peers.RandPeers(NPEER_LIMIT, remoteFp, SHARE_DELAY)
+				randPeers := peers.RandPeers(NPEER_LIMIT, remoteFp)
 				pds := make([]*dave.Pd, len(randPeers))
 				for i, p := range randPeers {
 					pds[i] = peer.PdFrom(p.AddrPort())
 				}
-				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PEER, Pds: pds}, AddrPort: packet.AddrPort}
+				d.packetOut <- &pkt.Packet{
+					Msg:      &dave.M{Op: dave.Op_PEER, Pds: pds},
+					AddrPort: packet.AddrPort,
+				}
 				d.logger.Debug("replied to GETPEER from %d", remoteFp)
 			case dave.Op_PUT: // STORE DAT
 				dat := &store.Dat{
@@ -155,15 +159,13 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 					Sig:    packet.Msg.Sig,
 					PubKey: packet.Msg.PubKey,
 				}
-				novel, err := d.Store.Put(dat)
+				err := d.Store.Put(dat)
 				if err != nil {
 					d.logger.Debug("failed to store dat: %s", err)
 					continue
 				}
-				if novel {
-					peers.AddTrust(remoteFp, store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)))
-				}
-				ring.Write(dat) // even if not novel, if there is no error from call to Store.Put, it's a valid update
+				peers.AddTrust(remoteFp, store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)))
+				ring.Write(dat)
 				d.logger.Debug("stored %x %s", packet.Msg.Work, packet.AddrPort)
 			}
 		case <-epochTick.C: // SEED
@@ -173,30 +175,28 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 			}
 			dat := d.Store.Rand(cshard)
 			if dat != nil {
-				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
+				d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: randPeer.AddrPort()}
 			}
 			dat, ok := ring.Read()
 			if ok {
-				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Time: pow.Ttb(dat.Time), Salt: dat.Salt, Work: dat.Work, PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: randPeer.AddrPort()}
+				d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: randPeer.AddrPort()}
 			}
 			cshard++ // overflows to 0
 		case <-pingTick.C:
 			peers.Prune()
-			for _, p := range peers.List() {
-				if time.Since(p.LastPeerMsgReceived()) > PING {
-					d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: p.AddrPort()}
-					d.logger.Debug("ping sent to %s", p.AddrPort())
-				}
+			for _, peer := range peers.Table() {
+				d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_GETPEER}, AddrPort: peer.AddrPort()}
+				d.logger.Debug("ping sent to %s", peer.AddrPort())
 			}
 		case dat := <-d.send:
 			sentTo := make(map[uint64]struct{})
-			targetPeers := min(FANOUT, peers.Count())
+			targetPeers := min(FANOUT, peers.CountActive())
 			for len(sentTo) < targetPeers {
-				randPeers := peers.RandPeers(FANOUT, 0, 0)
+				randPeers := peers.RandPeers(FANOUT, 0)
 				for _, peer := range randPeers {
 					_, sentAlready := sentTo[peer.Fp()]
 					if !sentAlready {
-						d.packetOut <- &pkt.Packet{Msg: &dave.M{Op: dave.Op_PUT, DatKey: dat.Key, Val: dat.Val, Salt: dat.Salt, Work: dat.Work, Time: pow.Ttb(dat.Time), PubKey: dat.PubKey, Sig: dat.Sig}, AddrPort: peer.AddrPort()}
+						d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: peer.AddrPort()}
 						sentTo[peer.Fp()] = struct{}{}
 						d.logger.Error("sent to %s", peer)
 					}
@@ -247,4 +247,17 @@ func unmarshalEd25519(publicKeyBytes []byte) (ed25519.PublicKey, error) {
 		return nil, fmt.Errorf("ed25519: public key must be %d bytes", ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(publicKeyBytes), nil
+}
+
+func buildDatMessage(dat *store.Dat) *dave.M {
+	return &dave.M{
+		Op:     dave.Op_PUT,
+		DatKey: dat.Key,
+		Val:    dat.Val,
+		Time:   pow.Ttb(dat.Time),
+		Salt:   dat.Salt,
+		Work:   dat.Work,
+		PubKey: dat.PubKey,
+		Sig:    dat.Sig,
+	}
 }

@@ -118,7 +118,7 @@ func New(cfg *StoreCfg) (*Store, error) {
 		s.logger.Error("error reading backup: %s", err)
 	}
 	s.prune() // TODO: prune frequently while reading backup
-	s.logger.Error("read %d dats from %s", s.count.Load(), s.backupFilename)
+	s.logger.Error("read %d from %s", s.count.Load(), s.backupFilename)
 	err = s.writeFreshBackup()
 	if err != nil {
 		return nil, err
@@ -131,9 +131,9 @@ func (s *Store) Count() uint32 {
 	return s.count.Load()
 }
 
-func (s *Store) Put(dat *Dat) (bool, error) {
+func (s *Store) Put(dat *Dat) error {
 	if dat == nil {
-		return false, errors.New("nil dat provided")
+		return errors.New("nil dat provided")
 	}
 	shardIndex, key := Keys(dat.PubKey, dat.Key)
 	shard := s.shards[shardIndex]
@@ -146,22 +146,22 @@ func (s *Store) Put(dat *Dat) (bool, error) {
 		if s.backupFilename != "" {
 			s.backup <- dat
 		}
-		return true, nil
+		return nil
 	}
 	if !current.PubKey.Equal(dat.PubKey) {
-		return false, errors.New("public keys don't match")
+		return errors.New("public keys don't match")
 	}
 	if current.Time.After(dat.Time) {
-		return false, errors.New("current data is newer")
+		return errors.New("current data is newer")
 	}
 	if current.Time == dat.Time && bytes.Equal(current.Val, dat.Val) {
-		return false, errors.New("duplicate data")
+		return errors.New("duplicate data")
 	}
 	shard.table[key] = *dat
 	if s.backupFilename != "" {
 		s.backup <- dat
 	}
-	return false, nil
+	return nil
 }
 
 func (s *Store) Get(pubKey ed25519.PublicKey, datKey []byte) (Dat, bool) {
@@ -360,7 +360,20 @@ func (s *Store) prune() {
 	close(jobs)
 	wg.Wait()
 	s.count.Store(count)
-	s.logger.Error("pruned %d dats in %s", s.count.Load(), time.Since(start))
+	s.logger.Error("pruned %d in %s", count, time.Since(start))
+	if s.logger.Level() == logger.DEBUG {
+		var smallest, largest int
+		for _, shard := range s.shards {
+			l := len(shard.table)
+			if l < smallest || smallest == 0 {
+				smallest = l
+			} else if l > largest || largest == 0 {
+				largest = l
+			}
+		}
+		mean := int(count) / len(s.shards)
+		s.logger.Debug("shard sizes: mean=%d min=%d max=%d", mean, smallest, largest)
+	}
 }
 
 func Mass(work []byte, t time.Time) float64 {

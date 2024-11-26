@@ -55,3 +55,7 @@ func (l *Logger) WithPrefix(prefix string) *Logger {
 		prefix: prefix + " ",
 	}
 }
+
+func (l *Logger) Level() LogLevel {
+	return l.level
+}

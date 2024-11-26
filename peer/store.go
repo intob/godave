@@ -2,6 +2,7 @@ package peer
 
 import (
 	"encoding/binary"
+	"math"
 	mrand "math/rand"
 	"net/netip"
 	"sort"
@@ -17,6 +18,7 @@ type StoreCfg struct {
 	MaxTrust   float64
 	PruneEvery time.Duration
 	DropAfter  time.Duration
+	ListDelay  time.Duration
 	Ping       time.Duration
 	Logger     *logger.Logger
 }
@@ -27,8 +29,9 @@ type Store struct {
 	trustSum, maxTrust float64
 	probe              int
 	dropAfter          time.Duration
-	logger             *logger.Logger
+	listDelay          time.Duration
 	ping               time.Duration
+	logger             *logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {
@@ -38,13 +41,14 @@ func NewStore(cfg *StoreCfg) *Store {
 		probe:     cfg.Probe,
 		maxTrust:  cfg.MaxTrust,
 		dropAfter: cfg.DropAfter,
+		listDelay: cfg.ListDelay,
 		ping:      cfg.Ping,
 		logger:    cfg.Logger,
 	}
 	return s
 }
 
-func (s *Store) Count() int {
+func (s *Store) CountActive() int {
 	return len(s.list)
 }
 
@@ -64,7 +68,7 @@ func (s *Store) Seen(addrPort netip.AddrPort) uint64 {
 	}
 	s.table[fp] = peer
 	s.list = append(s.list, peer)
-	s.logger.Error("added peer %s", peer)
+	s.logger.Error("added %s", peer)
 	return peer.fp
 }
 
@@ -95,8 +99,11 @@ func (s *Store) AddPd(pd *dave.Pd) {
 		seen:     time.Now(),
 	}
 	s.table[fp] = peer
-	s.list = append(s.list, peer)
-	s.logger.Error("peer added from gossip %s", peer)
+	// New peers from gossip are not added to the list directly.
+	// During prune, if they've been known for SHARE_DELAY,
+	// and seen recently active, they will be added to the list.
+	//s.list = append(s.list, peer)
+	s.logger.Error("added from gossip %s", peer)
 }
 
 func (s *Store) AddTrust(fp uint64, delta float64) {
@@ -104,27 +111,34 @@ func (s *Store) AddTrust(fp uint64, delta float64) {
 	if !exists {
 		return
 	}
-	peer.trust += delta
-	if peer.trust > s.maxTrust {
-		peer.trust = s.maxTrust
-	}
+	oldTrust := peer.trust
+	peer.trust = math.Min(peer.trust+delta, s.maxTrust)
+	s.trustSum += peer.trust - oldTrust
+	s.logger.Debug("trust sum updated to %f", s.trustSum)
 }
 
-// returns true if message is no sooner than expected
+// Returns false if PEER message is received sooner than expected.
+// This is important to prevent peer table poisoning.
 func (s *Store) IsPeerMessageExpected(fp uint64) bool {
 	peer, exists := s.table[fp]
 	if !exists {
 		return false
 	}
-	if time.Since(peer.lastPeerMsgReceived) < s.ping-10*time.Millisecond {
+	// Some margin is given to allow for latency, as maybe the previous PEER
+	// message was late.
+	sinceLast := time.Since(peer.lastPeerMsgReceived)
+	if sinceLast < s.ping-s.ping/10 {
+		s.logger.Error("unexpected PEER message from %s, %s since last", peer.addrPort, sinceLast)
 		return false
 	}
 	peer.lastPeerMsgReceived = time.Now()
 	return true
 }
 
-func (s *Store) List() []*Peer {
-	return s.list
+// Can't use list to ping because once-inactive edges may now be online
+// but are omitted from the list.
+func (s *Store) Table() map[uint64]*Peer {
+	return s.table
 }
 
 func (s *Store) RandPeer() *Peer {
@@ -145,7 +159,7 @@ func (s *Store) RandPeer() *Peer {
 	return nil
 }
 
-func (s *Store) RandPeers(limit int, excludeFp uint64, knownFor time.Duration) []Peer {
+func (s *Store) RandPeers(limit int, excludeFp uint64) []Peer {
 	if len(s.list) == 0 {
 		return nil
 	}
@@ -153,9 +167,7 @@ func (s *Store) RandPeers(limit int, excludeFp uint64, knownFor time.Duration) [
 	r := mrand.Float64() * s.trustSum
 	for _, peer := range s.list {
 		r -= peer.trust
-		if peer.fp == excludeFp ||
-			time.Since(peer.added) < knownFor ||
-			time.Since(peer.seen) > s.dropAfter {
+		if peer.fp == excludeFp {
 			continue
 		}
 		if s.trustSum == 0 || r <= 0 || mrand.Intn(s.probe) == 0 {
@@ -168,28 +180,38 @@ func (s *Store) RandPeers(limit int, excludeFp uint64, knownFor time.Duration) [
 	return selected
 }
 
-// drops inactive peers
+// Drops inactive peers. Inactive edges are not dropped, but excluded from seeding.
 func (s *Store) Prune() {
 	activeCount := 0
 	for _, p := range s.table {
-		if time.Since(p.seen) < s.dropAfter || p.edge {
+		if time.Since(p.seen) < s.dropAfter {
 			activeCount++
 		}
 	}
-	if activeCount == len(s.table) {
-		s.logger.Error("pruning skipped, got %d peers", activeCount)
+	if activeCount == len(s.table) && activeCount == len(s.list) {
+		s.logger.Error("prune skipped, active: %d/%d", activeCount, activeCount)
 		return
 	}
 	newTable := make(map[uint64]*Peer, activeCount)
 	newList := make([]*Peer, 0, activeCount)
 	var trustSum float64
 	for k, p := range s.table {
-		if time.Since(p.seen) < s.dropAfter || p.edge {
+		if p.edge { // Never drop edges, even if they go offline
 			newTable[k] = p
-			newList = append(newList, p)
-			trustSum += p.trust
+			if time.Since(p.seen) < s.dropAfter { // Only share with them if they're online
+				newList = append(newList, p)
+				trustSum += p.trust
+			}
 		} else {
-			s.logger.Error("dropped %s", p.addrPort)
+			if time.Since(p.seen) < s.dropAfter {
+				newTable[k] = p
+				if time.Since(p.added) > s.listDelay { // Peers must wait to be added to the list
+					newList = append(newList, p)
+					trustSum += p.trust
+				}
+			} else {
+				s.logger.Error("dropped %s", p.addrPort)
+			}
 		}
 	}
 	sort.Slice(newList, func(i, j int) bool {
@@ -198,7 +220,7 @@ func (s *Store) Prune() {
 	s.table = newTable
 	s.list = newList
 	s.trustSum = trustSum
-	s.logger.Error("pruned %d peers", len(s.list))
+	s.logger.Error("pruned, active: %d/%d", len(s.list), len(s.table))
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
