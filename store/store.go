@@ -222,7 +222,7 @@ func Keys(pubKey ed25519.PublicKey, datKey []byte) (uint8, uint64) {
 func (s *Store) readBackup() error {
 	f, err := os.Open(s.backupFilename)
 	if err != nil {
-		return fmt.Errorf("err opening file: %w", err)
+		return err
 	}
 	defer f.Close()
 	info, err := f.Stat()

@@ -95,7 +95,7 @@ func packetFilter(m *dave.M, h *blake3.Hasher) error {
 		if !ed25519.Verify(pubKey, m.Work, m.Sig) {
 			return fmt.Errorf("signature is invalid")
 		}
-	} else if m.Op == dave.Op_PEER && len(m.Pds) > 3 {
+	} else if m.Op == dave.Op_PONG && len(m.Pds) > 3 {
 		return errors.New("packet exceeds pd limit")
 	}
 	return nil
@@ -136,7 +136,7 @@ func rdpkt(sock SocketReader, h *blake3.Hasher, bpool *sync.Pool) (*Packet, erro
 		if !ed25519.Verify(pubKey, m.Work, m.Sig) {
 			return nil, fmt.Errorf("invalid signature")
 		}
-	} else if m.Op == dave.Op_PEER && len(m.Pds) > 3 {
+	} else if m.Op == dave.Op_PONG && len(m.Pds) > 3 {
 		return nil, errors.New("packet exceeds pd limit")
 	}
 	return &Packet{m, raddr}, nil

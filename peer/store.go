@@ -1,7 +1,10 @@
 package peer
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"math"
 	mrand "math/rand"
 	"net/netip"
@@ -14,12 +17,11 @@ import (
 )
 
 type StoreCfg struct {
-	Probe      int
-	MaxTrust   float64
+	Probe      int     // Inverse of probability that an untrusted peer is chosen
+	MaxTrust   float64 // Maximum trust a peer can earn. Ensures fair resource distribution.
 	PruneEvery time.Duration
-	DropAfter  time.Duration
-	ListDelay  time.Duration
-	Ping       time.Duration
+	DropAfter  time.Duration // Time until unresponsive peers are dropped
+	ListDelay  time.Duration // Time until new peers are candidates for selection
 	Logger     *logger.Logger
 }
 
@@ -30,7 +32,6 @@ type Store struct {
 	probe              int
 	dropAfter          time.Duration
 	listDelay          time.Duration
-	ping               time.Duration
 	logger             *logger.Logger
 }
 
@@ -42,7 +43,6 @@ func NewStore(cfg *StoreCfg) *Store {
 		maxTrust:  cfg.MaxTrust,
 		dropAfter: cfg.DropAfter,
 		listDelay: cfg.ListDelay,
-		ping:      cfg.Ping,
 		logger:    cfg.Logger,
 	}
 	return s
@@ -68,7 +68,7 @@ func (s *Store) Seen(addrPort netip.AddrPort) uint64 {
 	}
 	s.table[fp] = peer
 	s.list = append(s.list, peer)
-	s.logger.Error("added %s", peer)
+	s.logger.Error("added %s", peer.addrPort)
 	return peer.fp
 }
 
@@ -103,7 +103,7 @@ func (s *Store) AddPd(pd *dave.Pd) {
 	// During prune, if they've been known for SHARE_DELAY,
 	// and seen recently active, they will be added to the list.
 	//s.list = append(s.list, peer)
-	s.logger.Error("added from gossip %s", peer)
+	s.logger.Error("added from gossip %s", peer.addrPort)
 }
 
 func (s *Store) AddTrust(fp uint64, delta float64) {
@@ -117,22 +117,48 @@ func (s *Store) AddTrust(fp uint64, delta float64) {
 	s.logger.Debug("trust sum updated to %f", s.trustSum)
 }
 
-// Returns false if PEER message is received sooner than expected.
-// This is important to prevent peer table poisoning.
-func (s *Store) IsPeerMessageExpected(fp uint64) bool {
+func (s *Store) CreateChallenge(fp uint64) ([]byte, error) {
 	peer, exists := s.table[fp]
 	if !exists {
-		return false
+		return nil, errors.New("peer not found")
 	}
-	// Some margin is given to allow for latency, as maybe the previous PEER
-	// message was late.
-	sinceLast := time.Since(peer.lastPeerMsgReceived)
-	if sinceLast < s.ping-s.ping/10 {
-		s.logger.Error("unexpected PEER message from %s, %s since last", peer.addrPort, sinceLast)
-		return false
+	peer.challenge = make([]byte, 8)
+	_, err := rand.Read(peer.challenge)
+	if err != nil {
+		return nil, err
 	}
-	peer.lastPeerMsgReceived = time.Now()
-	return true
+	return peer.challenge, nil
+}
+
+func (s *Store) CurrentChallengeAndPubKey(fp uint64) ([]byte, ed25519.PublicKey, error) {
+	peer, exists := s.table[fp]
+	if !exists {
+		return nil, nil, errors.New("peer not found")
+	}
+	if len(peer.challenge) == 0 {
+		return nil, nil, errors.New("challenge is empty")
+	}
+	return peer.challenge, peer.pubKey, nil
+}
+
+func (s *Store) SetPubKey(fp uint64, pubKey ed25519.PublicKey) error {
+	peer, exists := s.table[fp]
+	if !exists {
+		return errors.New("peer not found")
+	}
+	if peer.pubKey != nil {
+		return errors.New("pub key is already set")
+	}
+	peer.pubKey = pubKey
+	return nil
+}
+
+func (s *Store) ClearChallenge(fp uint64) {
+	peer, exists := s.table[fp]
+	if !exists {
+		return
+	}
+	peer.challenge = nil
 }
 
 // Can't use list to ping because once-inactive edges may now be online
