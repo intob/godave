@@ -22,21 +22,21 @@ import (
 )
 
 const (
-	EPOCH          = time.Millisecond
-	BUF_SIZE       = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT         = 5                // Number of peers randomly selected when sending new dats.
-	PROBE          = 12               // Inverse of probability that a peer is selected regardless of trust.
-	NPEER_LIMIT    = 3                // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK       = 16               // Minimum amount of acceptable work in number of leading zero bits.
-	MAX_TRUST      = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
-	PING           = 8 * time.Second  // Time until peers are pinged.
-	DROP           = 3 * PING         // Time until silent peers are dropped from the peer table.
-	SHARE_DELAY    = 2 * DROP         // Time until new peers are shared. Must be greater than DROP.
-	PRUNE_DATS     = 20 * time.Second // Period between pruning dats.
-	PRUNE_PEERS    = PING             // Period between pruning peers.
-	RING_SIZE      = 1000             // Number of dats to store in ring buffer.
-	LOGLEVEL_ERROR = LogLevel(0)      // Base log level, for errors & status.
-	LOGLEVEL_DEBUG = LogLevel(1)      // Debugging log level.
+	EPOCH            = time.Millisecond
+	BUF_SIZE         = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
+	FANOUT           = 5                // Number of peers randomly selected when sending new dats.
+	PROBE            = 12               // Inverse of probability that a peer is selected regardless of trust.
+	NPEER_LIMIT      = 3                // Maximum number of peer descriptors in a PONG message.
+	MIN_WORK         = 16               // Minimum amount of acceptable work in number of leading zero bits.
+	MAX_TRUST        = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
+	PING             = 10 * time.Second // Period between pinging peers.
+	DROP             = 3 * PING         // Time until protocol-deviating peers are dropped.
+	ACTIVATION_DELAY = 2 * DROP         // Time until new peers are activated. Must be greater than DROP.
+	PRUNE_DATS       = 20 * time.Second // Period between pruning dats.
+	PRUNE_PEERS      = PING             // Period between pruning peers.
+	RING_SIZE        = 1000             // Number of dats to store in ring buffer.
+	LOGLEVEL_ERROR   = LogLevel(0)      // Base log level, for errors & status.
+	LOGLEVEL_DEBUG   = LogLevel(1)      // Debugging log level.
 )
 
 type LogLevel int
@@ -89,15 +89,15 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, fmt.Errorf("failed to init store: %w", err)
 	}
 	peers := peer.NewStore(&peer.StoreCfg{
-		Probe:      PROBE,
-		MaxTrust:   MAX_TRUST,
-		PruneEvery: PRUNE_PEERS,
-		DropAfter:  DROP,
-		ListDelay:  SHARE_DELAY,
-		Logger:     cfg.Logger.WithPrefix("/peers"),
+		Probe:           PROBE,
+		MaxTrust:        MAX_TRUST,
+		PruneEvery:      PRUNE_PEERS,
+		DropAfter:       DROP,
+		ActivationDelay: ACTIVATION_DELAY,
+		Logger:          cfg.Logger.WithPrefix("/peers"),
 	})
-	for _, edge := range cfg.Edges {
-		peers.AddEdge(edge)
+	for _, addrPort := range cfg.Edges {
+		peers.AddPeer(addrPort, true)
 	}
 	incoming := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
 		NumWorkers: runtime.NumCPU(),
@@ -137,7 +137,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 	for {
 		select {
 		case packet := <-packetIn: // HANDLE INCOMING PACKET
-			remoteFp := peers.Seen(packet.AddrPort)
+			remoteFp := peers.AddPeer(packet.AddrPort, false)
 			switch packet.Msg.Op {
 			case dave.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
 				d.logger.Debug("got PONG message from %d", remoteFp)
@@ -177,7 +177,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 					d.logger.Debug("failed to store dat: %s", err)
 					continue
 				}
-				peers.AddTrust(remoteFp, store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)))
+				peers.UpdateTrust(remoteFp, store.Mass(packet.Msg.Work, pow.Btt(packet.Msg.Time)))
 				ring.Write(dat)
 				d.logger.Debug("stored %x %s", packet.Msg.Work, packet.AddrPort)
 			}
@@ -268,7 +268,6 @@ func handlePong(peers *peer.Store, remoteFp uint64, packet *pkt.Packet) error {
 	if !ed25519.Verify(msgPubKey, challenge, packet.Msg.Sig) {
 		return fmt.Errorf("signature is invalid")
 	}
-	// signature is valid, clear challenge
 	peers.ClearChallenge(remoteFp)
 	for _, pd := range packet.Msg.Pds {
 		peers.AddPd(pd)

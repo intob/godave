@@ -7,13 +7,14 @@ import (
 )
 
 type Peer struct {
-	fp          uint64
-	addrPort    netip.AddrPort
-	added, seen time.Time
-	edge        bool
-	trust       float64
-	challenge   []byte
-	pubKey      ed25519.PublicKey
+	fp              uint64
+	addrPort        netip.AddrPort
+	added           time.Time
+	edge            bool
+	trust           float64
+	challenge       []byte
+	pubKey          ed25519.PublicKey
+	challengeSolved time.Time
 }
 
 func (p Peer) Fp() uint64 {

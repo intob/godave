@@ -17,96 +17,65 @@ import (
 )
 
 type StoreCfg struct {
-	Probe      int     // Inverse of probability that an untrusted peer is chosen
-	MaxTrust   float64 // Maximum trust a peer can earn. Ensures fair resource distribution.
-	PruneEvery time.Duration
-	DropAfter  time.Duration // Time until unresponsive peers are dropped
-	ListDelay  time.Duration // Time until new peers are candidates for selection
-	Logger     *logger.Logger
+	Probe           int     // Inverse of probability that an untrusted peer is chosen
+	MaxTrust        float64 // Maximum trust a peer can earn. Ensures fair resource distribution.
+	PruneEvery      time.Duration
+	DropAfter       time.Duration // Time until unresponsive peers are dropped
+	ActivationDelay time.Duration // Time until new peers are candidates for selection
+	Logger          *logger.Logger
 }
 
 type Store struct {
 	table              map[uint64]*Peer
-	list               []*Peer // sorted by trust descending
+	active             []*Peer // sorted by trust descending
 	trustSum, maxTrust float64
 	probe              int
 	dropAfter          time.Duration
-	listDelay          time.Duration
+	activationDelay    time.Duration
 	logger             *logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
-		table:     make(map[uint64]*Peer),
-		list:      make([]*Peer, 0),
-		probe:     cfg.Probe,
-		maxTrust:  cfg.MaxTrust,
-		dropAfter: cfg.DropAfter,
-		listDelay: cfg.ListDelay,
-		logger:    cfg.Logger,
+		table:           make(map[uint64]*Peer),
+		active:          make([]*Peer, 0),
+		probe:           cfg.Probe,
+		maxTrust:        cfg.MaxTrust,
+		dropAfter:       cfg.DropAfter,
+		activationDelay: cfg.ActivationDelay,
+		logger:          cfg.Logger,
 	}
 	return s
 }
 
 func (s *Store) CountActive() int {
-	return len(s.list)
+	return len(s.active)
 }
 
-// Adds or updates the peer
-func (s *Store) Seen(addrPort netip.AddrPort) uint64 {
+// Peer is added if not found. Returns fingerprint.
+func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) uint64 {
 	fp := fingerprint(addrPort)
 	peer, exists := s.table[fp]
 	if exists {
-		peer.seen = time.Now()
 		return peer.fp
 	}
 	peer = &Peer{
-		fp:       fp,
-		addrPort: addrPort,
-		added:    time.Now(),
-		seen:     time.Now(), // otherwise, peer is dropped
+		fp:              fp,
+		addrPort:        addrPort,
+		added:           time.Now(),
+		challengeSolved: time.Now(),
+		edge:            isEdge,
 	}
 	s.table[fp] = peer
-	s.list = append(s.list, peer)
 	s.logger.Error("added %s", peer.addrPort)
 	return peer.fp
 }
 
-func (s *Store) AddEdge(addrPort netip.AddrPort) {
-	fp := fingerprint(addrPort)
-	peer := &Peer{
-		edge:     true,
-		fp:       fp,
-		addrPort: addrPort,
-		added:    time.Now(),
-		seen:     time.Now(),
-	}
-	s.table[peer.fp] = peer
-	s.list = append(s.list, peer)
-}
-
 func (s *Store) AddPd(pd *dave.Pd) {
-	addrPort := addrPortFrom(pd)
-	fp := fingerprint(addrPort)
-	_, exists := s.table[fp]
-	if exists {
-		return
-	}
-	peer := &Peer{
-		fp:       fp,
-		addrPort: addrPort,
-		added:    time.Now(),
-		seen:     time.Now(),
-	}
-	s.table[fp] = peer
-	// New peers from gossip are not added to the list directly.
-	// During prune, if they've been known for SHARE_DELAY,
-	// and seen recently active, they will be added to the list.
-	//s.list = append(s.list, peer)
-	s.logger.Error("added from gossip %s", peer.addrPort)
+	s.AddPeer(addrPortFrom(pd), false)
 }
 
-func (s *Store) AddTrust(fp uint64, delta float64) {
+func (s *Store) UpdateTrust(fp uint64, delta float64) {
 	peer, exists := s.table[fp]
 	if !exists {
 		return
@@ -159,6 +128,7 @@ func (s *Store) ClearChallenge(fp uint64) {
 		return
 	}
 	peer.challenge = nil
+	peer.challengeSolved = time.Now()
 }
 
 // Can't use list to ping because once-inactive edges may now be online
@@ -168,15 +138,15 @@ func (s *Store) Table() map[uint64]*Peer {
 }
 
 func (s *Store) RandPeer() *Peer {
-	if len(s.list) == 0 {
+	if len(s.active) == 0 {
 		return nil
 	}
 	if mrand.Intn(s.probe) == 0 {
-		peer := s.list[mrand.Intn(len(s.list))]
+		peer := s.active[mrand.Intn(len(s.active))]
 		return peer
 	}
 	r := mrand.Float64() * s.trustSum
-	for _, peer := range s.list {
+	for _, peer := range s.active {
 		r -= peer.trust
 		if r <= 0 {
 			return peer
@@ -186,12 +156,12 @@ func (s *Store) RandPeer() *Peer {
 }
 
 func (s *Store) RandPeers(limit int, excludeFp uint64) []Peer {
-	if len(s.list) == 0 {
+	if len(s.active) == 0 {
 		return nil
 	}
 	selected := make([]Peer, 0, limit)
 	r := mrand.Float64() * s.trustSum
-	for _, peer := range s.list {
+	for _, peer := range s.active {
 		r -= peer.trust
 		if peer.fp == excludeFp {
 			continue
@@ -210,29 +180,29 @@ func (s *Store) RandPeers(limit int, excludeFp uint64) []Peer {
 func (s *Store) Prune() {
 	activeCount := 0
 	for _, p := range s.table {
-		if time.Since(p.seen) < s.dropAfter {
+		if time.Since(p.challengeSolved) < s.dropAfter {
 			activeCount++
 		}
 	}
-	if activeCount == len(s.table) && activeCount == len(s.list) {
+	if activeCount == len(s.table) && activeCount == len(s.active) {
 		s.logger.Error("prune skipped, active: %d/%d", activeCount, activeCount)
 		return
 	}
 	newTable := make(map[uint64]*Peer, activeCount)
-	newList := make([]*Peer, 0, activeCount)
+	newActive := make([]*Peer, 0, activeCount)
 	var trustSum float64
 	for k, p := range s.table {
 		if p.edge { // Never drop edges, even if they go offline
 			newTable[k] = p
-			if time.Since(p.seen) < s.dropAfter { // Only share with them if they're online
-				newList = append(newList, p)
+			if time.Since(p.challengeSolved) < s.dropAfter {
+				newActive = append(newActive, p)
 				trustSum += p.trust
 			}
 		} else {
-			if time.Since(p.seen) < s.dropAfter {
+			if time.Since(p.challengeSolved) < s.dropAfter {
 				newTable[k] = p
-				if time.Since(p.added) > s.listDelay { // Peers must wait to be added to the list
-					newList = append(newList, p)
+				if time.Since(p.added) > s.activationDelay {
+					newActive = append(newActive, p)
 					trustSum += p.trust
 				}
 			} else {
@@ -240,13 +210,13 @@ func (s *Store) Prune() {
 			}
 		}
 	}
-	sort.Slice(newList, func(i, j int) bool {
-		return newList[i].trust > newList[j].trust
+	sort.Slice(newActive, func(i, j int) bool {
+		return newActive[i].trust > newActive[j].trust
 	})
 	s.table = newTable
-	s.list = newList
+	s.active = newActive
 	s.trustSum = trustSum
-	s.logger.Error("pruned, active: %d/%d", len(s.list), len(s.table))
+	s.logger.Error("pruned, active: %d/%d", len(s.active), len(s.table))
 }
 
 func addrPortFrom(pd *dave.Pd) netip.AddrPort {
