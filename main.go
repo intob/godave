@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
-	"net"
 	"net/netip"
 	"runtime"
 	"time"
@@ -42,9 +41,9 @@ const (
 type LogLevel int
 
 type Dave struct {
+	Store      *store.Store
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
-	Store      *store.Store
 	kill, done chan struct{}
 	packetOut  chan *pkt.Packet
 	toSend     chan *store.Dat
@@ -52,8 +51,8 @@ type Dave struct {
 }
 
 type Cfg struct {
+	Socket         pkt.Socket
 	PrivateKey     ed25519.PrivateKey
-	UdpListenAddr  *net.UDPAddr
 	Edges          []netip.AddrPort // Bootstrap peers
 	ShardCap       int
 	BackupFilename string
@@ -61,10 +60,6 @@ type Cfg struct {
 }
 
 func NewDave(cfg *Cfg) (*Dave, error) {
-	socket, err := net.ListenUDP("udp", cfg.UdpListenAddr)
-	if err != nil {
-		return nil, err
-	}
 	if cfg.PrivateKey == nil || len(cfg.PrivateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("no valid private key provided")
 	}
@@ -77,6 +72,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		toSend:     make(chan *store.Dat),
 		logger:     cfg.Logger,
 	}
+	var err error
 	dave.Store, err = store.New(&store.StoreCfg{
 		ShardCap:       cfg.ShardCap,
 		PruneEvery:     PRUNE_DATS,
@@ -103,11 +99,11 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		NumWorkers: runtime.NumCPU(),
 		BufSize:    BUF_SIZE,
 		FilterFunc: packetFilter,
-		Socket:     socket,
+		Socket:     cfg.Socket,
 		Logger:     cfg.Logger.WithPrefix("/packet_proc"),
 	})
 	go dave.run(peers, incoming.Packets())
-	go dave.writePackets(socket)
+	go dave.writePackets(cfg.Socket)
 	return dave, nil
 }
 
@@ -234,7 +230,7 @@ func (d *Dave) sendDat(peers *peer.Store, dat *store.Dat) {
 	}
 }
 
-func (d *Dave) writePackets(socket *net.UDPConn) {
+func (d *Dave) writePackets(socket pkt.Socket) {
 	for pkt := range d.packetOut {
 		bin, err := proto.Marshal(pkt.Msg)
 		if err != nil {

@@ -40,8 +40,11 @@ func buildMockPacket() ([]byte, error) {
 }
 
 func (m *mockReader) ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error) {
-	copy(b, m.packet)
-	return len(m.packet), m.addrPort, nil
+	return copy(b, m.packet), m.addrPort, nil
+}
+
+func (m *mockReader) WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n int, err error) {
+	return copy(m.packet, b), nil
 }
 
 func BenchmarkRdpkt(b *testing.B) {
@@ -109,10 +112,10 @@ func unmarshalEd25519(publicKeyBytes []byte) (ed25519.PublicKey, error) {
 }
 
 // old implementation
-func rdpkt(sock SocketReader, h *blake3.Hasher, bpool *sync.Pool) (*Packet, error) {
+func rdpkt(socket Socket, h *blake3.Hasher, bpool *sync.Pool) (*Packet, error) {
 	buf := bpool.Get().([]byte)
 	defer bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-	n, raddr, err := sock.ReadFromUDPAddrPort(buf)
+	n, raddr, err := socket.ReadFromUDPAddrPort(buf)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read from socket: %s", err)
 	}

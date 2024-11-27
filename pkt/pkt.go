@@ -11,8 +11,9 @@ import (
 	"lukechampine.com/blake3"
 )
 
-type SocketReader interface {
+type Socket interface {
 	ReadFromUDPAddrPort(b []byte) (n int, addr netip.AddrPort, err error)
+	WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n int, err error)
 }
 
 type rawPacket struct {
@@ -36,7 +37,7 @@ type PacketProcessor struct {
 type PacketProcessorCfg struct {
 	NumWorkers, BufSize int
 	FilterFunc          func(m *dave.M, h *blake3.Hasher) error
-	Socket              SocketReader
+	Socket              Socket
 	Logger              *logger.Logger
 }
 
@@ -51,7 +52,7 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) *PacketProcessor {
 	for i := 0; i < cfg.NumWorkers; i++ {
 		go pp.worker()
 	}
-	go func(socket SocketReader) {
+	go func(socket Socket) {
 		for {
 			buf := pp.bpool.Get().([]byte)
 			n, raddr, err := socket.ReadFromUDPAddrPort(buf)
