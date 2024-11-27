@@ -250,15 +250,16 @@ func handlePong(peers *peer.Store, remoteFp uint64, packet *pkt.Packet) error {
 	if err != nil {
 		return fmt.Errorf("failed to unmarshal pub key: %s", err)
 	}
-	if storedPubKey == nil {
-		peers.SetPubKey(remoteFp, msgPubKey)
-	} else if !storedPubKey.Equal(msgPubKey) {
+	if storedPubKey != nil && !storedPubKey.Equal(msgPubKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
 	if !ed25519.Verify(msgPubKey, challenge, packet.Msg.Sig) {
 		return fmt.Errorf("signature is invalid")
 	}
-	peers.ClearChallenge(remoteFp)
+	if storedPubKey == nil {
+		peers.SetPubKey(remoteFp, msgPubKey)
+	}
+	peers.ChallengeSolved(remoteFp)
 	for _, pd := range packet.Msg.Pds {
 		peers.AddPd(pd)
 	}

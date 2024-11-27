@@ -107,7 +107,9 @@ func (s *Store) CurrentChallengeAndPubKey(fp uint64) ([]byte, ed25519.PublicKey,
 	if len(peer.challenge) == 0 {
 		return nil, nil, errors.New("challenge is empty")
 	}
-	return peer.challenge, peer.pubKey, nil
+	currentChallenge := peer.challenge
+	peer.challenge = nil
+	return currentChallenge, peer.pubKey, nil
 }
 
 func (s *Store) SetPubKey(fp uint64, pubKey ed25519.PublicKey) error {
@@ -122,12 +124,11 @@ func (s *Store) SetPubKey(fp uint64, pubKey ed25519.PublicKey) error {
 	return nil
 }
 
-func (s *Store) ClearChallenge(fp uint64) {
+func (s *Store) ChallengeSolved(fp uint64) {
 	peer, exists := s.table[fp]
 	if !exists {
 		return
 	}
-	peer.challenge = nil
 	peer.challengeSolved = time.Now()
 }
 
