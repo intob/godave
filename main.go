@@ -189,6 +189,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 			}
 		case <-epochTick.C: // SEED
 			d.seed(peers, ring, cshard)
+			cshard++ // overflows to 0
 		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
 			peers.Prune()
 			for _, peer := range peers.Table() {
@@ -221,7 +222,6 @@ func (d *Dave) seed(peers *peer.Store, ring *ringbuffer.RingBuffer[*store.Dat], 
 	if ok {
 		d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: randPeer.AddrPort()}
 	}
-	cshard++ // overflows to 0
 }
 
 func (d *Dave) writePackets(socket pkt.Socket) {
