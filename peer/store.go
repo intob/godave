@@ -131,10 +131,16 @@ func (s *Store) ClearChallenge(fp uint64) {
 	peer.challengeSolved = time.Now()
 }
 
-// Can't use list to ping because once-inactive edges may now be online
-// but are omitted from the list.
 func (s *Store) Table() map[uint64]*Peer {
 	return s.table
+}
+
+func (s *Store) ListActive() []Peer {
+	list := make([]Peer, len(s.active))
+	for i, p := range s.active {
+		list[i] = *p
+	}
+	return list
 }
 
 func (s *Store) RandPeer() *Peer {

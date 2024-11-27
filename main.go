@@ -41,13 +41,13 @@ const (
 type LogLevel int
 
 type Dave struct {
-	Store      *store.Store
-	privateKey ed25519.PrivateKey
-	publicKey  ed25519.PublicKey
-	kill, done chan struct{}
-	packetOut  chan *pkt.Packet
-	toSend     chan *store.Dat
-	logger     *logger.Logger
+	Store                      *store.Store
+	privateKey                 ed25519.PrivateKey
+	publicKey                  ed25519.PublicKey
+	kill, done, getActivePeers chan struct{}
+	packetOut                  chan *pkt.Packet
+	activePeers                chan []peer.Peer
+	logger                     *logger.Logger
 }
 
 type Cfg struct {
@@ -64,13 +64,14 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, errors.New("no valid private key provided")
 	}
 	dave := &Dave{
-		privateKey: cfg.PrivateKey,
-		publicKey:  cfg.PrivateKey.Public().(ed25519.PublicKey),
-		kill:       make(chan struct{}, 1),
-		done:       make(chan struct{}, 1),
-		packetOut:  make(chan *pkt.Packet, 100),
-		toSend:     make(chan *store.Dat),
-		logger:     cfg.Logger,
+		privateKey:     cfg.PrivateKey,
+		publicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
+		kill:           make(chan struct{}, 1),
+		done:           make(chan struct{}, 1),
+		packetOut:      make(chan *pkt.Packet, 100),
+		getActivePeers: make(chan struct{}),
+		activePeers:    make(chan []peer.Peer),
+		logger:         cfg.Logger,
 	}
 	var err error
 	dave.Store, err = store.New(&store.StoreCfg{
@@ -120,7 +121,16 @@ func (d *Dave) Put(dat store.Dat) <-chan struct{} {
 		if err != nil {
 			return
 		}
-		d.toSend <- &dat
+		var peers []peer.Peer
+		for len(peers) == 0 {
+			d.getActivePeers <- struct{}{}
+			peers = <-d.activePeers
+			if len(peers) == 0 {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+		d.packetOut <- &pkt.Packet{Msg: buildDatMessage(&dat), AddrPort: peers[0].AddrPort()}
+		d.logger.Error("sent to %s")
 	}()
 	return done
 }
@@ -192,8 +202,8 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet) {
 					AddrPort: peer.AddrPort()}
 				d.logger.Debug("ping sent to %s", peer.AddrPort())
 			}
-		case dat := <-d.toSend:
-			d.sendDat(peers, dat)
+		case <-d.getActivePeers:
+			d.activePeers <- peers.ListActive()
 		}
 	}
 }
@@ -212,22 +222,6 @@ func (d *Dave) seed(peers *peer.Store, ring *ringbuffer.RingBuffer[*store.Dat], 
 		d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: randPeer.AddrPort()}
 	}
 	cshard++ // overflows to 0
-}
-
-func (d *Dave) sendDat(peers *peer.Store, dat *store.Dat) {
-	sentTo := make(map[uint64]struct{})
-	targetPeers := min(FANOUT, peers.CountActive())
-	for len(sentTo) < targetPeers {
-		randPeers := peers.RandPeers(FANOUT, 0)
-		for _, peer := range randPeers {
-			_, sentAlready := sentTo[peer.Fp()]
-			if !sentAlready {
-				d.packetOut <- &pkt.Packet{Msg: buildDatMessage(dat), AddrPort: peer.AddrPort()}
-				sentTo[peer.Fp()] = struct{}{}
-				d.logger.Error("sent to %s", peer)
-			}
-		}
-	}
 }
 
 func (d *Dave) writePackets(socket pkt.Socket) {
