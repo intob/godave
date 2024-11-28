@@ -15,6 +15,7 @@ type Peer struct {
 	challenge       []byte
 	pubKey          ed25519.PublicKey
 	challengeSolved time.Time
+	pingReceived    time.Time
 }
 
 func (p Peer) Fp() uint64 {
@@ -23,4 +24,8 @@ func (p Peer) Fp() uint64 {
 
 func (p Peer) AddrPort() netip.AddrPort {
 	return p.addrPort
+}
+
+func (p Peer) PubKey() ed25519.PublicKey {
+	return p.pubKey
 }

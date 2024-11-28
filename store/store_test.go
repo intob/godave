@@ -18,17 +18,18 @@ const (
 )
 
 func TestConcurrentPut(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := New(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 200 * time.Millisecond,
 		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+		PublicKey:  pubKey,
 	})
 	if err != nil {
-		t.Error(err)
-	}
-	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < NUM_ROUTINE; i++ {
@@ -68,17 +69,18 @@ func TestConcurrentPut(t *testing.T) {
 }
 
 func TestList(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := New(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 5 * time.Second,
 		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+		PublicKey:  pubKey,
 	})
 	if err != nil {
-		t.Error(err)
-	}
-	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Error(err)
+		t.Fatal(err)
 	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < NUM_ROUTINE; i++ {
@@ -99,5 +101,89 @@ func TestList(t *testing.T) {
 	dats := store.List(pubKey, []byte(fmt.Sprintf("routine_%d", NUM_ROUTINE-1)))
 	if len(dats) != NUM_PUT {
 		t.FailNow()
+	}
+}
+
+func TestStorePrune(t *testing.T) {
+	storePubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const shardCap = 10
+	store, err := New(&StoreCfg{
+		ShardCap:   shardCap,
+		PruneEvery: 200 * time.Millisecond,
+		Logger: logger.NewLogger(&logger.LoggerCfg{
+			Level: logger.DEBUG,
+		}),
+		PublicKey: storePubKey,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Create dats with zero distance (same as store public key)
+	zeroDats := make([]Dat, 5)
+	for i := range zeroDats {
+		zeroDats[i] = Dat{
+			Key:    []byte(fmt.Sprintf("zero_%d", i)),
+			Val:    []byte("zero_value"),
+			Time:   time.Now(),
+			PubKey: storePubKey,
+		}
+		err = store.Put(&zeroDats[i])
+		if err != nil {
+			t.Fatalf("failed to put zero dat: %s", err)
+		}
+	}
+
+	// Create random dats concurrently
+	const numRoutines = 8
+	const datsPerRoutine = 1000
+	wg := sync.WaitGroup{}
+	for i := 0; i < numRoutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < datsPerRoutine; j++ {
+				pub, _, err := ed25519.GenerateKey(rand.Reader)
+				if err != nil {
+					t.Error(err)
+					return
+				}
+				err = store.Put(&Dat{
+					Key:    []byte(fmt.Sprintf("routine_%d_random_%d", i, j)),
+					Val:    []byte("random_value"),
+					Time:   time.Now(),
+					PubKey: pub,
+				})
+				if err != nil {
+					panic("failed to put dat")
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Wait for pruning to occur
+	time.Sleep(300 * time.Millisecond)
+
+	// Verify all zero-distance dats are retained
+	for _, dat := range zeroDats {
+		_, exists := store.Get(dat.PubKey, dat.Key)
+		if !exists {
+			t.Errorf("zero-distance dat with key %s was pruned", dat.Key)
+		}
+	}
+
+	// Verify each shard stays within capacity
+	for _, shard := range store.shards {
+		shard.mu.Lock()
+		count := len(shard.table)
+		if count > shardCap {
+			t.Errorf("shard exceeded capacity: got %d items, want <= %d", count, shardCap)
+		}
+		shard.mu.Unlock()
 	}
 }

@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	mrand "math/rand"
 	"os"
 	"runtime"
 	"sync"
@@ -19,12 +18,13 @@ import (
 	"github.com/intob/godave/dave"
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/pow"
+	"github.com/intob/godave/xor"
 	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
 type Store struct {
-	shards         []*shard
+	shards         [256]*shard
 	shardCap       int
 	count          atomic.Uint32
 	logger         *logger.Logger
@@ -32,12 +32,15 @@ type Store struct {
 	backup         chan *Dat
 	kill           <-chan struct{}
 	done           chan<- struct{}
+	currentShard   uint8
+	publicKey      ed25519.PublicKey
 }
 
 type StoreCfg struct {
 	ShardCap       int
 	PruneEvery     time.Duration
 	BackupFilename string
+	PublicKey      ed25519.PublicKey
 	Logger         *logger.Logger
 	Kill           <-chan struct{}
 	Done           chan<- struct{}
@@ -46,6 +49,7 @@ type StoreCfg struct {
 type shard struct {
 	mu    sync.Mutex
 	table map[uint64]Dat
+	pos   uint32
 }
 
 type Dat struct {
@@ -59,15 +63,16 @@ type Dat struct {
 }
 
 type pair struct {
-	id  uint64
-	dat Dat
+	id       uint64
+	dat      Dat
+	distance []byte
 }
 
 type datheap []*pair
 
 func (h datheap) Len() int { return len(h) }
-func (h datheap) Less(i, j int) bool {
-	return Mass(h[i].dat.Work, h[i].dat.Time) < Mass(h[j].dat.Work, h[j].dat.Time)
+func (h datheap) Less(i, j int) bool { // This is a min heap, less means further away.
+	return bytes.Compare(h[i].distance, h[j].distance) > 0
 }
 func (h datheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *datheap) Push(x interface{}) { *h = append(*h, x.(*pair)) }
@@ -84,15 +89,20 @@ func New(cfg *StoreCfg) (*Store, error) {
 	if cfg.ShardCap <= 0 {
 		return nil, errors.New("inavlid shard cap provided, must be greater than 0")
 	}
+	if cfg.PublicKey == nil {
+		return nil, errors.New("no public key provided")
+	}
 	s := &Store{
-		shards:         make([]*shard, 256),
 		shardCap:       cfg.ShardCap,
 		count:          atomic.Uint32{},
 		backupFilename: cfg.BackupFilename,
-		backup:         make(chan *Dat, 1000),
+		publicKey:      cfg.PublicKey,
 		logger:         cfg.Logger,
 		kill:           cfg.Kill,
 		done:           cfg.Done,
+	}
+	if s.backupFilename != "" {
+		s.backup = make(chan *Dat, 1000)
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{
@@ -326,17 +336,32 @@ func (s *Store) prune() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			dist := make([]byte, ed25519.PublicKeySize) // Pre-allocate once per goroutine
 			for shardIndex := range jobs {
 				dh := &datheap{}
 				heap.Init(dh)
 				currentShard := s.shards[shardIndex]
 				currentShard.mu.Lock()
 				for datKey, dat := range currentShard.table {
+					xor.Xor256Into(dist, s.publicKey, dat.PubKey)
 					if dh.Len() < s.shardCap {
-						heap.Push(dh, &pair{datKey, dat})
-					} else if Mass(dat.Work, dat.Time) > Mass(dh.Peek().dat.Work, dh.Peek().dat.Time) {
-						heap.Pop(dh)
-						heap.Push(dh, &pair{datKey, dat})
+						heap.Push(dh, &pair{datKey, dat, dist})
+					} else {
+						peek := dh.Peek()
+						cmp := bytes.Compare(dist, peek.distance)
+						if cmp < 0 || (cmp == 0 && dat.Time.After(peek.dat.Time)) {
+							// current is closer or
+							// if distance is equal, current is newer
+							/*
+								if s.logger.Level() == logger.DEBUG {
+									replacedDist, _ := xor.XorFloat(peek.dat.PubKey, s.publicKey)
+									newDist, _ := xor.XorFloat(dat.PubKey, s.publicKey)
+									s.logger.Debug("kicked %s (dist %f), for %s (dist %f)", peek.dat.Key, replacedDist, dat.Key, newDist)
+								}
+							*/
+							heap.Pop(dh)
+							heap.Push(dh, &pair{datKey, dat, dist})
+						}
 					}
 				}
 				newTable := make(map[uint64]Dat, dh.Len())
@@ -376,10 +401,6 @@ func (s *Store) prune() {
 	}
 }
 
-func Mass(work []byte, t time.Time) float64 {
-	return float64(pow.Nzerobit(work)) * (1 / float64(time.Since(t).Milliseconds()))
-}
-
 func (s *Store) writeBackup() error {
 	f, err := os.OpenFile(s.backupFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
@@ -408,21 +429,25 @@ func (s *Store) writeBackup() error {
 	}
 }
 
-func (s *Store) Rand(shardIndex uint8) *Dat {
-	shard := s.shards[shardIndex]
+func (s *Store) Next() (Dat, bool) {
+	s.currentShard++ // overflows to 0
+	shard := s.shards[s.currentShard]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	if len(shard.table) == 0 {
-		return nil
+		return Dat{}, false
 	}
-	datPos := mrand.Intn(len(shard.table))
-	var currentPos int
+	shard.pos++
+	if shard.pos >= uint32(len(shard.table)) {
+		shard.pos = 0
+	}
+	var currentPos uint32
 	for _, dat := range shard.table {
-		if currentPos != datPos {
+		if currentPos != shard.pos {
 			currentPos++
 			continue
 		}
-		return &dat
+		return dat, true
 	}
-	return nil
+	return Dat{}, false
 }

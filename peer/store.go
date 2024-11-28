@@ -83,7 +83,8 @@ func (s *Store) UpdateTrust(fp uint64, delta float64) {
 	oldTrust := peer.trust
 	peer.trust = math.Min(peer.trust+delta, s.maxTrust)
 	s.trustSum += peer.trust - oldTrust
-	s.logger.Debug("trust sum updated to %f", s.trustSum)
+	//s.logger.Debug("%s's trust updated to %f", peer.addrPort, peer.trust)
+	//s.logger.Debug("trust sum updated to %f", s.trustSum)
 }
 
 func (s *Store) CreateChallenge(fp uint64) ([]byte, error) {
@@ -132,6 +133,22 @@ func (s *Store) ChallengeSolved(fp uint64) {
 	peer.challengeSolved = time.Now()
 }
 
+func (s *Store) IsPingExpected(fp uint64, ping time.Duration) bool {
+	peer, exists := s.table[fp]
+	if !exists {
+		return false
+	}
+	return time.Since(peer.pingReceived) >= ping-200*time.Millisecond
+}
+
+func (s *Store) UpdatePingReceived(fp uint64) {
+	peer, exists := s.table[fp]
+	if !exists {
+		return
+	}
+	peer.pingReceived = time.Now()
+}
+
 func (s *Store) Table() map[uint64]*Peer {
 	return s.table
 }
@@ -144,6 +161,7 @@ func (s *Store) ListActive() []Peer {
 	return list
 }
 
+/*
 func (s *Store) RandPeer() *Peer {
 	if len(s.active) == 0 {
 		return nil
@@ -161,8 +179,9 @@ func (s *Store) RandPeer() *Peer {
 	}
 	return nil
 }
+*/
 
-func (s *Store) RandPeers(limit int, excludeFp uint64) []Peer {
+func (s *Store) TrustWeightedRandPeers(limit int, excludeFp uint64) []Peer {
 	if len(s.active) == 0 {
 		return nil
 	}

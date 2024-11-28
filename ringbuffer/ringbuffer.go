@@ -25,11 +25,11 @@ func (rb *RingBuffer[T]) Write(data T) bool {
 	if rb.count == rb.size {
 		// Buffer is full, overwrite oldest data
 		rb.read = (rb.read + 1) % rb.size
-	} else {
-		rb.count++
+		rb.count--
 	}
 	rb.buffer[rb.write] = data
 	rb.write = (rb.write + 1) % rb.size
+	rb.count++
 	return true
 }
 
@@ -40,10 +40,7 @@ func (rb *RingBuffer[T]) Read() (T, bool) {
 	}
 	data := rb.buffer[rb.read]
 	rb.read = (rb.read + 1) % rb.size
-
-	if rb.read == rb.write {
-		rb.read = 0
-	}
+	rb.count--
 	return data, true
 }
 
