@@ -2,6 +2,7 @@ package godave
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"errors"
 	"fmt"
@@ -111,35 +112,37 @@ func (d *Dave) Kill() <-chan struct{} {
 	return d.done
 }
 
-// TODO: Send dat to closest FANOUT peers
-// TODO: Implement PUT_ACK message, and send this message with
-// a flag to send a PUT_ACK. This will make writes to the network safe.
-// This function can complete when FANOUT peers have acknowledged the PUT.
-func (d *Dave) Put(dat store.Dat) <-chan struct{} {
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		err := d.Store.Put(&dat)
-		if err != nil {
-			return
-		}
-		var activePeers []peer.Peer
-		for len(activePeers) == 0 {
-			d.getActivePeers <- struct{}{}
-			activePeers = <-d.activePeers
-			if len(activePeers) == 0 {
-				time.Sleep(500 * time.Millisecond)
-			}
-		}
-		d.packetOut <- &pkt.Packet{Msg: buildDatMessage(&dat), AddrPort: activePeers[0].AddrPort()}
-		d.logger.Error("sent to %s")
-	}()
-	return done
+func (d *Dave) Put(dat store.Dat) error {
+	err := d.Store.Put(&dat)
+	if err != nil {
+		return fmt.Errorf("failed to put dat in local store: %s", err)
+	}
+	var activePeers []peer.Peer
+	d.getActivePeers <- struct{}{}
+	activePeers = <-d.activePeers
+	if len(activePeers) == 0 {
+		return errors.New("no active peers")
+	}
+	d.sendToClosestPeers(activePeers, &dat)
+	d.logger.Error("sent to %s")
+	return nil
 }
 
-// TODO: Add a separate peer discovery function that waits for fanout peers.
-// TODO: Add timeout param. Peer discovery should timeout after the given time.
-// TODO: Add fanout param. If peer discovery times out before reaching fanout, return an error.
+func (d *Dave) WaitForPeers(ctx context.Context, count int) error {
+	check := time.NewTicker(100 * time.Millisecond)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-check.C:
+			d.getActivePeers <- struct{}{}
+			activePeers := <-d.activePeers
+			if len(activePeers) >= count {
+				return nil
+			}
+		}
+	}
+}
 
 func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int) {
 	pingTick := time.NewTicker(PING)
@@ -166,11 +169,11 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 			}
 			ringDat, ok := ring.Read()
 			if ok {
-				d.seed(activePeers, ringDat)
+				d.sendToClosestPeers(activePeers, ringDat)
 			} else {
 				nextDat, ok := d.Store.Next()
 				if ok {
-					d.seed(activePeers, &nextDat)
+					d.sendToClosestPeers(activePeers, &nextDat)
 				}
 			}
 		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
@@ -243,32 +246,37 @@ func (d *Dave) handlePing(peers *peer.Store, packet *pkt.Packet) {
 	//d.logger.Debug("replied to ping from %d", remoteFp)
 }
 
-func (d *Dave) seed(activePeers []peer.Peer, dat *store.Dat) {
-	type peerDistance struct {
-		peer     peer.Peer
-		distance []byte
+func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *store.Dat) {
+	msg := buildDatMessage(dat)
+	sorted := sortPeersByDistance(dat.PubKey, activePeers)
+	for i := 0; i < FANOUT && i < len(sorted); i++ {
+		d.packetOut <- &pkt.Packet{
+			Msg:      msg,
+			AddrPort: sorted[i].peer.AddrPort(),
+		}
 	}
-	distances := make([]peerDistance, 0, len(activePeers))
-	for _, peer := range activePeers {
+}
+
+type peerDistance struct {
+	peer     peer.Peer
+	distance []byte
+}
+
+// Returns a copy of the peer slice sorted by distance, closest first
+func sortPeersByDistance(target ed25519.PublicKey, peers []peer.Peer) []peerDistance {
+	distances := make([]peerDistance, 0, len(peers))
+	for _, peer := range peers {
 		if peer.PubKey() == nil {
-			d.logger.Error("active peer pub key is nil: %s", peer.AddrPort())
 			continue
 		}
 		dist := make([]byte, ed25519.PublicKeySize)
-		xor.Xor256Into(dist, peer.PubKey(), dat.PubKey)
+		xor.Xor256Into(dist, peer.PubKey(), target)
 		distances = append(distances, peerDistance{peer, dist})
 	}
 	sort.Slice(distances, func(i, j int) bool {
 		return bytes.Compare(distances[i].distance, distances[j].distance) < 0
 	})
-	msg := buildDatMessage(dat)
-	for i := 0; i < FANOUT && i < len(distances); i++ {
-		d.packetOut <- &pkt.Packet{
-			Msg:      msg,
-			AddrPort: distances[i].peer.AddrPort(),
-		}
-	}
-
+	return distances
 }
 
 func (d *Dave) writePackets(socket pkt.Socket) {

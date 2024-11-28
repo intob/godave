@@ -68,11 +68,18 @@ type pair struct {
 	distance []byte
 }
 
+// This is a min heap, less means further away.
+// If the distance is the same, less means older.
+// This prioritises closer data, and newer data.
 type datheap []*pair
 
 func (h datheap) Len() int { return len(h) }
-func (h datheap) Less(i, j int) bool { // This is a min heap, less means further away.
-	return bytes.Compare(h[i].distance, h[j].distance) > 0
+func (h datheap) Less(i, j int) bool {
+	cmp := bytes.Compare(h[i].distance, h[j].distance)
+	if cmp != 0 {
+		return cmp > 0
+	}
+	return h[i].dat.Time.Before(h[j].dat.Time)
 }
 func (h datheap) Swap(i, j int)       { h[i], h[j] = h[j], h[i] }
 func (h *datheap) Push(x interface{}) { *h = append(*h, x.(*pair)) }
@@ -392,7 +399,8 @@ func (s *Store) prune() {
 			l := len(shard.table)
 			if l < smallest || smallest == 0 {
 				smallest = l
-			} else if l > largest || largest == 0 {
+			}
+			if l > largest || largest == 0 {
 				largest = l
 			}
 		}
