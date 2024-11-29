@@ -1,6 +1,6 @@
 # Dave - Distributed Key-Value Store
 
-Dave is a decentralized key-value store built on UDP, designed for efficient data distribution and storage prioritization using proof-of-work.
+Dave is a peer-to-peer key-value store built on UDP, designed for efficient data distribution and resource allocation using xor metric and proof-of-work.
 
 ## Core Features
 
@@ -10,6 +10,9 @@ Dave is a decentralized key-value store built on UDP, designed for efficient dat
 - Configurable sharding for concurrent processing
 - Automatic peer discovery and management
 - Data backup and recovery
+- Just two dependencies:
+    - https://github.com/cespare/xxhash/v2
+    - https://github.com/lukechampine/blake3
 
 ## Architecture
 
@@ -23,7 +26,7 @@ Dave is a decentralized key-value store built on UDP, designed for efficient dat
 ### Storage System
 
 - **Sharding**: Concurrent processing with configurable shard capacity
-- **Data Prioritization**: XOR metric and time-bound storage prioritization
+- **Data Prioritization**: xor metric and time-bound storage prioritization
 - **Backup**: Automatic data persistence and recovery with configurable backup files
 
 ## Configuration
