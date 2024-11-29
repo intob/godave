@@ -15,17 +15,16 @@ Dave is a decentralized key-value store built on UDP, designed for efficient dat
 
 ### Network Protocol
 
-- **Maximum Packet Size**: 1424 bytes to avoid fragmentation[1]
-- **Transport**: UDP with protobuf serialization
+- **Maximum Packet Size**: 1424 bytes to avoid fragmentation
+- **Transport**: UDP with optimised serialization (x4 faster than protobuf)
 - **Peer Management**: Dynamic peer discovery with trust scoring
-- **Data Distribution**: Random push model for anonymity
+- **Data Distribution**: XOR metric for determinism, random push for anonymity
 
 ### Storage System
 
-- **Sharding**: Concurrent processing with configurable shard capacity[2]
-- **Data Prioritization**: Mass-based storage prioritization
-- **Mass Calculation**: `Mass = Difficulty * (1 / Age_Milliseconds)`
-- **Backup**: Automatic data persistence with configurable backup files
+- **Sharding**: Concurrent processing with configurable shard capacity
+- **Data Prioritization**: XOR metric and time-bound storage prioritization
+- **Backup**: Automatic data persistence and recovery with configurable backup files
 
 ## Configuration
 
@@ -58,12 +57,10 @@ type Cfg struct {
 - Random push model for sender anonymity
 - Recent data prioritization using ring buffer
 - Configurable fanout for data propagation
-- Edge peers for network bootstrapping
 
 ## Pruning and Maintenance
 
 - Periodic pruning of inactive peers
-- Mass-based data retention
 - Concurrent shard processing
 - Automatic backup management
 
@@ -83,7 +80,10 @@ Edge nodes serve as bootstrap peers with special properties:
 
 ## Performance Considerations
 
+- Concurrent packet processing
 - Concurrent shard processing
 - Configurable pruning intervals
 - Ring buffer for recent data
 - Trust-based resource allocation
+- Heap for data prioritisation
+- Xor distance implemented in assembly
