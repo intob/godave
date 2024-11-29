@@ -32,10 +32,10 @@ var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits 
 }
 
 // DoWork computes a proof-of-work, either on a single core or on all cores,
-// depending on the difficulty level. For lower difficulty levels (< 12),
+// depending on the difficulty level. For lower difficulty levels (< 10),
 // the single-core implementation performs best.
 func DoWork(key string, val []byte, tim time.Time, d uint8) (work types.Hash, salt types.Salt) {
-	if d >= 12 {
+	if d >= 10 {
 		return doWorkAllCores(key, val, tim, d)
 	} else {
 		return doWorkSingleCore(key, val, tim, d)
@@ -58,7 +58,7 @@ func doWorkSingleCore(key string, val []byte, tim time.Time, d uint8) (types.Has
 		h.Write(saltSlice)
 		h.Write(load)
 		hash := h.Sum(nil)
-		if NzerobitSlice(hash) >= d {
+		if nzerobitSlice(hash) >= d {
 			return types.Hash(hash), types.Salt(saltSlice)
 		}
 		if n2 == math.MaxUint64 {
@@ -104,7 +104,7 @@ func doWorkAllCores(key string, val []byte, tim time.Time, d uint8) (types.Hash,
 					h.Write(saltSlice)
 					h.Write(load)
 					hash := h.Sum(nil)
-					if NzerobitSlice(hash) >= d {
+					if nzerobitSlice(hash) >= d {
 						select {
 						case resultChan <- result{
 							work: types.Hash(hash),
@@ -140,7 +140,7 @@ func Nzerobit(work types.Hash) uint8 {
 	return count
 }
 
-func NzerobitSlice(work []byte) uint8 {
+func nzerobitSlice(work []byte) uint8 {
 	var count uint8
 	for _, b := range work {
 		count += zeroTable[b]
