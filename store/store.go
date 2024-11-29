@@ -10,16 +10,16 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/intob/godave/dave"
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/pow"
+	"github.com/intob/godave/types"
 	"github.com/intob/godave/xor"
-	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
@@ -29,7 +29,7 @@ type Store struct {
 	count          atomic.Uint32
 	logger         *logger.Logger
 	backupFilename string
-	backup         chan *Dat
+	backup         chan *types.Dat
 	kill           <-chan struct{}
 	done           chan<- struct{}
 	currentShard   uint8
@@ -48,23 +48,13 @@ type StoreCfg struct {
 
 type shard struct {
 	mu    sync.Mutex
-	table map[uint64]Dat
+	table map[uint64]types.Dat
 	pos   uint32
-}
-
-type Dat struct {
-	Key    []byte
-	Val    []byte
-	Time   time.Time
-	Salt   []byte
-	Work   []byte
-	Sig    []byte
-	PubKey ed25519.PublicKey
 }
 
 type pair struct {
 	id       uint64
-	dat      Dat
+	dat      types.Dat
 	distance []byte
 }
 
@@ -109,11 +99,11 @@ func New(cfg *StoreCfg) (*Store, error) {
 		done:           cfg.Done,
 	}
 	if s.backupFilename != "" {
-		s.backup = make(chan *Dat, 1000)
+		s.backup = make(chan *types.Dat, 1000)
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{
-			table: make(map[uint64]Dat),
+			table: make(map[uint64]types.Dat),
 		}
 	}
 	go func() {
@@ -148,7 +138,7 @@ func (s *Store) Count() uint32 {
 	return s.count.Load()
 }
 
-func (s *Store) Put(dat *Dat) error {
+func (s *Store) Put(dat *types.Dat) error {
 	if dat == nil {
 		return errors.New("nil dat provided")
 	}
@@ -181,7 +171,7 @@ func (s *Store) Put(dat *Dat) error {
 	return nil
 }
 
-func (s *Store) Get(pubKey ed25519.PublicKey, datKey []byte) (Dat, bool) {
+func (s *Store) Get(pubKey ed25519.PublicKey, datKey string) (types.Dat, bool) {
 	shardIndex, key := Keys(pubKey, datKey)
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
@@ -190,8 +180,8 @@ func (s *Store) Get(pubKey ed25519.PublicKey, datKey []byte) (Dat, bool) {
 	return dat, ok
 }
 
-func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix []byte) []Dat {
-	resultChan := make(chan Dat, 1)
+func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []types.Dat {
+	resultChan := make(chan types.Dat, 1)
 	jobs := make(chan int, len(s.shards))
 	wg := sync.WaitGroup{}
 	for i := 0; i < runtime.NumCPU(); i++ {
@@ -205,7 +195,7 @@ func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix []byte) []Dat {
 					if !bytes.Equal(dat.PubKey, pubKey) {
 						continue
 					}
-					if !bytes.HasPrefix(dat.Key, datKeyPrefix) {
+					if !strings.HasPrefix(dat.Key, datKeyPrefix) {
 						continue
 					}
 					resultChan <- dat
@@ -221,17 +211,17 @@ func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix []byte) []Dat {
 		jobs <- j
 	}
 	close(jobs)
-	results := make([]Dat, 0, 100)
+	results := make([]types.Dat, 0, 100)
 	for result := range resultChan {
 		results = append(results, result)
 	}
 	return results
 }
 
-func Keys(pubKey ed25519.PublicKey, datKey []byte) (uint8, uint64) {
+func Keys(pubKey ed25519.PublicKey, datKey string) (uint8, uint64) {
 	h := xxhash.New()
 	h.Write(pubKey)
-	h.Write(datKey)
+	h.WriteString(datKey)
 	sum64 := h.Sum64()
 	return uint8(sum64 >> 56), sum64
 }
@@ -262,30 +252,25 @@ func (s *Store) readBackup() error {
 		if err != nil {
 			return fmt.Errorf("err reading length-prefixed msg: %w", err)
 		}
-		m := &dave.M{}
-		err = proto.Unmarshal(datbuf, m)
+		msg := &types.Msg{}
+		err = msg.Unmarshal(datbuf)
 		if err != nil {
 			return fmt.Errorf("err unmarshalling proto msg: %w", err)
 		}
-		err = pow.Check(hasher, m)
+		if msg.Dat == nil {
+			return errors.New("dat is nil")
+		}
+		err = pow.Check(hasher, msg.Dat)
 		if err != nil {
 			continue
 		}
-		s.putFromBackup(&Dat{
-			Key:    m.DatKey,
-			Val:    m.Val,
-			Time:   pow.Btt(m.Time),
-			Salt:   m.Salt,
-			Work:   m.Work,
-			Sig:    m.Sig,
-			PubKey: m.PubKey,
-		})
+		s.putFromBackup(msg.Dat)
 	}
 	return nil
 }
 
 // Similar to Put but does not send to backup buffer
-func (s *Store) putFromBackup(dat *Dat) {
+func (s *Store) putFromBackup(dat *types.Dat) {
 	shardIndex, key := Keys(dat.PubKey, dat.Key)
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
@@ -309,6 +294,7 @@ func (s *Store) putFromBackup(dat *Dat) {
 }
 
 // Recreate backup after pruning
+// TODO: Process shards concurrently
 func (s *Store) writeFreshBackup() error {
 	f, err := os.Create(s.backupFilename)
 	if err != nil {
@@ -319,14 +305,15 @@ func (s *Store) writeFreshBackup() error {
 	for _, shard := range s.shards {
 		shard.mu.Lock()
 		for _, d := range shard.table {
-			bin, err := proto.Marshal(&dave.M{Op: dave.Op_PUT, DatKey: d.Key, Val: d.Val, Time: pow.Ttb(d.Time), Salt: d.Salt, Work: d.Work, PubKey: d.PubKey, Sig: d.Sig})
+			bin := make([]byte, types.MaxMsgLen)
+			n, err := d.Marshal(bin)
 			if err != nil {
 				return err
 			}
 			lenb := make([]byte, 2)
 			binary.LittleEndian.PutUint16(lenb, uint16(len(bin)))
 			buf.Write(lenb)
-			buf.Write(bin)
+			buf.Write(bin[:n])
 		}
 		shard.mu.Unlock()
 	}
@@ -371,7 +358,7 @@ func (s *Store) prune() {
 						}
 					}
 				}
-				newTable := make(map[uint64]Dat, dh.Len())
+				newTable := make(map[uint64]types.Dat, dh.Len())
 				var localCount uint32
 				for dh.Len() > 0 {
 					pair := heap.Pop(dh).(*pair)
@@ -414,36 +401,37 @@ func (s *Store) writeBackup() error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %s", err)
 	}
-	buf := bufio.NewWriter(f)
+	writer := bufio.NewWriter(f)
 	for {
 		select {
 		case <-s.kill:
-			flushErr := buf.Flush()
+			flushErr := writer.Flush()
 			closeErr := f.Close()
 			s.done <- struct{}{}
 			s.logger.Debug("backup buffer flushed, file closed, errors if any: %v %v", flushErr, closeErr)
 			return nil
 		case d := <-s.backup:
-			b, err := proto.Marshal(&dave.M{Op: dave.Op_PUT, DatKey: d.Key, Val: d.Val, Time: pow.Ttb(d.Time), Salt: d.Salt, Work: d.Work, Sig: d.Sig, PubKey: d.PubKey})
+			buf := make([]byte, types.MaxMsgLen)
+			n, err := d.Marshal(buf)
 			if err != nil {
 				s.logger.Error("backup failed to marshal: %s", err)
 				continue
 			}
 			lenb := make([]byte, 2)
-			binary.LittleEndian.PutUint16(lenb, uint16(len(b)))
-			buf.Write(lenb)
-			buf.Write(b)
+			binary.LittleEndian.PutUint16(lenb, uint16(n))
+			writer.Write(lenb)
+			writer.Write(buf[:n])
 		}
 	}
 }
 
-func (s *Store) Next() (Dat, bool) {
+func (s *Store) Next() (types.Dat, bool) {
 	s.currentShard++ // overflows to 0
 	shard := s.shards[s.currentShard]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
 	if len(shard.table) == 0 {
-		return Dat{}, false
+		return types.Dat{}, false
 	}
 	shard.pos++
 	if shard.pos >= uint32(len(shard.table)) {
@@ -457,5 +445,5 @@ func (s *Store) Next() (Dat, bool) {
 		}
 		return dat, true
 	}
-	return Dat{}, false
+	return types.Dat{}, false
 }

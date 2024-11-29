@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"testing"
 	"time"
+
+	"github.com/intob/godave/types"
 )
 
 const hashStr = "000001db4044b9c5bf5247b463fe0f5e181e424d151d9f03fb9f3720d4795f18"
@@ -17,7 +19,7 @@ func BenchmarkNzerobit(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		Nzerobit(hash)
+		Nzerobit(types.Hash(hash))
 	}
 }
 
@@ -37,7 +39,7 @@ func TestNzerobit(t *testing.T) {
 	if err != nil {
 		panic(err)
 	}
-	if Nzerobit(hash) != nzerobitUnrolled(hash) {
+	if Nzerobit(types.Hash(hash)) != nzerobitUnrolled(hash) {
 		t.FailNow()
 	}
 }
@@ -84,13 +86,13 @@ func nzerobitUnrolled(key []byte) uint8 {
 func BenchmarkWork(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		doWorkSingleCore([]byte("test"), []byte("val"), Ttb(time.Now()), 12)
+		doWorkSingleCore("test", []byte("val"), time.Now(), 12)
 	}
 }
 
 func BenchmarkWork2(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		doWorkAllCores([]byte("test"), []byte("val"), Ttb(time.Now()), 12)
+		doWorkAllCores("test", []byte("val"), time.Now(), 12)
 	}
 }

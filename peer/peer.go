@@ -4,6 +4,8 @@ import (
 	"crypto/ed25519"
 	"net/netip"
 	"time"
+
+	"github.com/intob/godave/types"
 )
 
 type Peer struct {
@@ -12,7 +14,7 @@ type Peer struct {
 	added           time.Time
 	edge            bool
 	trust           float64
-	challenge       []byte
+	challenge       types.Challenge
 	pubKey          ed25519.PublicKey
 	challengeSolved time.Time
 	pingReceived    time.Time

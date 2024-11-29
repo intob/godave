@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/types"
 )
 
 const (
@@ -37,8 +38,8 @@ func TestConcurrentPut(t *testing.T) {
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Put(&Dat{
-					Key:    []byte(fmt.Sprintf("routine_%d_test_%d", routine, j)),
+				store.Put(&types.Dat{
+					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
 					PubKey: pubKey,
@@ -59,7 +60,7 @@ func TestConcurrentPut(t *testing.T) {
 		t.Errorf("expected %d, got %d", NUM_PUT*NUM_ROUTINE, count)
 	}
 
-	dat, ok := store.Get(pubKey, []byte(fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1)))
+	dat, ok := store.Get(pubKey, fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1))
 	if !ok {
 		t.FailNow()
 	}
@@ -88,8 +89,8 @@ func TestList(t *testing.T) {
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Put(&Dat{
-					Key:    []byte(fmt.Sprintf("routine_%d_test_%d", routine, j)),
+				store.Put(&types.Dat{
+					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
 					PubKey: pubKey,
@@ -98,7 +99,7 @@ func TestList(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	dats := store.List(pubKey, []byte(fmt.Sprintf("routine_%d", NUM_ROUTINE-1)))
+	dats := store.List(pubKey, fmt.Sprintf("routine_%d", NUM_ROUTINE-1))
 	if len(dats) != NUM_PUT {
 		t.FailNow()
 	}
@@ -124,10 +125,10 @@ func TestStorePrune(t *testing.T) {
 	}
 
 	// Create dats with zero distance (same as store public key)
-	zeroDats := make([]Dat, 5)
+	zeroDats := make([]types.Dat, 5)
 	for i := range zeroDats {
-		zeroDats[i] = Dat{
-			Key:    []byte(fmt.Sprintf("zero_%d", i)),
+		zeroDats[i] = types.Dat{
+			Key:    fmt.Sprintf("zero_%d", i),
 			Val:    []byte("zero_value"),
 			Time:   time.Now(),
 			PubKey: storePubKey,
@@ -152,8 +153,8 @@ func TestStorePrune(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				err = store.Put(&Dat{
-					Key:    []byte(fmt.Sprintf("routine_%d_random_%d", i, j)),
+				err = store.Put(&types.Dat{
+					Key:    fmt.Sprintf("routine_%d_random_%d", i, j),
 					Val:    []byte("random_value"),
 					Time:   time.Now(),
 					PubKey: pub,

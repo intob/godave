@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"net/netip"
@@ -11,31 +12,28 @@ import (
 	"sort"
 	"time"
 
-	"github.com/intob/godave/dave"
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/peer"
 	"github.com/intob/godave/pkt"
-	"github.com/intob/godave/pow"
 	"github.com/intob/godave/ringbuffer"
 	"github.com/intob/godave/store"
+	"github.com/intob/godave/types"
 	"github.com/intob/godave/xor"
-	"google.golang.org/protobuf/proto"
 	"lukechampine.com/blake3"
 )
 
 const (
-	EPOCH            = time.Millisecond
-	BUF_SIZE         = 1424             // Max packet size, 1500 MTU is typical, avoids packet fragmentation.
+	EPOCH = time.Millisecond // Period between seeding rounds.
+	//BUF_SIZE         = types.MaxMsgLen  // (1424) Max packet size, 1500 MTU is typical, avoids packet fragmentation.
 	FANOUT           = 2                // Number of peers selected when sending dats.
 	PROBE            = 12               // Inverse of probability that a peer is selected regardless of trust.
 	NPEER_LIMIT      = 3                // Maximum number of peer descriptors in a PONG message.
 	MIN_WORK         = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	MAX_TRUST        = 25               // Maximum trust score, ensuring fair trust distribution from feedback.
-	PING             = 3 * time.Second  // Period between pinging peers.
+	PING             = 1 * time.Second  // Period between pinging peers.
 	DROP             = 3 * PING         // Time until protocol-deviating peers are dropped.
 	ACTIVATION_DELAY = 2 * DROP         // Time until new peers are activated. Must be greater than DROP.
 	PRUNE_DATS       = 10 * time.Second // Period between pruning dats.
-	PRUNE_PEERS      = PING             // Period between pruning peers.
 )
 
 type Dave struct {
@@ -87,7 +85,6 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	peers := peer.NewStore(&peer.StoreCfg{
 		Probe:           PROBE,
 		MaxTrust:        MAX_TRUST,
-		PruneEvery:      PRUNE_PEERS,
 		DropAfter:       DROP,
 		ActivationDelay: ACTIVATION_DELAY,
 		Logger:          cfg.Logger.WithPrefix("/peers"),
@@ -95,14 +92,17 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	for _, addrPort := range cfg.Edges {
 		peers.AddPeer(addrPort, true)
 	}
-	incoming := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
-		NumWorkers: runtime.NumCPU(),
-		BufSize:    BUF_SIZE,
-		FilterFunc: packetFilter,
-		Socket:     cfg.Socket,
-		Logger:     cfg.Logger.WithPrefix("/packet_proc"),
+	packetProcessor, err := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
+		NumWorkers:    runtime.NumCPU(),
+		BufSize:       types.MaxMsgLen,
+		Socket:        cfg.Socket,
+		Logger:        cfg.Logger.WithPrefix("/packet_proc"),
+		PongPeerLimit: NPEER_LIMIT,
 	})
-	go dave.run(peers, incoming.Packets(), cfg.ShardCap)
+	if err != nil {
+		return nil, fmt.Errorf("failed to init packet processor: %s", err)
+	}
+	go dave.run(peers, packetProcessor.Packets(), cfg.ShardCap)
 	go dave.writePackets(cfg.Socket)
 	return dave, nil
 }
@@ -112,7 +112,7 @@ func (d *Dave) Kill() <-chan struct{} {
 	return d.done
 }
 
-func (d *Dave) Put(dat store.Dat) error {
+func (d *Dave) Put(dat types.Dat) error {
 	err := d.Store.Put(&dat)
 	if err != nil {
 		return fmt.Errorf("failed to put dat in local store: %s", err)
@@ -147,19 +147,19 @@ func (d *Dave) WaitForPeers(ctx context.Context, count int) error {
 func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int) {
 	pingTick := time.NewTicker(PING)
 	epochTick := time.NewTicker(EPOCH)
-	ring := ringbuffer.NewRingBuffer[*store.Dat](ringSize)
+	ring := ringbuffer.NewRingBuffer[*types.Dat](ringSize)
 	for {
 		select {
 		case packet := <-packetIn: // HANDLE INCOMING PACKET
 			switch packet.Msg.Op {
-			case dave.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
+			case types.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
 				err := handlePong(peers, packet)
 				if err != nil {
 					d.logger.Error("failed to handle pong: %s", err)
 				}
-			case dave.Op_PING: // SOLVE CHALLENGE & GIVE PEERS
+			case types.Op_PING: // SOLVE CHALLENGE & GIVE PEERS
 				d.handlePing(peers, packet)
-			case dave.Op_PUT: // STORE DAT
+			case types.Op_PUT: // STORE DAT
 				d.handlePut(peers, ring, packet)
 			}
 		case <-epochTick.C: // SEED
@@ -185,7 +185,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 					continue
 				}
 				d.packetOut <- &pkt.Packet{
-					Msg:      &dave.M{Op: dave.Op_PING, Val: challenge},
+					Msg:      &types.Msg{Op: types.Op_PING, Challenge: challenge},
 					AddrPort: peer.AddrPort()}
 				//d.logger.Debug("ping sent to %s", peer.AddrPort())
 			}
@@ -195,24 +195,15 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 	}
 }
 
-func (d *Dave) handlePut(peers *peer.Store, ring *ringbuffer.RingBuffer[*store.Dat], packet *pkt.Packet) {
+func (d *Dave) handlePut(peers *peer.Store, ring *ringbuffer.RingBuffer[*types.Dat], packet *pkt.Packet) {
 	remoteFp := peers.AddPeer(packet.AddrPort, false)
-	dat := &store.Dat{
-		Key:    packet.Msg.DatKey,
-		Val:    packet.Msg.Val,
-		Time:   pow.Btt(packet.Msg.Time),
-		Salt:   packet.Msg.Salt,
-		Work:   packet.Msg.Work,
-		Sig:    packet.Msg.Sig,
-		PubKey: packet.Msg.PubKey,
-	}
-	err := d.Store.Put(dat)
+	err := d.Store.Put(packet.Msg.Dat)
 	if err != nil {
 		//d.logger.Debug("failed to store dat: %s", err)
 		return
 	}
-	ring.Write(dat)
-	dist, err := xor.XorFloat(d.publicKey, dat.PubKey)
+	ring.Write(packet.Msg.Dat)
+	dist, err := xor.XorFloat(d.publicKey, packet.Msg.Dat.PubKey)
 	if err != nil {
 		d.logger.Error("failed to calculate distance: %s", err)
 		return
@@ -229,29 +220,41 @@ func (d *Dave) handlePing(peers *peer.Store, packet *pkt.Packet) {
 	}
 	peers.UpdatePingReceived(remoteFp)
 	randPeers := peers.TrustWeightedRandPeers(NPEER_LIMIT, remoteFp)
-	pds := make([]*dave.Pd, len(randPeers))
+	addrPorts := make([]netip.AddrPort, len(randPeers))
 	for i, p := range randPeers {
-		pds[i] = peer.PdFrom(p.AddrPort())
+		addrPorts[i] = p.AddrPort()
 	}
+	salt := make([]byte, 16)
+	rand.Read(salt)
+	hash := blake3.New(32, nil)
+	hash.Write(packet.Msg.Challenge[:])
+	hash.Write(salt)
+	sig := ed25519.Sign(d.privateKey, hash.Sum(nil))
 	d.packetOut <- &pkt.Packet{
-		Msg: &dave.M{
-			Op:     dave.Op_PONG,
-			Val:    packet.Msg.Val,
-			Pds:    pds,
-			PubKey: d.publicKey,
-			Sig:    ed25519.Sign(d.privateKey, packet.Msg.Val),
+		Msg: &types.Msg{
+			Op: types.Op_PONG,
+			Solution: &types.Solution{
+				Challenge: packet.Msg.Challenge,
+				Salt:      types.Salt(salt),
+				PublicKey: d.publicKey,
+				Signature: types.Signature(sig),
+			},
+			AddrPorts: addrPorts,
 		},
 		AddrPort: packet.AddrPort,
 	}
+
 	//d.logger.Debug("replied to ping from %d", remoteFp)
 }
 
-func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *store.Dat) {
-	msg := buildDatMessage(dat)
+func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	sorted := sortPeersByDistance(dat.PubKey, activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
 		d.packetOut <- &pkt.Packet{
-			Msg:      msg,
+			Msg: &types.Msg{
+				Op:  types.Op_PUT,
+				Dat: dat,
+			},
 			AddrPort: sorted[i].peer.AddrPort(),
 		}
 	}
@@ -280,13 +283,15 @@ func sortPeersByDistance(target ed25519.PublicKey, peers []peer.Peer) []peerDist
 }
 
 func (d *Dave) writePackets(socket pkt.Socket) {
+	buf := make([]byte, types.MaxMsgLen)
 	for pkt := range d.packetOut {
-		bin, err := proto.Marshal(pkt.Msg)
+		buf = buf[:cap(buf)]
+		n, err := pkt.Msg.Marshal(buf)
 		if err != nil {
 			d.logger.Error("dispatch error: %s", err)
 			continue
 		}
-		_, err = socket.WriteToUDPAddrPort(bin, pkt.AddrPort)
+		_, err = socket.WriteToUDPAddrPort(buf[:n], pkt.AddrPort)
 		if err != nil {
 			d.logger.Error("dispatch error: %s", err)
 		}
@@ -299,74 +304,28 @@ func handlePong(peers *peer.Store, packet *pkt.Packet) error {
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(challenge, packet.Msg.Val) {
+	if packet.Msg.Solution.Challenge != challenge {
 		return errors.New("challenge is incorrect")
 	}
-	msgPubKey, err := unmarshalEd25519(packet.Msg.PubKey)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal pub key: %s", err)
+	if len(packet.Msg.Solution.PublicKey) != ed25519.PublicKeySize {
+		return fmt.Errorf("pub key is invalid: %s", err)
 	}
-	if storedPubKey != nil && !storedPubKey.Equal(msgPubKey) {
+	if storedPubKey != nil && !storedPubKey.Equal(packet.Msg.Solution.PublicKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
-	if !ed25519.Verify(msgPubKey, challenge, packet.Msg.Sig) {
+	h := blake3.New(32, nil)
+	h.Write(challenge[:])
+	h.Write(packet.Msg.Solution.Salt[:])
+	hash := h.Sum(nil)
+	if !ed25519.Verify(packet.Msg.Solution.PublicKey, hash, packet.Msg.Solution.Signature[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
 	if storedPubKey == nil {
-		peers.SetPubKey(remoteFp, msgPubKey)
+		peers.SetPubKey(remoteFp, packet.Msg.Solution.PublicKey)
 	}
 	peers.ChallengeSolved(remoteFp)
-	for _, pd := range packet.Msg.Pds {
-		peers.AddPd(pd)
+	for _, addrPort := range packet.Msg.AddrPorts {
+		peers.AddPeer(addrPort, false)
 	}
 	return nil
-}
-
-// TODO: consider using a cuckoo filter or rate limiter for PUT
-// messages to prevent DoS. Verifying the signature is expensive.
-func packetFilter(m *dave.M, h *blake3.Hasher) error {
-	switch m.Op {
-	case dave.Op_PUT:
-		if pow.Nzerobit(m.Work) < MIN_WORK {
-			return fmt.Errorf("work is insufficient: %x", m.Work)
-		}
-		if err := pow.Check(h, m); err != nil {
-			return fmt.Errorf("work is invalid: %s", err)
-		}
-		if l := len(m.PubKey); l != ed25519.PublicKeySize {
-			return fmt.Errorf("pub key is invalid: len %d", l)
-		}
-		pubKey, err := unmarshalEd25519(m.PubKey)
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal pub key: %s", err)
-		}
-		if !ed25519.Verify(pubKey, m.Work, m.Sig) {
-			return fmt.Errorf("signature is invalid")
-		}
-	case dave.Op_PONG:
-		if len(m.Pds) > NPEER_LIMIT {
-			return errors.New("packet exceeds pd limit")
-		}
-	}
-	return nil
-}
-
-func unmarshalEd25519(publicKeyBytes []byte) (ed25519.PublicKey, error) {
-	if len(publicKeyBytes) != ed25519.PublicKeySize {
-		return nil, fmt.Errorf("ed25519: public key must be %d bytes", ed25519.PublicKeySize)
-	}
-	return ed25519.PublicKey(publicKeyBytes), nil
-}
-
-func buildDatMessage(dat *store.Dat) *dave.M {
-	return &dave.M{
-		Op:     dave.Op_PUT,
-		DatKey: dat.Key,
-		Val:    dat.Val,
-		Time:   pow.Ttb(dat.Time),
-		Salt:   dat.Salt,
-		Work:   dat.Work,
-		PubKey: dat.PubKey,
-		Sig:    dat.Sig,
-	}
 }

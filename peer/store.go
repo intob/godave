@@ -12,14 +12,13 @@ import (
 	"time"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/intob/godave/dave"
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/types"
 )
 
 type StoreCfg struct {
-	Probe           int     // Inverse of probability that an untrusted peer is chosen
-	MaxTrust        float64 // Maximum trust a peer can earn. Ensures fair resource distribution.
-	PruneEvery      time.Duration
+	Probe           int           // Inverse of probability that an untrusted peer is chosen
+	MaxTrust        float64       // Maximum trust a peer can earn. Ensures fair resource distribution.
 	DropAfter       time.Duration // Time until unresponsive peers are dropped
 	ActivationDelay time.Duration // Time until new peers are candidates for selection
 	Logger          *logger.Logger
@@ -71,9 +70,11 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) uint64 {
 	return peer.fp
 }
 
+/*
 func (s *Store) AddPd(pd *dave.Pd) {
 	s.AddPeer(addrPortFrom(pd), false)
 }
+*/
 
 func (s *Store) UpdateTrust(fp uint64, delta float64) {
 	peer, exists := s.table[fp]
@@ -87,29 +88,28 @@ func (s *Store) UpdateTrust(fp uint64, delta float64) {
 	//s.logger.Debug("trust sum updated to %f", s.trustSum)
 }
 
-func (s *Store) CreateChallenge(fp uint64) ([]byte, error) {
+func (s *Store) CreateChallenge(fp uint64) (types.Challenge, error) {
 	peer, exists := s.table[fp]
 	if !exists {
-		return nil, errors.New("peer not found")
+		return types.Challenge{}, errors.New("peer not found")
 	}
-	peer.challenge = make([]byte, 8)
-	_, err := rand.Read(peer.challenge)
+	_, err := rand.Read(peer.challenge[:])
 	if err != nil {
-		return nil, err
+		return types.Challenge{}, err
 	}
 	return peer.challenge, nil
 }
 
-func (s *Store) CurrentChallengeAndPubKey(fp uint64) ([]byte, ed25519.PublicKey, error) {
+func (s *Store) CurrentChallengeAndPubKey(fp uint64) (types.Challenge, ed25519.PublicKey, error) {
 	peer, exists := s.table[fp]
 	if !exists {
-		return nil, nil, errors.New("peer not found")
+		return types.Challenge{}, nil, errors.New("peer not found")
 	}
-	if len(peer.challenge) == 0 {
-		return nil, nil, errors.New("challenge is empty")
+	if peer.challenge == (types.Challenge{}) {
+		return types.Challenge{}, nil, errors.New("challenge is empty")
 	}
 	currentChallenge := peer.challenge
-	peer.challenge = nil
+	peer.challenge = types.Challenge{}
 	return currentChallenge, peer.pubKey, nil
 }
 
@@ -243,15 +243,6 @@ func (s *Store) Prune() {
 	s.active = newActive
 	s.trustSum = trustSum
 	s.logger.Error("pruned, active: %d/%d", len(s.active), len(s.table))
-}
-
-func addrPortFrom(pd *dave.Pd) netip.AddrPort {
-	return netip.AddrPortFrom(netip.AddrFrom16([16]byte(pd.Ip)), uint16(pd.Port))
-}
-
-func PdFrom(addrport netip.AddrPort) *dave.Pd {
-	ip := addrport.Addr().As16()
-	return &dave.Pd{Ip: ip[:], Port: uint32(addrport.Port())}
 }
 
 func fingerprint(addrPort netip.AddrPort) uint64 {

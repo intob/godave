@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"runtime"
 	"time"
-	"unsafe"
 
-	"github.com/intob/godave/dave"
+	"github.com/intob/godave/types"
 	"lukechampine.com/blake3"
 )
 
@@ -34,7 +34,7 @@ var zeroTable = [256]uint8{ // Lookup table for the number of leading zero bits 
 // DoWork computes a proof-of-work, either on a single core or on all cores,
 // depending on the difficulty level. For lower difficulty levels (< 12),
 // the single-core implementation performs best.
-func DoWork(key, val, tim []byte, d uint8) (work []byte, salt []byte) {
+func DoWork(key string, val []byte, tim time.Time, d uint8) (work types.Hash, salt types.Salt) {
 	if d >= 12 {
 		return doWorkAllCores(key, val, tim, d)
 	} else {
@@ -44,63 +44,82 @@ func DoWork(key, val, tim []byte, d uint8) (work []byte, salt []byte) {
 
 // doWork computes a proof-of-work on a single core.
 // For low difficulty settings (< 12), this outperforms the multi-core implementation.
-func doWorkSingleCore(key, val, tim []byte, d uint8) (work, salt []byte) {
-	salt = make([]byte, 8)
+func doWorkSingleCore(key string, val []byte, tim time.Time, d uint8) (types.Hash, types.Salt) {
 	h := blake3.New(32, nil)
-	h.Write(key)
+	h.Write([]byte(key))
 	h.Write(val)
-	h.Write(tim)
+	h.Write(types.Ttb(tim))
 	load := h.Sum(nil)
-	counter := uint64(0)
+	saltSlice := make([]byte, 16)
+	var n1, n2 uint64
 	for {
-		*(*uint64)(unsafe.Pointer(&salt[0])) = counter
+		binary.LittleEndian.PutUint64(saltSlice[8:], n2)
 		h.Reset()
-		h.Write(salt)
+		h.Write(saltSlice)
 		h.Write(load)
-		work = h.Sum(nil)
-		if Nzerobit(work) >= d {
-			return work, salt
+		hash := h.Sum(nil)
+		if NzerobitSlice(hash) >= d {
+			return types.Hash(hash), types.Salt(saltSlice)
 		}
-		counter++
+		if n2 == math.MaxUint64 {
+			n1++
+			binary.LittleEndian.PutUint64(saltSlice[:8], n1)
+			n2 = 0
+		} else {
+			n2++
+		}
 	}
+}
+
+type result struct {
+	work types.Hash
+	salt types.Salt
 }
 
 // doWorkAllCores computes a proof-of-work using all cores.
 // For higher difficulty settings (>= 12), this outperforms the single-core implementation.
-func doWorkAllCores(key, val, tim []byte, d uint8) (work, salt []byte) {
+func doWorkAllCores(key string, val []byte, tim time.Time, d uint8) (types.Hash, types.Salt) {
 	numCPU := runtime.NumCPU()
 	runtime.GOMAXPROCS(numCPU)
-	type Result struct{ work, salt []byte }
-	resultChan := make(chan Result)
+	resultChan := make(chan result)
 	quit := make(chan struct{})
 	h := blake3.New(32, nil)
-	h.Write(key)
+	h.Write([]byte(key))
 	h.Write(val)
-	h.Write(tim)
+	h.Write(types.Ttb(tim))
 	load := h.Sum(nil)
 	for i := 0; i < numCPU; i++ {
 		go func(offset uint64) {
-			salt := make([]byte, 8)
 			h := blake3.New(32, nil)
-			counter := offset
+			saltSlice := make([]byte, 16)
+			n1 := uint64(0)
+			n2 := offset
 			for {
 				select {
 				case <-quit:
 					return
 				default:
-					*(*uint64)(unsafe.Pointer(&salt[0])) = counter
+					binary.LittleEndian.PutUint64(saltSlice[8:], n2)
 					h.Reset()
-					h.Write(salt)
+					h.Write(saltSlice)
 					h.Write(load)
-					work := h.Sum(nil)
-					if Nzerobit(work) >= d {
+					hash := h.Sum(nil)
+					if NzerobitSlice(hash) >= d {
 						select {
-						case resultChan <- Result{work: work, salt: salt}:
+						case resultChan <- result{
+							work: types.Hash(hash),
+							salt: types.Salt(saltSlice)}:
 						case <-quit:
 						}
 						return
 					}
-					counter += uint64(numCPU)
+					if n2 == math.MaxUint64 {
+						n1++
+						binary.LittleEndian.PutUint64(saltSlice[:8], n1)
+						n2 = offset
+					} else {
+						n2 += uint64(numCPU)
+					}
 				}
 			}
 		}(uint64(i))
@@ -110,9 +129,9 @@ func doWorkAllCores(key, val, tim []byte, d uint8) (work, salt []byte) {
 	return result.work, result.salt
 }
 
-func Nzerobit(key []byte) uint8 {
+func Nzerobit(work types.Hash) uint8 {
 	var count uint8
-	for _, b := range key {
+	for _, b := range work {
 		count += zeroTable[b]
 		if b != 0 {
 			return count
@@ -121,30 +140,30 @@ func Nzerobit(key []byte) uint8 {
 	return count
 }
 
-func Ttb(t time.Time) []byte {
-	milli := t.UnixNano() / 1000000
-	bytes := make([]byte, 8)
-	binary.LittleEndian.PutUint64(bytes, uint64(milli))
-	return bytes
+func NzerobitSlice(work []byte) uint8 {
+	var count uint8
+	for _, b := range work {
+		count += zeroTable[b]
+		if b != 0 {
+			return count
+		}
+	}
+	return count
 }
 
-func Btt(b []byte) time.Time {
-	return time.Unix(0, int64(binary.LittleEndian.Uint64(b))*1000000)
-}
-
-func Check(h *blake3.Hasher, m *dave.M) error {
-	if len(m.Time) != 8 || Btt(m.Time).After(time.Now()) {
+func Check(h *blake3.Hasher, dat *types.Dat) error {
+	if dat.Time.After(time.Now()) {
 		return errors.New("time is invalid")
 	}
 	h.Reset()
-	h.Write(m.DatKey)
-	h.Write(m.Val)
-	h.Write(m.Time)
+	h.Write([]byte(dat.Key))
+	h.Write(dat.Val)
+	h.Write(types.Ttb(dat.Time))
 	load := h.Sum(nil)
 	h.Reset()
-	h.Write(m.Salt)
+	h.Write(dat.Salt[:])
 	h.Write(load)
-	if !bytes.Equal(h.Sum(nil), m.Work) {
+	if !bytes.Equal(h.Sum(nil), dat.Work[:]) {
 		return errors.New("hash is invalid")
 	}
 	return nil
