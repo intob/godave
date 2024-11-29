@@ -98,9 +98,6 @@ func New(cfg *StoreCfg) (*Store, error) {
 		kill:           cfg.Kill,
 		done:           cfg.Done,
 	}
-	if s.backupFilename != "" {
-		s.backup = make(chan *types.Dat, 1000)
-	}
 	for i := range s.shards {
 		s.shards[i] = &shard{
 			table: make(map[uint64]types.Dat),
@@ -113,16 +110,13 @@ func New(cfg *StoreCfg) (*Store, error) {
 		}
 	}()
 	if s.backupFilename == "" {
-		select {
-		case s.done <- struct{}{}:
-		default:
-		}
+		close(s.done)
 		s.logger.Error("backup disabled")
 		return s, nil
 	}
 	err := s.readBackup()
 	if err != nil {
-		s.logger.Error("error reading backup: %s", err)
+		return nil, fmt.Errorf("error reading backup: %s", err)
 	}
 	s.prune() // TODO: prune frequently while reading backup
 	s.logger.Error("read %d from %s", s.count.Load(), s.backupFilename)
@@ -130,6 +124,7 @@ func New(cfg *StoreCfg) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	s.backup = make(chan *types.Dat, 1000)
 	go s.writeBackup()
 	return s, nil
 }
@@ -396,10 +391,11 @@ func (s *Store) prune() {
 	}
 }
 
-func (s *Store) writeBackup() error {
+func (s *Store) writeBackup() {
 	f, err := os.OpenFile(s.backupFilename, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %s", err)
+		s.logger.Error("failed to open file: %s", err)
+		return
 	}
 	writer := bufio.NewWriter(f)
 	for {
@@ -407,9 +403,9 @@ func (s *Store) writeBackup() error {
 		case <-s.kill:
 			flushErr := writer.Flush()
 			closeErr := f.Close()
-			s.done <- struct{}{}
-			s.logger.Debug("backup buffer flushed, file closed, errors if any: %v %v", flushErr, closeErr)
-			return nil
+			s.logger.Error("backup buffer flushed, file closed, errors if any: %v %v", flushErr, closeErr)
+			close(s.done)
+			return
 		case d := <-s.backup:
 			buf := make([]byte, types.MaxMsgLen)
 			n, err := d.Marshal(buf)

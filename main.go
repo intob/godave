@@ -37,19 +37,19 @@ const (
 )
 
 type Dave struct {
-	Store                      *store.Store
 	privateKey                 ed25519.PrivateKey
 	publicKey                  ed25519.PublicKey
 	kill, done, getActivePeers chan struct{}
 	packetOut                  chan *pkt.Packet
 	activePeers                chan []peer.Peer
+	store                      *store.Store
 	logger                     *logger.Logger
 }
 
 type Cfg struct {
 	Socket         pkt.Socket
 	PrivateKey     ed25519.PrivateKey
-	Edges          []netip.AddrPort // Bootstrap peers
+	Edges          []netip.AddrPort
 	ShardCap       int
 	BackupFilename string
 	Logger         *logger.Logger
@@ -62,15 +62,15 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	dave := &Dave{
 		privateKey:     cfg.PrivateKey,
 		publicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
-		kill:           make(chan struct{}, 1),
-		done:           make(chan struct{}, 1),
+		kill:           make(chan struct{}),
+		done:           make(chan struct{}),
 		packetOut:      make(chan *pkt.Packet, 100),
 		getActivePeers: make(chan struct{}),
 		activePeers:    make(chan []peer.Peer),
 		logger:         cfg.Logger,
 	}
 	var err error
-	dave.Store, err = store.New(&store.StoreCfg{
+	dave.store, err = store.New(&store.StoreCfg{
 		ShardCap:       cfg.ShardCap,
 		PruneEvery:     PRUNE_DATS,
 		BackupFilename: cfg.BackupFilename,
@@ -107,13 +107,13 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	return dave, nil
 }
 
-func (d *Dave) Kill() <-chan struct{} {
+func (d *Dave) Kill() {
 	close(d.kill)
-	return d.done
+	<-d.done
 }
 
 func (d *Dave) Put(dat types.Dat) error {
-	err := d.Store.Put(&dat)
+	err := d.store.Put(&dat)
 	if err != nil {
 		return fmt.Errorf("failed to put dat in local store: %s", err)
 	}
@@ -171,7 +171,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 			if ok {
 				d.sendToClosestPeers(activePeers, ringDat)
 			} else {
-				nextDat, ok := d.Store.Next()
+				nextDat, ok := d.store.Next()
 				if ok {
 					d.sendToClosestPeers(activePeers, &nextDat)
 				}
@@ -197,7 +197,7 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 
 func (d *Dave) handlePut(peers *peer.Store, ring *ringbuffer.RingBuffer[*types.Dat], packet *pkt.Packet) {
 	remoteFp := peers.AddPeer(packet.AddrPort, false)
-	err := d.Store.Put(packet.Msg.Dat)
+	err := d.store.Put(packet.Msg.Dat)
 	if err != nil {
 		//d.logger.Debug("failed to store dat: %s", err)
 		return
