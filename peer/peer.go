@@ -30,3 +30,7 @@ func (p Peer) PubKey() ed25519.PublicKey {
 func (p Peer) Trust() uint8 {
 	return p.trust
 }
+
+func (p Peer) ChallengeSolved() time.Time {
+	return p.challengeSolved
+}

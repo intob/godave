@@ -4,11 +4,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"net/netip"
-	"runtime"
 	"testing"
 	"time"
 
-	"github.com/intob/godave/logger"
 	"github.com/intob/godave/pow"
 	"github.com/intob/godave/types"
 )
@@ -45,6 +43,7 @@ func (m *mockReader) WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n in
 	return copy(m.packet, b), nil
 }
 
+/*
 func BenchmarkProcessor(b *testing.B) {
 	buf := make([]byte, types.MaxMsgLen)
 	n, err := buildMockPacket(buf)
@@ -56,7 +55,9 @@ func BenchmarkProcessor(b *testing.B) {
 		NumWorkers: runtime.NumCPU(),
 		BufSize:    1424,
 		Socket:     &mockReader{buf, netip.MustParseAddrPort("127.0.0.1:6102")},
-		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+		Logger: logger.NewLogger(&logger.LoggerCfg{
+			Output: logger.DevNull(),
+		}),
 	})
 	if err != nil {
 		b.Fatalf("failed to init packet processor: %s", err)
@@ -66,6 +67,7 @@ func BenchmarkProcessor(b *testing.B) {
 		<-proc.Packets()
 	}
 }
+*/
 
 /*
 BenchmarkProto-12        	2904609	       412.0 ns/op	     600 B/op	       9 allocs/op

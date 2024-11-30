@@ -23,18 +23,19 @@ import (
 )
 
 const (
-	EPOCH = time.Millisecond // Period between seeding rounds.
-	//BUF_SIZE         = types.MaxMsgLen  // (1424) Max packet size, 1500 MTU is typical, avoids packet fragmentation.
-	FANOUT             = 2                // Number of peers selected when sending dats.
-	PROBE              = 12               // Inverse of probability that a peer is selected regardless of trust.
-	NPEER_LIMIT        = 3                // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK           = 16               // Minimum amount of acceptable work in number of leading zero bits.
-	PING               = 1 * time.Second  // Period between pinging peers.
-	DROP               = 3 * PING         // Time until protocol-deviating peers are dropped.
-	ACTIVATION_DELAY   = 2 * DROP         // Time until new peers are activated. Must be greater than DROP.
-	PRUNE_DATS         = 10 * time.Second // Period between pruning dats.
-	TRUST_DECAY_FACTOR = 0.99             // Factor used to decay peer trust.
-	TRUST_DECAY_RATE   = time.Minute      // Rate at which trust decays.
+	EPOCH               = time.Millisecond // Period between seeding rounds.
+	FANOUT              = 2                // Number of peers selected when sending dats.
+	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
+	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
+	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
+	PING                = 1 * time.Second  // Period between pinging peers.
+	DEACTIVATE_AFTER    = 2 * PING         // Time until protocol-deviating peers are deactivated.
+	DROP                = 3 * PING         // Time until protocol-deviating peers are dropped.
+	ACTIVATION_DELAY    = 2 * DROP         // Time until new peers are activated. Must be greater than DROP.
+	PRUNE_DATS          = 10 * time.Second // Period between pruning dats.
+	TRUST_DECAY_FACTOR  = 0.99             // Factor used to decay peer trust.
+	TRUST_DECAY_RATE    = time.Minute      // Rate at which trust decays.
+	GETMYADDRPORT_EVERY = 10 * time.Minute // Period between getting my addrport from an edge.
 )
 
 type Dave struct {
@@ -44,6 +45,7 @@ type Dave struct {
 	packetOut                  chan *pkt.Packet
 	activePeers                chan []peer.Peer
 	store                      *store.Store
+	packetProcessor            *pkt.PacketProcessor
 	logger                     *logger.Logger
 }
 
@@ -76,24 +78,25 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		PruneEvery:     PRUNE_DATS,
 		BackupFilename: cfg.BackupFilename,
 		PublicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
-		Logger:         cfg.Logger.WithPrefix("/dats"),
 		Kill:           dave.kill,
 		Done:           dave.done,
+		Logger:         cfg.Logger.WithPrefix("/dats"),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to init store: %w", err)
 	}
 	peers := peer.NewStore(&peer.StoreCfg{
 		Probe:            PROBE,
-		DropAfter:        DROP,
 		ActivationDelay:  ACTIVATION_DELAY,
+		DeactivateAfter:  DEACTIVATE_AFTER,
+		DropAfter:        DROP,
 		TrustDecayFactor: TRUST_DECAY_FACTOR,
 		Logger:           cfg.Logger.WithPrefix("/peers"),
 	})
 	for _, addrPort := range cfg.Edges {
 		peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
-	packetProcessor, err := pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
+	dave.packetProcessor, err = pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
 		NumWorkers:     runtime.NumCPU(),
 		BufSize:        types.MaxMsgLen,
 		Socket:         cfg.Socket,
@@ -105,7 +108,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
 	}
-	go dave.run(peers, packetProcessor.Packets(), cfg.ShardCap)
+	go dave.run(peers, cfg.ShardCap)
 	go dave.writePackets(cfg.Socket)
 	return dave, nil
 }
@@ -147,17 +150,29 @@ func (d *Dave) WaitForPeers(ctx context.Context, count int) error {
 	}
 }
 
-func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int) {
+func (d *Dave) run(peers *peer.Store, ringSize int) {
 	pingTick := time.NewTicker(PING)
 	epochTick := time.NewTicker(EPOCH)
-	trustDecay := time.NewTicker(TRUST_DECAY_RATE)
+	trustDecayTick := time.NewTicker(TRUST_DECAY_RATE)
+	getMyAddrPortTick := time.NewTicker(GETMYADDRPORT_EVERY)
+	if len(peers.Edges()) == 0 {
+		getMyAddrPortTick.Stop()
+	} else { // also send now
+		err := d.sendGetMyAddrPort(peers)
+		if err != nil {
+			d.logger.Error("failed to send GETMYADDRPORT: no edge is online")
+		}
+	}
 	ring := ringbuffer.NewRingBuffer[*types.Dat](ringSize)
+	packetIn := d.packetProcessor.Packets()
+	myAddrPortChans := d.packetProcessor.MyAddrPortChans()
+	var myAddrPort netip.AddrPort
 	for {
 		select {
 		case packet := <-packetIn: // HANDLE INCOMING PACKET
 			switch packet.Msg.Op {
 			case types.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
-				err := handlePong(peers, packet)
+				err := handlePong(peers, packet, myAddrPort)
 				if err != nil {
 					d.logger.Error("failed to handle pong: %s", err)
 				}
@@ -165,6 +180,24 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 				d.handlePing(peers, packet)
 			case types.Op_PUT: // STORE DAT
 				d.handlePut(peers, ring, packet)
+			case types.Op_GETMYADDRPORT:
+				d.packetOut <- &pkt.Packet{
+					Msg: &types.Msg{
+						Op:        types.Op_GETMYADDRPORT_ACK,
+						AddrPorts: []netip.AddrPort{packet.AddrPort},
+					},
+					AddrPort: packet.AddrPort,
+				}
+			case types.Op_GETMYADDRPORT_ACK:
+				// Only accept from edge peers
+				if peers.IsEdge(packet.AddrPort) && len(packet.Msg.AddrPorts) == 1 {
+					myAddrPort = packet.Msg.AddrPorts[0]
+					for _, c := range myAddrPortChans {
+						c <- myAddrPort
+					}
+				} else {
+					d.logger.Error("rejected MYADDRPORT_ACK from %s", packet.AddrPort)
+				}
 			}
 		case <-epochTick.C: // SEED
 			activePeers := peers.ListActive()
@@ -193,12 +226,31 @@ func (d *Dave) run(peers *peer.Store, packetIn <-chan *pkt.Packet, ringSize int)
 					AddrPort: peer.AddrPort()}
 				//d.logger.Debug("ping sent to %s", peer.AddrPort())
 			}
-		case <-trustDecay.C:
+		case <-trustDecayTick.C:
 			peers.DecayTrust()
 		case <-d.getActivePeers:
 			d.activePeers <- peers.ListActive()
+		case <-getMyAddrPortTick.C:
+			err := d.sendGetMyAddrPort(peers)
+			if err != nil {
+				d.logger.Error("failed to send GETMYADDRPORT: no edge is online")
+			}
 		}
 	}
+}
+
+func (d *Dave) sendGetMyAddrPort(peers *peer.Store) error {
+	for _, p := range peers.Edges() {
+		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
+			d.packetOut <- &pkt.Packet{
+				Msg:      &types.Msg{Op: types.Op_GETMYADDRPORT},
+				AddrPort: p.AddrPort(),
+			}
+			d.logger.Error("sent MYADDRPORT to %s", p.AddrPort())
+			return nil
+		}
+	}
+	return errors.New("failed to send MYADDRPORT")
 }
 
 func (d *Dave) handlePut(peers *peer.Store, ring *ringbuffer.RingBuffer[*types.Dat], packet *pkt.Packet) {
@@ -304,7 +356,7 @@ func (d *Dave) writePackets(socket pkt.Socket) {
 	}
 }
 
-func handlePong(peers *peer.Store, packet *pkt.Packet) error {
+func handlePong(peers *peer.Store, packet *pkt.Packet, myAddrPort netip.AddrPort) error {
 	peers.AddPeer(packet.AddrPort, false)
 	challenge, storedPubKey, err := peers.CurrentChallengeAndPubKey(packet.AddrPort)
 	if err != nil {
@@ -329,9 +381,13 @@ func handlePong(peers *peer.Store, packet *pkt.Packet) error {
 	if storedPubKey == nil {
 		peers.SetPubKey(packet.AddrPort, packet.Msg.Solution.PublicKey)
 	}
-	peers.ChallengeSolved(packet.AddrPort)
 	for _, addrPort := range packet.Msg.AddrPorts {
-		peers.AddPeer(addrPort, false)
+		if addrPort != myAddrPort {
+			peers.AddPeer(addrPort, false)
+		} else {
+			return fmt.Errorf("my own addrport was given")
+		}
 	}
+	peers.ChallengeSolved(packet.AddrPort)
 	return nil
 }

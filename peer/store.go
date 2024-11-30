@@ -16,8 +16,9 @@ import (
 
 type StoreCfg struct {
 	Probe            int           // Inverse of probability that an untrusted peer is chosen
-	DropAfter        time.Duration // Time until unresponsive peers are dropped
 	ActivationDelay  time.Duration // Time until new peers are candidates for selection
+	DeactivateAfter  time.Duration // Time until unresponsive peers are deactivated
+	DropAfter        time.Duration // Time until unresponsive peers are dropped
 	TrustDecayFactor float64
 	Logger           *logger.Logger
 }
@@ -25,11 +26,13 @@ type StoreCfg struct {
 type Store struct {
 	table            map[netip.AddrPort]*Peer
 	active           []*Peer // sorted by trust descending
+	edges            []*Peer
 	trustSum         uint32
 	trustDecayFactor float64
 	probe            int
-	dropAfter        time.Duration
 	activationDelay  time.Duration
+	deactivateAfter  time.Duration
+	dropAfter        time.Duration
 	logger           *logger.Logger
 }
 
@@ -37,9 +40,11 @@ func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
 		table:            make(map[netip.AddrPort]*Peer),
 		active:           make([]*Peer, 0),
+		edges:            make([]*Peer, 0),
 		probe:            cfg.Probe,
-		dropAfter:        cfg.DropAfter,
 		activationDelay:  cfg.ActivationDelay,
+		deactivateAfter:  cfg.DeactivateAfter,
+		dropAfter:        cfg.DropAfter,
 		trustDecayFactor: cfg.TrustDecayFactor,
 		logger:           cfg.Logger,
 	}
@@ -59,6 +64,9 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 		edge:            isEdge,
 	}
 	s.table[addrPort] = peer
+	if isEdge {
+		s.edges = append(s.edges, peer)
+	}
 	s.logger.Error("added %s", peer.addrPort)
 }
 
@@ -139,6 +147,14 @@ func (s *Store) UpdatePingReceived(addrPort netip.AddrPort) {
 	peer.pingReceived = time.Now()
 }
 
+func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
+	peer, ok := s.table[addrPort]
+	if !ok {
+		return false
+	}
+	return peer.edge
+}
+
 func (s *Store) Table() map[netip.AddrPort]*Peer {
 	return s.table
 }
@@ -149,6 +165,12 @@ func (s *Store) ListActive() []Peer {
 		list[i] = *p
 	}
 	return list
+}
+
+// For now, pointers are fine as this is only used by the main handler,
+// owner of this peer store.
+func (s *Store) Edges() []*Peer {
+	return s.edges
 }
 
 // As the active peer slice is sorted by trust score, we can simply range over it,
@@ -228,7 +250,8 @@ func (s *Store) Prune() {
 		} else {
 			if time.Since(p.challengeSolved) < s.dropAfter {
 				newTable[k] = p
-				if time.Since(p.added) > s.activationDelay {
+				if time.Since(p.added) > s.activationDelay &&
+					time.Since(p.challengeSolved) < s.deactivateAfter {
 					newActive = append(newActive, p)
 					trustSum += uint32(p.trust)
 				}

@@ -31,12 +31,13 @@ type Packet struct {
 }
 
 type PacketProcessor struct {
-	workQueue     chan *rawPacket
-	resultChan    chan *Packet
-	bpool         *sync.Pool
-	minWork       uint8
-	pongPeerLimit int
-	logger        *logger.Logger
+	workQueue       chan *rawPacket
+	resultChan      chan *Packet
+	bpool           *sync.Pool
+	minWork         uint8
+	pongPeerLimit   int
+	logger          *logger.Logger
+	myAddrPortChans []chan netip.AddrPort
 }
 
 type PacketProcessorCfg struct {
@@ -68,15 +69,17 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) (*PacketProcessor, error) {
 		return nil, errors.New("logger is nil")
 	}
 	pp := &PacketProcessor{
-		workQueue:     make(chan *rawPacket, 1000),
-		resultChan:    make(chan *Packet, 1000),
-		bpool:         &sync.Pool{New: func() any { return make([]byte, cfg.BufSize) }},
-		minWork:       cfg.MinWork,
-		pongPeerLimit: cfg.PongPeerLimit,
-		logger:        cfg.Logger,
+		workQueue:       make(chan *rawPacket, 1000),
+		resultChan:      make(chan *Packet, 1000),
+		bpool:           &sync.Pool{New: func() any { return make([]byte, cfg.BufSize) }},
+		minWork:         cfg.MinWork,
+		pongPeerLimit:   cfg.PongPeerLimit,
+		logger:          cfg.Logger,
+		myAddrPortChans: make([]chan netip.AddrPort, cfg.NumWorkers),
 	}
 	for i := 0; i < cfg.NumWorkers; i++ {
-		go pp.worker()
+		pp.myAddrPortChans[i] = make(chan netip.AddrPort)
+		go pp.worker(pp.myAddrPortChans[i])
 	}
 	go func(socket Socket) {
 		rateLimiter := ratelimiter.NewRateLimiter(&ratelimiter.RateLimiterCfg{
@@ -114,14 +117,32 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) (*PacketProcessor, error) {
 
 func (pp *PacketProcessor) Packets() <-chan *Packet { return pp.resultChan }
 
-func (pp *PacketProcessor) worker() {
+func (pp *PacketProcessor) MyAddrPortChans() []chan<- netip.AddrPort {
+	chans := make([]chan<- netip.AddrPort, len(pp.myAddrPortChans))
+	for i, c := range pp.myAddrPortChans {
+		chans[i] = c
+	}
+	return chans
+}
+
+func (pp *PacketProcessor) worker(myAddrPortChan <-chan netip.AddrPort) {
 	h := blake3.New(32, nil)
-	for raw := range pp.workQueue {
-		packet, err := pp.processPacket(raw, h)
-		if err == nil {
-			pp.resultChan <- packet
-		} else {
-			pp.logger.Error("failed to process packet: %s", err)
+	myAddrPort := netip.AddrPort{}
+	for {
+		select {
+		case raw := <-pp.workQueue:
+			if raw.raddr == myAddrPort {
+				pp.logger.Error("dropped hairpinned packet from self")
+				continue
+			}
+			packet, err := pp.processPacket(raw, h)
+			if err == nil {
+				pp.resultChan <- packet
+			} else {
+				pp.logger.Error("failed to process packet: %s", err)
+			}
+		case myAddrPort = <-myAddrPortChan:
+			pp.logger.Debug("updated my addrport to %s", myAddrPort)
 		}
 	}
 }

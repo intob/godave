@@ -234,3 +234,33 @@ func TestPongMessageEdgeCases(t *testing.T) {
 		})
 	}
 }
+
+func TestMarshalGetMyAddrPortAck(t *testing.T) {
+	addr := netip.MustParseAddrPort("[2001:db8::1]:8080")
+	msg := &Msg{Op: Op_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
+	buf := make([]byte, 19)
+	n, err := msg.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 19 {
+		t.Fatalf("len is %d, expected %d", n, 19)
+	}
+}
+func TestUnmarshalGetMyAddrPortAck(t *testing.T) {
+	addr := netip.MustParseAddrPort("[2001:db8::1]:8080")
+	msg := &Msg{Op: Op_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
+	buf := make([]byte, 19)
+	_, err := msg.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg2 := &Msg{}
+	msg2.Unmarshal(buf)
+	if len(msg2.AddrPorts) != 1 {
+		t.Fatalf("exepected one addrport, got %d", len(msg2.AddrPorts))
+	}
+	if msg2.AddrPorts[0] != addr {
+		t.Fatalf("expected %s, got %s", addr, msg2.AddrPorts[0])
+	}
+}

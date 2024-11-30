@@ -9,11 +9,14 @@ import (
 )
 
 const (
-	Op_PING     = Op(0)
-	Op_PONG     = Op(1)
-	Op_PUT      = Op(2)
-	maxOpCode   = 2
-	lenAddrPort = 18 // 16B Addr 2B port
+	// Max packet size, 1500 MTU is typical, prevents packet fragmentation
+	MaxMsgLen            = 1424
+	Op_PING              = Op(0)
+	Op_PONG              = Op(1)
+	Op_PUT               = Op(2)
+	Op_GETMYADDRPORT     = Op(3)
+	Op_GETMYADDRPORT_ACK = Op(4)
+	lenAddrPort          = 18
 )
 
 type Op byte
@@ -62,9 +65,6 @@ type Msg struct {
 }
 
 func (msg *Msg) Unmarshal(buf []byte) error {
-	if buf[0] > maxOpCode {
-		return errors.New("invalid op code")
-	}
 	msg.Op = Op(buf[0])
 	switch msg.Op {
 	case Op_PING:
@@ -99,6 +99,12 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 		}
 		msg.Dat = &Dat{}
 		msg.Dat.Unmarshal(buf[3:])
+	case Op_GETMYADDRPORT_ACK:
+		addrPort, err := parseAddr(buf[1:])
+		if err != nil {
+			return fmt.Errorf("failed to parse addrport: %w", err)
+		}
+		msg.AddrPorts = []netip.AddrPort{addrPort}
 	}
 	return nil
 }
@@ -150,6 +156,17 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		}
 		binary.LittleEndian.PutUint16(buf[1:3], uint16(datLen))
 		return 1 + 2 + datLen, nil
+	case Op_GETMYADDRPORT:
+		return n, nil
+	case Op_GETMYADDRPORT_ACK:
+		if len(msg.AddrPorts) != 1 {
+			return 0, errors.New("expected one addrport")
+		}
+		ip := msg.AddrPorts[0].Addr().As16()
+		n += copy(buf[n:n+16], ip[:])
+		binary.LittleEndian.PutUint16(buf[n:n+2], msg.AddrPorts[0].Port())
+		n += 2
+		return n, nil
 	}
 	return 0, errors.New("unknown op code")
 }
@@ -166,4 +183,13 @@ func parseAddrs(buf []byte) ([]netip.AddrPort, error) {
 		addrs = append(addrs, netip.AddrPortFrom(ip, port))
 	}
 	return addrs, nil
+}
+
+func parseAddr(buf []byte) (netip.AddrPort, error) {
+	if len(buf) < 18 {
+		return netip.AddrPort{}, errors.New("buffer is too small")
+	}
+	ip := netip.AddrFrom16([16]byte(buf[:16]))
+	port := binary.LittleEndian.Uint16(buf[16:18])
+	return netip.AddrPortFrom(ip, port), nil
 }

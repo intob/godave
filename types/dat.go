@@ -8,10 +8,7 @@ import (
 	"time"
 )
 
-const (
-	MaxMsgLen = 1424
-	MaxKVLen  = MaxMsgLen - (8 + 16 + 32 + 64 + 32 + 1 + 2)
-)
+const MaxKVLen = MaxMsgLen - (8 + 16 + 32 + 64 + 32 + 1 + 2)
 
 type Dat struct {
 	Time   time.Time
