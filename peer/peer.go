@@ -9,19 +9,14 @@ import (
 )
 
 type Peer struct {
-	fp              uint64
 	addrPort        netip.AddrPort
 	added           time.Time
 	edge            bool
-	trust           float64
+	trust           uint8
 	challenge       types.Challenge
 	pubKey          ed25519.PublicKey
 	challengeSolved time.Time
 	pingReceived    time.Time
-}
-
-func (p Peer) Fp() uint64 {
-	return p.fp
 }
 
 func (p Peer) AddrPort() netip.AddrPort {
@@ -30,4 +25,8 @@ func (p Peer) AddrPort() netip.AddrPort {
 
 func (p Peer) PubKey() ed25519.PublicKey {
 	return p.pubKey
+}
+
+func (p Peer) Trust() uint8 {
+	return p.trust
 }

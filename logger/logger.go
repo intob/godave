@@ -1,7 +1,10 @@
 package logger
 
 import (
+	"bufio"
 	"fmt"
+	"io"
+	"os"
 )
 
 type LogLevel int
@@ -23,11 +26,36 @@ type Logger struct {
 	prefix string
 }
 
+func StdOut(buffered bool) chan<- string {
+	logs := make(chan string, 100)
+	go func() {
+		var out io.Writer
+		if buffered {
+			out = bufio.NewWriter(os.Stdout)
+		} else {
+			out = os.Stdout
+		}
+		for l := range logs {
+			fmt.Fprintln(out, l)
+		}
+	}()
+	return logs
+}
+
+func DevNull() chan<- string {
+	logs := make(chan string, 100)
+	go func() {
+		for range logs {
+		}
+	}()
+	return logs
+}
+
 func NewLogger(cfg *LoggerCfg) *Logger {
 	return &Logger{
 		level:  cfg.Level,
 		output: cfg.Output,
-		prefix: cfg.Prefix + " ",
+		prefix: cfg.Prefix,
 	}
 }
 
@@ -35,11 +63,7 @@ func (l *Logger) Log(level LogLevel, msg string, args ...any) {
 	if level > l.level {
 		return
 	}
-	select {
-	case l.output <- fmt.Sprintf(l.prefix+msg, args...):
-	default:
-	}
-
+	l.output <- fmt.Sprintf(l.prefix+" "+msg, args...)
 }
 
 func (l *Logger) Error(msg string, args ...any) {
@@ -54,7 +78,7 @@ func (l *Logger) WithPrefix(prefix string) *Logger {
 	return &Logger{
 		level:  l.level,
 		output: l.output,
-		prefix: prefix + " ",
+		prefix: l.prefix + prefix,
 	}
 }
 
