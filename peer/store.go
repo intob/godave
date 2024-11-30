@@ -8,6 +8,7 @@ import (
 	mrand "math/rand"
 	"net/netip"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/intob/godave/logger"
@@ -20,39 +21,54 @@ type StoreCfg struct {
 	DeactivateAfter  time.Duration // Time until unresponsive peers are deactivated
 	DropAfter        time.Duration // Time until unresponsive peers are dropped
 	TrustDecayFactor float64
+	PruneEvery       time.Duration
+	DecayEvery       time.Duration
 	Logger           *logger.Logger
 }
 
 type Store struct {
-	table            map[netip.AddrPort]*Peer
-	active           []*Peer // sorted by trust descending
-	edges            []*Peer
-	trustSum         uint32
-	trustDecayFactor float64
-	probe            int
-	activationDelay  time.Duration
-	deactivateAfter  time.Duration
-	dropAfter        time.Duration
-	logger           *logger.Logger
+	mu              sync.RWMutex
+	table           map[netip.AddrPort]*Peer
+	active          []*Peer // sorted by trust descending
+	edges           []*Peer
+	trustSum        uint32
+	probe           int
+	activationDelay time.Duration
+	deactivateAfter time.Duration
+	dropAfter       time.Duration
+	logger          *logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
-		table:            make(map[netip.AddrPort]*Peer),
-		active:           make([]*Peer, 0),
-		edges:            make([]*Peer, 0),
-		probe:            cfg.Probe,
-		activationDelay:  cfg.ActivationDelay,
-		deactivateAfter:  cfg.DeactivateAfter,
-		dropAfter:        cfg.DropAfter,
-		trustDecayFactor: cfg.TrustDecayFactor,
-		logger:           cfg.Logger,
+		table:           make(map[netip.AddrPort]*Peer),
+		active:          make([]*Peer, 0),
+		edges:           make([]*Peer, 0),
+		probe:           cfg.Probe,
+		activationDelay: cfg.ActivationDelay,
+		deactivateAfter: cfg.DeactivateAfter,
+		dropAfter:       cfg.DropAfter,
+		logger:          cfg.Logger,
 	}
+	go func() {
+		pruneTick := time.NewTicker(cfg.PruneEvery)
+		decayTick := time.NewTicker(cfg.DecayEvery)
+		for {
+			select {
+			case <-pruneTick.C:
+				s.prune()
+			case <-decayTick.C:
+				s.decayTrust(cfg.TrustDecayFactor)
+			}
+		}
+	}()
 	return s
 }
 
 // Peer is added if not found.
 func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	_, exists := s.table[addrPort]
 	if exists {
 		return
@@ -71,6 +87,8 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 }
 
 func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta uint8) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return
@@ -87,6 +105,8 @@ func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta uint8) {
 }
 
 func (s *Store) CreateChallenge(addrPort netip.AddrPort) (types.Challenge, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return types.Challenge{}, errors.New("peer not found")
@@ -99,6 +119,8 @@ func (s *Store) CreateChallenge(addrPort netip.AddrPort) (types.Challenge, error
 }
 
 func (s *Store) CurrentChallengeAndPubKey(addrPort netip.AddrPort) (types.Challenge, ed25519.PublicKey, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return types.Challenge{}, nil, errors.New("peer not found")
@@ -112,6 +134,8 @@ func (s *Store) CurrentChallengeAndPubKey(addrPort netip.AddrPort) (types.Challe
 }
 
 func (s *Store) SetPubKey(addrPort netip.AddrPort, pubKey ed25519.PublicKey) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return errors.New("peer not found")
@@ -124,6 +148,8 @@ func (s *Store) SetPubKey(addrPort netip.AddrPort, pubKey ed25519.PublicKey) err
 }
 
 func (s *Store) ChallengeSolved(addrPort netip.AddrPort) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return
@@ -132,6 +158,8 @@ func (s *Store) ChallengeSolved(addrPort netip.AddrPort) {
 }
 
 func (s *Store) IsPingExpected(addrPort netip.AddrPort, ping time.Duration) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return false
@@ -140,6 +168,8 @@ func (s *Store) IsPingExpected(addrPort netip.AddrPort, ping time.Duration) bool
 }
 
 func (s *Store) UpdatePingReceived(addrPort netip.AddrPort) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return
@@ -148,6 +178,8 @@ func (s *Store) UpdatePingReceived(addrPort netip.AddrPort) {
 }
 
 func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	peer, ok := s.table[addrPort]
 	if !ok {
 		return false
@@ -156,6 +188,8 @@ func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
 }
 
 func (s *Store) ListActive() []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	list := make([]Peer, len(s.active))
 	for i, p := range s.active {
 		list[i] = *p
@@ -164,6 +198,8 @@ func (s *Store) ListActive() []Peer {
 }
 
 func (s *Store) ListAll() []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	list := make([]Peer, 0, len(s.table))
 	for _, p := range s.table {
 		list = append(list, *p)
@@ -171,16 +207,22 @@ func (s *Store) ListAll() []Peer {
 	return list
 }
 
-// For now, pointers are fine as this is only used by the main handler,
-// owner of this peer store.
-func (s *Store) Edges() []*Peer {
-	return s.edges
+func (s *Store) Edges() []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	list := make([]Peer, len(s.edges))
+	for i, p := range s.edges {
+		list[i] = *p
+	}
+	return list
 }
 
 // As the active peer slice is sorted by trust score, we can simply range over it,
 // decrementing a counter initialised to a random value between 0 and the trust sum.
 // This naturally favours peers with higher trust scores.
 func (s *Store) TrustWeightedRandPeers(limit int, exclude *netip.AddrPort) []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if len(s.active) == 0 {
 		return nil
 	}
@@ -207,6 +249,8 @@ func (s *Store) TrustWeightedRandPeers(limit int, exclude *netip.AddrPort) []Pee
 // For such a simple problem, I found it surprisingly tough to make
 // an efficient implementation.
 func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []Peer {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if len(s.active) == 0 {
 		return nil
 	}
@@ -230,7 +274,8 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []Peer {
 }
 
 // Drops/deactivates inactive peers. Inactive edges are not dropped, but deactivated..
-func (s *Store) Prune() {
+func (s *Store) prune() {
+	s.mu.RLock()
 	activeCount := 0
 	for _, p := range s.table {
 		if time.Since(p.challengeSolved) < s.deactivateAfter {
@@ -239,6 +284,7 @@ func (s *Store) Prune() {
 	}
 	if activeCount == len(s.table) && activeCount == len(s.active) {
 		s.logger.Error("prune skipped, active: %d/%d", activeCount, activeCount)
+		s.mu.RUnlock()
 		return
 	}
 	newTable := make(map[netip.AddrPort]*Peer, activeCount)
@@ -264,20 +310,23 @@ func (s *Store) Prune() {
 			}
 		}
 	}
+	s.mu.RUnlock()
 	sort.Slice(newActive, func(i, j int) bool {
 		return newActive[i].trust > newActive[j].trust
 	})
+	s.mu.Lock()
 	s.table = newTable
 	s.active = newActive
 	s.trustSum = trustSum
 	s.logger.Error("pruned, active: %d/%d", len(s.active), len(s.table))
+	s.mu.Unlock()
 }
 
-func (s *Store) DecayTrust() {
+func (s *Store) decayTrust(decayFactor float64) {
 	for _, peer := range s.active {
 		if peer.trust > 0 {
 			oldTrust := peer.trust
-			peer.trust = uint8(float64(peer.trust) * s.trustDecayFactor)
+			peer.trust = uint8(float64(peer.trust) * decayFactor)
 			s.trustSum -= uint32(oldTrust - peer.trust)
 		}
 	}

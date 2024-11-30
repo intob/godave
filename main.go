@@ -90,6 +90,8 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		DeactivateAfter:  DEACTIVATE_AFTER,
 		DropAfter:        DROP,
 		TrustDecayFactor: TRUST_DECAY_FACTOR,
+		DecayEvery:       TRUST_DECAY_RATE,
+		PruneEvery:       DEACTIVATE_AFTER,
 		Logger:           cfg.Logger.WithPrefix("/peers")})
 	for _, addrPort := range cfg.Edges {
 		peers.AddPeer(pkt.MapToIPv6(addrPort), true)
@@ -149,7 +151,6 @@ func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
 func (d *Dave) run(peers *peer.Store, ringSize int) {
 	pingTick := time.NewTicker(PING)
 	epochTick := time.NewTicker(EPOCH)
-	trustDecayTick := time.NewTicker(TRUST_DECAY_RATE)
 	getMyAddrPortTick := time.NewTicker(GETMYADDRPORT_EVERY)
 	if len(peers.Edges()) == 0 {
 		getMyAddrPortTick.Stop()
@@ -177,10 +178,8 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 			case types.Op_PUT: // STORE DAT
 				d.handlePut(peers, ring, packet)
 			case types.Op_GETMYADDRPORT:
-				d.packetOut <- &pkt.Packet{Msg: &types.Msg{
-					Op:        types.Op_GETMYADDRPORT_ACK,
-					AddrPorts: []netip.AddrPort{packet.AddrPort}},
-					AddrPort: packet.AddrPort}
+				d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT_ACK,
+					AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
 			case types.Op_GETMYADDRPORT_ACK:
 				// Only accept from edge peers
 				if peers.IsEdge(packet.AddrPort) && len(packet.Msg.AddrPorts) == 1 {
@@ -207,7 +206,6 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 				}
 			}
 		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
-			peers.Prune()
 			for _, peer := range peers.ListAll() {
 				challenge, err := peers.CreateChallenge(peer.AddrPort())
 				if err != nil {
@@ -218,8 +216,6 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 					Op: types.Op_PING, Challenge: challenge},
 					AddrPort: peer.AddrPort()}
 			}
-		case <-trustDecayTick.C:
-			peers.DecayTrust()
 		case activeOnly := <-d.getPeers:
 			if activeOnly {
 				d.peers <- peers.ListActive()
@@ -238,8 +234,7 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 func (d *Dave) sendGetMyAddrPort(peers *peer.Store) error {
 	for _, p := range peers.Edges() {
 		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
-			d.packetOut <- &pkt.Packet{
-				Msg:      &types.Msg{Op: types.Op_GETMYADDRPORT},
+			d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT},
 				AddrPort: p.AddrPort()}
 			d.logger.Debug("sent GETMYADDRPORT to %s", p.AddrPort())
 			return nil
@@ -283,23 +278,18 @@ func (d *Dave) handlePing(peers *peer.Store, packet *pkt.Packet) {
 	hash.Write(packet.Msg.Challenge[:])
 	hash.Write(salt)
 	sig := ed25519.Sign(d.privateKey, hash.Sum(nil))
-	d.packetOut <- &pkt.Packet{
-		Msg: &types.Msg{
-			Op: types.Op_PONG,
-			Solution: &types.Solution{
-				Challenge: packet.Msg.Challenge,
-				Salt:      types.Salt(salt),
-				PublicKey: d.publicKey,
-				Signature: types.Signature(sig)},
-			AddrPorts: addrPorts},
-		AddrPort: packet.AddrPort}
+	d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PONG,
+		Solution: &types.Solution{Challenge: packet.Msg.Challenge,
+			Salt:      types.Salt(salt),
+			PublicKey: d.publicKey,
+			Signature: types.Signature(sig)},
+		AddrPorts: addrPorts}, AddrPort: packet.AddrPort}
 }
 
 func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	sorted := sortPeersByDistance(dat.PubKey, activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
-		d.packetOut <- &pkt.Packet{
-			Msg:      &types.Msg{Op: types.Op_PUT, Dat: dat},
+		d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PUT, Dat: dat},
 			AddrPort: sorted[i].peer.AddrPort()}
 	}
 }
