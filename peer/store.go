@@ -155,14 +155,18 @@ func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
 	return peer.edge
 }
 
-func (s *Store) Table() map[netip.AddrPort]*Peer {
-	return s.table
-}
-
 func (s *Store) ListActive() []Peer {
 	list := make([]Peer, len(s.active))
 	for i, p := range s.active {
 		list[i] = *p
+	}
+	return list
+}
+
+func (s *Store) ListAll() []Peer {
+	list := make([]Peer, 0, len(s.table))
+	for _, p := range s.table {
+		list = append(list, *p)
 	}
 	return list
 }
@@ -225,11 +229,11 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []Peer {
 	return selected
 }
 
-// Drops inactive peers. Inactive edges are not dropped, but excluded from seeding.
+// Drops/deactivates inactive peers. Inactive edges are not dropped, but deactivated..
 func (s *Store) Prune() {
 	activeCount := 0
 	for _, p := range s.table {
-		if time.Since(p.challengeSolved) < s.dropAfter {
+		if time.Since(p.challengeSolved) < s.deactivateAfter {
 			activeCount++
 		}
 	}
@@ -243,7 +247,7 @@ func (s *Store) Prune() {
 	for k, p := range s.table {
 		if p.edge { // Never drop edges, even if they go offline
 			newTable[k] = p
-			if time.Since(p.challengeSolved) < s.dropAfter {
+			if time.Since(p.challengeSolved) < s.deactivateAfter {
 				newActive = append(newActive, p)
 				trustSum += uint32(p.trust)
 			}

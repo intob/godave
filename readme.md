@@ -47,6 +47,8 @@ type Cfg struct {
 - **PING/PONG**: Peer liveness and discovery
 - **PUT**: Store data with proof-of-work
 - **GET**: Retrieve stored data
+- **GETMYADDRPORT**: Get my address:port from a remote
+- **GETMYADDRPORT_ACK**: Response containing address:port
 
 ## Trust System
 
@@ -54,6 +56,7 @@ type Cfg struct {
 - Maximum trust cap for fair resource distribution
 - Trust influences peer selection probability
 - No trust gossip to prevent attack vectors
+- Trust influences packet rate limiter
 
 ## Data Distribution
 
@@ -73,6 +76,7 @@ type Cfg struct {
 - Proof-of-work for spam prevention
 - Trust-based peer selection
 - Sender anonymity through random push
+- Loopback prevention
 
 ## Edge Nodes
 

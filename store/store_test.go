@@ -26,7 +26,7 @@ func TestConcurrentPut(t *testing.T) {
 	store, err := New(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 200 * time.Millisecond,
-		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+		Logger:     logger.NewLoggerToDevNull(),
 		PublicKey:  pubKey,
 	})
 	if err != nil {
@@ -77,7 +77,7 @@ func TestList(t *testing.T) {
 	store, err := New(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 5 * time.Second,
-		Logger:     logger.NewLogger(&logger.LoggerCfg{}),
+		Logger:     logger.NewLoggerToDevNull(),
 		PublicKey:  pubKey,
 	})
 	if err != nil {
@@ -112,13 +112,18 @@ func TestStorePrune(t *testing.T) {
 	}
 
 	const shardCap = 10
+	logger, err := logger.NewLogger(&logger.LoggerCfg{
+		Level:  logger.DEBUG,
+		Output: logger.DevNull(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := New(&StoreCfg{
 		ShardCap:   shardCap,
 		PruneEvery: 200 * time.Millisecond,
-		Logger: logger.NewLogger(&logger.LoggerCfg{
-			Level: logger.DEBUG,
-		}),
-		PublicKey: storePubKey,
+		Logger:     logger,
+		PublicKey:  storePubKey,
 	})
 	if err != nil {
 		t.Fatal(err)

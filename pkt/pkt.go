@@ -10,7 +10,7 @@ import (
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/peer"
 	"github.com/intob/godave/pow"
-	"github.com/intob/godave/ratelimiter"
+	"github.com/intob/godave/ratelimit"
 	"github.com/intob/godave/types"
 	"lukechampine.com/blake3"
 )
@@ -44,8 +44,8 @@ type PacketProcessorCfg struct {
 	Socket                             Socket
 	NumWorkers, BufSize, PongPeerLimit int
 	MinWork                            uint8
-	GetActivePeers                     chan<- struct{}
-	ActivePeers                        <-chan []peer.Peer
+	GetPeers                           chan<- bool
+	Peers                              <-chan []peer.Peer
 	Logger                             *logger.Logger
 }
 
@@ -82,10 +82,10 @@ func NewPacketProcessor(cfg *PacketProcessorCfg) (*PacketProcessor, error) {
 		go pp.worker(pp.myAddrPortChans[i])
 	}
 	go func(socket Socket) {
-		rateLimiter := ratelimiter.NewRateLimiter(&ratelimiter.RateLimiterCfg{
-			GetActivePeers: cfg.GetActivePeers,
-			ActivePeers:    cfg.ActivePeers,
-			Logger:         cfg.Logger.WithPrefix("/rate_limit"),
+		rateLimiter := ratelimit.NewRateLimiter(&ratelimit.RateLimiterCfg{
+			GetPeers: cfg.GetPeers,
+			Peers:    cfg.Peers,
+			Logger:   cfg.Logger.WithPrefix("/rate_limit"),
 		})
 		for {
 			buf := pp.bpool.Get().([]byte)

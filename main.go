@@ -29,9 +29,9 @@ const (
 	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
 	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	PING                = 1 * time.Second  // Period between pinging peers.
-	DEACTIVATE_AFTER    = 2 * PING         // Time until protocol-deviating peers are deactivated.
-	DROP                = 3 * PING         // Time until protocol-deviating peers are dropped.
-	ACTIVATION_DELAY    = 2 * DROP         // Time until new peers are activated. Must be greater than DROP.
+	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
+	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
+	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
 	PRUNE_DATS          = 10 * time.Second // Period between pruning dats.
 	TRUST_DECAY_FACTOR  = 0.99             // Factor used to decay peer trust.
 	TRUST_DECAY_RATE    = time.Minute      // Rate at which trust decays.
@@ -39,14 +39,15 @@ const (
 )
 
 type Dave struct {
-	privateKey                 ed25519.PrivateKey
-	publicKey                  ed25519.PublicKey
-	kill, done, getActivePeers chan struct{}
-	packetOut                  chan *pkt.Packet
-	activePeers                chan []peer.Peer
-	store                      *store.Store
-	packetProcessor            *pkt.PacketProcessor
-	logger                     *logger.Logger
+	privateKey      ed25519.PrivateKey
+	publicKey       ed25519.PublicKey
+	kill, done      chan struct{}
+	packetOut       chan *pkt.Packet
+	getPeers        chan bool // true = active only, false = all peers
+	peers           chan []peer.Peer
+	store           *store.Store
+	packetProcessor *pkt.PacketProcessor
+	logger          *logger.Logger
 }
 
 type Cfg struct {
@@ -63,15 +64,14 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		return nil, errors.New("no valid private key provided")
 	}
 	dave := &Dave{
-		privateKey:     cfg.PrivateKey,
-		publicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
-		kill:           make(chan struct{}),
-		done:           make(chan struct{}),
-		packetOut:      make(chan *pkt.Packet, 100),
-		getActivePeers: make(chan struct{}),
-		activePeers:    make(chan []peer.Peer),
-		logger:         cfg.Logger,
-	}
+		privateKey: cfg.PrivateKey,
+		publicKey:  cfg.PrivateKey.Public().(ed25519.PublicKey),
+		kill:       make(chan struct{}),
+		done:       make(chan struct{}),
+		packetOut:  make(chan *pkt.Packet, 100),
+		getPeers:   make(chan bool),
+		peers:      make(chan []peer.Peer),
+		logger:     cfg.Logger}
 	var err error
 	dave.store, err = store.New(&store.StoreCfg{
 		ShardCap:       cfg.ShardCap,
@@ -80,8 +80,7 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		PublicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
 		Kill:           dave.kill,
 		Done:           dave.done,
-		Logger:         cfg.Logger.WithPrefix("/dats"),
-	})
+		Logger:         cfg.Logger.WithPrefix("/dats")})
 	if err != nil {
 		return nil, fmt.Errorf("failed to init store: %w", err)
 	}
@@ -91,20 +90,18 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		DeactivateAfter:  DEACTIVATE_AFTER,
 		DropAfter:        DROP,
 		TrustDecayFactor: TRUST_DECAY_FACTOR,
-		Logger:           cfg.Logger.WithPrefix("/peers"),
-	})
+		Logger:           cfg.Logger.WithPrefix("/peers")})
 	for _, addrPort := range cfg.Edges {
 		peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
 	dave.packetProcessor, err = pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
-		NumWorkers:     runtime.NumCPU(),
-		BufSize:        types.MaxMsgLen,
-		Socket:         cfg.Socket,
-		PongPeerLimit:  NPEER_LIMIT,
-		GetActivePeers: dave.getActivePeers,
-		ActivePeers:    dave.activePeers,
-		Logger:         cfg.Logger.WithPrefix("/packet_proc"),
-	})
+		NumWorkers:    runtime.NumCPU(),
+		BufSize:       types.MaxMsgLen,
+		Socket:        cfg.Socket,
+		PongPeerLimit: NPEER_LIMIT,
+		GetPeers:      dave.getPeers,
+		Peers:         dave.peers,
+		Logger:        cfg.Logger.WithPrefix("/packet_proc")})
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
 	}
@@ -123,9 +120,8 @@ func (d *Dave) Put(dat types.Dat) error {
 	if err != nil {
 		return fmt.Errorf("failed to put dat in local store: %s", err)
 	}
-	var activePeers []peer.Peer
-	d.getActivePeers <- struct{}{}
-	activePeers = <-d.activePeers
+	d.getPeers <- true // true = active only
+	activePeers := <-d.peers
 	if len(activePeers) == 0 {
 		return errors.New("no active peers")
 	}
@@ -134,15 +130,15 @@ func (d *Dave) Put(dat types.Dat) error {
 	return nil
 }
 
-func (d *Dave) WaitForPeers(ctx context.Context, count int) error {
+func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
 	check := time.NewTicker(100 * time.Millisecond)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-check.C:
-			d.getActivePeers <- struct{}{}
-			activePeers := <-d.activePeers
+			d.getPeers <- true // true = active only
+			activePeers := <-d.peers
 			if len(activePeers) >= count {
 				return nil
 			}
@@ -181,13 +177,10 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 			case types.Op_PUT: // STORE DAT
 				d.handlePut(peers, ring, packet)
 			case types.Op_GETMYADDRPORT:
-				d.packetOut <- &pkt.Packet{
-					Msg: &types.Msg{
-						Op:        types.Op_GETMYADDRPORT_ACK,
-						AddrPorts: []netip.AddrPort{packet.AddrPort},
-					},
-					AddrPort: packet.AddrPort,
-				}
+				d.packetOut <- &pkt.Packet{Msg: &types.Msg{
+					Op:        types.Op_GETMYADDRPORT_ACK,
+					AddrPorts: []netip.AddrPort{packet.AddrPort}},
+					AddrPort: packet.AddrPort}
 			case types.Op_GETMYADDRPORT_ACK:
 				// Only accept from edge peers
 				if peers.IsEdge(packet.AddrPort) && len(packet.Msg.AddrPorts) == 1 {
@@ -215,21 +208,24 @@ func (d *Dave) run(peers *peer.Store, ringSize int) {
 			}
 		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
 			peers.Prune()
-			for _, peer := range peers.Table() {
+			for _, peer := range peers.ListAll() {
 				challenge, err := peers.CreateChallenge(peer.AddrPort())
 				if err != nil {
 					d.logger.Error("failed to create challenge: %s", err)
 					continue
 				}
-				d.packetOut <- &pkt.Packet{
-					Msg:      &types.Msg{Op: types.Op_PING, Challenge: challenge},
+				d.packetOut <- &pkt.Packet{Msg: &types.Msg{
+					Op: types.Op_PING, Challenge: challenge},
 					AddrPort: peer.AddrPort()}
-				//d.logger.Debug("ping sent to %s", peer.AddrPort())
 			}
 		case <-trustDecayTick.C:
 			peers.DecayTrust()
-		case <-d.getActivePeers:
-			d.activePeers <- peers.ListActive()
+		case activeOnly := <-d.getPeers:
+			if activeOnly {
+				d.peers <- peers.ListActive()
+			} else {
+				d.peers <- peers.ListAll()
+			}
 		case <-getMyAddrPortTick.C:
 			err := d.sendGetMyAddrPort(peers)
 			if err != nil {
@@ -244,9 +240,8 @@ func (d *Dave) sendGetMyAddrPort(peers *peer.Store) error {
 		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
 			d.packetOut <- &pkt.Packet{
 				Msg:      &types.Msg{Op: types.Op_GETMYADDRPORT},
-				AddrPort: p.AddrPort(),
-			}
-			d.logger.Error("sent MYADDRPORT to %s", p.AddrPort())
+				AddrPort: p.AddrPort()}
+			d.logger.Debug("sent GETMYADDRPORT to %s", p.AddrPort())
 			return nil
 		}
 	}
@@ -267,7 +262,7 @@ func (d *Dave) handlePut(peers *peer.Store, ring *ringbuffer.RingBuffer[*types.D
 		return
 	}
 	peers.UpdateTrust(packet.AddrPort, 255-distance)
-	//d.logger.Debug("stored %x %s", packet.Msg.Work, packet.AddrPort)
+	d.logger.Debug("stored %s", packet.Msg.Dat.Key)
 }
 
 func (d *Dave) handlePing(peers *peer.Store, packet *pkt.Packet) {
@@ -295,26 +290,17 @@ func (d *Dave) handlePing(peers *peer.Store, packet *pkt.Packet) {
 				Challenge: packet.Msg.Challenge,
 				Salt:      types.Salt(salt),
 				PublicKey: d.publicKey,
-				Signature: types.Signature(sig),
-			},
-			AddrPorts: addrPorts,
-		},
-		AddrPort: packet.AddrPort,
-	}
-
-	//d.logger.Debug("replied to ping from %d", remoteFp)
+				Signature: types.Signature(sig)},
+			AddrPorts: addrPorts},
+		AddrPort: packet.AddrPort}
 }
 
 func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	sorted := sortPeersByDistance(dat.PubKey, activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
 		d.packetOut <- &pkt.Packet{
-			Msg: &types.Msg{
-				Op:  types.Op_PUT,
-				Dat: dat,
-			},
-			AddrPort: sorted[i].peer.AddrPort(),
-		}
+			Msg:      &types.Msg{Op: types.Op_PUT, Dat: dat},
+			AddrPort: sorted[i].peer.AddrPort()}
 	}
 }
 

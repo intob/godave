@@ -2,6 +2,7 @@ package logger
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -51,11 +52,23 @@ func DevNull() chan<- string {
 	return logs
 }
 
-func NewLogger(cfg *LoggerCfg) *Logger {
+func NewLogger(cfg *LoggerCfg) (*Logger, error) {
+	if cfg == nil {
+		return nil, errors.New("cfg is nil")
+	}
+	if cfg.Output == nil {
+		return nil, errors.New("logger output is nil")
+	}
 	return &Logger{
 		level:  cfg.Level,
 		output: cfg.Output,
 		prefix: cfg.Prefix,
+	}, nil
+}
+
+func NewLoggerToDevNull() *Logger {
+	return &Logger{
+		output: DevNull(),
 	}
 }
 
