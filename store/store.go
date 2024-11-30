@@ -82,7 +82,7 @@ func (h *datheap) Pop() interface{} {
 }
 func (h *datheap) Peek() *pair { return (*h)[0] }
 
-func New(cfg *StoreCfg) (*Store, error) {
+func NewStore(cfg *StoreCfg) (*Store, error) {
 	if cfg.ShardCap <= 0 {
 		return nil, errors.New("inavlid shard cap provided, must be greater than 0")
 	}

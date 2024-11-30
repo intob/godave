@@ -187,6 +187,12 @@ func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
 	return peer.edge
 }
 
+func (s *Store) CountActive() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.active)
+}
+
 func (s *Store) ListActive() []Peer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

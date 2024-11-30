@@ -3,7 +3,6 @@ package pkt
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"net/netip"
 	"testing"
 	"time"
 
@@ -11,6 +10,7 @@ import (
 	"github.com/intob/godave/types"
 )
 
+/*
 type mockReader struct {
 	packet   []byte
 	addrPort netip.AddrPort
@@ -43,7 +43,6 @@ func (m *mockReader) WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n in
 	return copy(m.packet, b), nil
 }
 
-/*
 func BenchmarkProcessor(b *testing.B) {
 	buf := make([]byte, types.MaxMsgLen)
 	n, err := buildMockPacket(buf)

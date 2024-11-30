@@ -23,7 +23,7 @@ func TestConcurrentPut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(&StoreCfg{
+	store, err := NewStore(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 200 * time.Millisecond,
 		Logger:     logger.NewLoggerToDevNull(),
@@ -74,7 +74,7 @@ func TestList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(&StoreCfg{
+	store, err := NewStore(&StoreCfg{
 		ShardCap:   100000,
 		PruneEvery: 5 * time.Second,
 		Logger:     logger.NewLoggerToDevNull(),
@@ -119,7 +119,7 @@ func TestStorePrune(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	store, err := New(&StoreCfg{
+	store, err := NewStore(&StoreCfg{
 		ShardCap:   shardCap,
 		PruneEvery: 200 * time.Millisecond,
 		Logger:     logger,
