@@ -3,7 +3,7 @@
 
 package xor
 
-func xorInto(dst, a, b []byte) {
+func xor256Into(dst, a, b []byte) {
 	for i := 0; i < 32; i++ {
 		dst[i] = a[i] ^ b[i]
 	}

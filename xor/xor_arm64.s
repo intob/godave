@@ -2,8 +2,8 @@
 
 #include "textflag.h"
 
-// func xorInto(dst, a, b []byte)
-TEXT ·xorInto(SB), NOSPLIT, $0-72
+// func xor256Into(dst, a, b []byte)
+TEXT ·xor256Into(SB), NOSPLIT, $0-72
     // Load slice addresses and length
     MOVD dst_base+0(FP), R0   // dst address
     MOVD a_base+24(FP), R1    // a address

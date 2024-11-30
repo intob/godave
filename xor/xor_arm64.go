@@ -4,4 +4,4 @@
 package xor
 
 //go:noescape
-func xorInto(dst, a, b []byte)
+func xor256Into(dst, a, b []byte)

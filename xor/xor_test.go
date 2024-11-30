@@ -2,117 +2,114 @@ package xor
 
 import (
 	"bytes"
-	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"math/bits"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
-func xorPureGo(dst, a, b []byte) {
+const (
+	hexA = "cd04bcd026c8ee86760ae342f978d4aee311df27eafdd5262f463bc3a42862cd"
+	hexB = "b77c90a112a6c8f1be099272a686f6572b288ec7b9efc73248d3e58d1df40bc8"
+)
+
+func testData() [2][]byte {
+	aa, _ := hex.DecodeString(hexA)
+	bb, _ := hex.DecodeString(hexB)
+	return [2][]byte{aa, bb}
+}
+
+func xor256PureGo(dst, a, b []byte) {
 	for i := 0; i < 32; i++ {
 		dst[i] = a[i] ^ b[i]
 	}
 }
 
+func xor256Uint8Slow(a, b []byte) (uint8, error) {
+	if len(a) != 32 || len(b) != 32 {
+		return 0, errors.New("inputs must be of equal length")
+	}
+	var distance uint8
+	for i := 0; i < 32; i++ {
+		distance += uint8(bits.OnesCount8(a[i] ^ b[i]))
+	}
+	return distance, nil
+}
+
+// This version is a little over x4 faster than the naive version.
+func xor256Uint8RolledUp(a, b []byte) (uint8, error) {
+	if len(a) != 32 || len(b) != 32 {
+		return 0, errors.New("inputs must be of equal length")
+	}
+	// Process 8 bytes at a time using uint64
+	var total uint64
+	for i := 0; i < len(a); i += 8 {
+		x := *(*uint64)(unsafe.Pointer(&a[i]))
+		y := *(*uint64)(unsafe.Pointer(&b[i]))
+		total += uint64(bits.OnesCount64(x ^ y))
+	}
+
+	return uint8(total), nil
+}
+
 func BenchmarkPureGo(b *testing.B) {
-	buf1 := make([]byte, 32)
-	buf2 := make([]byte, len(buf1))
-	dst := make([]byte, len(buf1))
-	rand.Read(buf1)
-	rand.Read(buf2)
+	data := testData()
+	dst := make([]byte, 32)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		xorPureGo(dst, buf1, buf2)
+		xor256PureGo(dst, data[0], data[1])
 	}
 }
 
 func BenchmarkAsm(b *testing.B) {
-	buf1 := make([]byte, 32)
-	buf2 := make([]byte, len(buf1))
-	dst := make([]byte, len(buf1))
-	rand.Read(buf1)
-	rand.Read(buf2)
+	data := testData()
+	dst := make([]byte, 32)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		xorInto(dst, buf1, buf2)
+		xor256Into(dst, data[0], data[1])
 	}
 }
 
-func TestXorIntoOne(t *testing.T) {
-	buf1 := make([]byte, 32)
-	buf2 := make([]byte, len(buf1))
-	dst := make([]byte, len(buf1))
-	for i := 0; i < len(buf1); i++ {
-		buf2[i] = 255
+func BenchmarkXorUint8Slow(b *testing.B) {
+	data := testData()
+	for i := 0; i < b.N; i++ {
+		xor256Uint8Slow(data[0], data[1])
 	}
-	xorInto(dst, buf1, buf2)
-	if !bytes.Equal(buf2, dst) {
+}
+
+func BenchmarkXorUint8RolledUp(b *testing.B) {
+	data := testData()
+	for i := 0; i < b.N; i++ {
+		xor256Uint8RolledUp(data[0], data[1])
+	}
+}
+
+func BenchmarkXorUint8(b *testing.B) {
+	data := testData()
+	for i := 0; i < b.N; i++ {
+		Xor256Uint8(data[0], data[1])
+	}
+}
+
+func TestXor256Into(t *testing.T) {
+	data := testData()
+	dst := make([]byte, 32)
+	expected := make([]byte, 32)
+	xor256PureGo(expected, data[0], data[1])
+	xor256Into(dst, data[0], data[1])
+	if !bytes.Equal(expected, dst) {
 		t.FailNow()
 	}
 }
 
-func TestXorIntoTwo(t *testing.T) {
-	buf1 := make([]byte, 32)
-	buf2 := make([]byte, len(buf1))
-	dst := make([]byte, len(buf1))
-	for i := 0; i < 16; i++ {
-		buf2[i] = 255
-	}
-	xorInto(dst, buf1, buf2)
-	if !bytes.Equal(bytes.Repeat([]byte{0xFF}, 16), dst[:16]) {
-		t.FailNow()
-	}
-	if !bytes.Equal(bytes.Repeat([]byte{0x00}, 16), dst[16:]) {
-		t.FailNow()
-	}
-}
-
-func TestXorInto(t *testing.T) {
-	tests := []struct {
-		name string
-		a    []byte
-		b    []byte
-	}{
-		{
-			name: "32 byte zero keys",
-			a:    make([]byte, 32),
-			b:    make([]byte, 32),
-		},
-		{
-			name: "32 byte different keys",
-			a:    bytes.Repeat([]byte{0xFF}, 32),
-			b:    bytes.Repeat([]byte{0xAA}, 32),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			dst := make([]byte, 32)
-			xorInto(dst, tt.a, tt.b)
-
-			// Verify length
-			if len(dst) != 32 {
-				t.Errorf("XorInto produced wrong length output: got %d, want 32", len(dst))
-			}
-
-			// Verify XOR operation
-			for i := 0; i < 32; i++ {
-				expected := tt.a[i] ^ tt.b[i]
-				if dst[i] != expected {
-					t.Errorf("XorInto at position %d: got %x, want %x", i, dst[i], expected)
-				}
-			}
-		})
-	}
-}
-
-func TestXorIntoConcurrently(t *testing.T) {
+func TestXor256IntoConcurrently(t *testing.T) {
 	const numGoroutines = 1000
 	const iterations = 1000
-
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines)
-
 	for i := 0; i < numGoroutines; i++ {
 		go func() {
 			defer wg.Done()
@@ -120,64 +117,29 @@ func TestXorIntoConcurrently(t *testing.T) {
 			b := make([]byte, 32)
 			dst := make([]byte, 32)
 			expected := make([]byte, 32)
-
 			for j := 0; j < iterations; j++ {
 				rand.Read(a)
 				rand.Read(b)
-
 				for k := 0; k < 32; k++ {
 					expected[k] = a[k] ^ b[k]
 				}
-
-				xorInto(dst, a, b)
-
+				xor256Into(dst, a, b)
 				if !bytes.Equal(dst, expected) {
 					t.Errorf("XorInto produced incorrect result: got %x, want %x", dst, expected)
 				}
-
 				if len(dst) != 32 {
 					t.Errorf("XorInto produced wrong length output: got %d, want 32", len(dst))
 				}
 			}
 		}()
 	}
-
 	wg.Wait()
 }
 
-func TestXORDistanceFloat(t *testing.T) {
-	t.Run("Equal Keys", func(t *testing.T) {
-		key1 := make([]byte, ed25519.PublicKeySize)
-		key2 := make([]byte, ed25519.PublicKeySize)
-		distance, _ := XorFloat(key1, key2)
-		if distance != 0.0 {
-			t.Errorf("Expected distance 0.0 for identical keys, got %f", distance)
-		}
-	})
-
-	t.Run("Maximum Distance", func(t *testing.T) {
-		key1 := make([]byte, ed25519.PublicKeySize)
-		key2 := make([]byte, ed25519.PublicKeySize)
-		for i := range key2 {
-			key2[i] = 255
-		}
-		distance, _ := XorFloat(key1, key2)
-		if distance != 1.0 {
-			t.Errorf("Expected distance 1.0 for maximum difference, got %f", distance)
-		}
-	})
-
-	t.Run("Partial Distance", func(t *testing.T) {
-		key1 := make([]byte, ed25519.PublicKeySize)
-		key2 := make([]byte, ed25519.PublicKeySize)
-		// Set half of the bytes to 255
-		for i := 0; i < ed25519.PublicKeySize/2; i++ {
-			key2[i] = 255
-		}
-		distance, _ := XorFloat(key1, key2)
-		expectedDistance := 0.5
-		if distance != expectedDistance {
-			t.Errorf("Expected distance %f for half difference, got %f", expectedDistance, distance)
-		}
-	})
+func TestXor256Uint8(t *testing.T) {
+	data := testData()
+	result, _ := Xor256Uint8(data[0], data[1])
+	if result != 123 {
+		t.Errorf("expected 123, got %d", result)
+	}
 }
