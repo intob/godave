@@ -24,19 +24,19 @@ import (
 )
 
 const (
-	EPOCH               = time.Millisecond // Period between seeding rounds.
-	FANOUT              = 2                // Number of peers selected when sending dats.
-	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
-	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
-	PING                = 1 * time.Second  // Period between pinging peers.
-	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
-	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
-	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
-	PRUNE_DATS          = 10 * time.Second // Period between pruning dats.
-	TRUST_DECAY_FACTOR  = 0.99             // Factor used to decay peer trust.
-	TRUST_DECAY_RATE    = time.Minute      // Rate at which trust decays.
-	GETMYADDRPORT_EVERY = 10 * time.Minute // Period between getting my addrport from an edge.
+	EPOCH               = 500 * time.Microsecond // Period between seeding rounds.
+	FANOUT              = 2                      // Number of peers selected when sending dats.
+	PROBE               = 12                     // Inverse of probability that a peer is selected regardless of trust.
+	NPEER_LIMIT         = 3                      // Maximum number of peer descriptors in a PONG message.
+	MIN_WORK            = 16                     // Minimum amount of acceptable work in number of leading zero bits.
+	PING                = 1 * time.Second        // Period between pinging peers.
+	DEACTIVATE_AFTER    = 3 * PING               // Time until protocol-deviating peers are deactivated.
+	DROP                = 12 * PING              // Time until protocol-deviating peers are dropped.
+	ACTIVATION_DELAY    = 5 * PING               // Time until new peers are activated.
+	PRUNE_DATS          = 30 * time.Second       // Period between pruning dats.
+	TRUST_DECAY_FACTOR  = 0.99                   // Factor used to decay peer trust.
+	TRUST_DECAY_RATE    = time.Minute            // Rate at which trust decays.
+	GETMYADDRPORT_EVERY = 10 * time.Minute       // Period between getting my addrport from an edge.
 )
 
 type Dave struct {

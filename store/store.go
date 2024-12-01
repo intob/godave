@@ -104,9 +104,15 @@ func NewStore(cfg *StoreCfg) (*Store, error) {
 		}
 	}
 	go func() {
-		tick := time.NewTicker(cfg.PruneEvery)
-		for range tick.C {
-			s.prune()
+		pruneTick := time.NewTicker(cfg.PruneEvery)
+		statTick := time.NewTicker(cfg.PruneEvery / 2)
+		for {
+			select {
+			case <-pruneTick.C:
+				s.prune()
+			case <-statTick.C:
+				s.logger.Error("got %d", s.count.Load())
+			}
 		}
 	}()
 	if s.backupFilename == "" {
