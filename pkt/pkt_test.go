@@ -3,14 +3,15 @@ package pkt
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"net/netip"
 	"testing"
 	"time"
 
+	"github.com/intob/godave/logger"
 	"github.com/intob/godave/pow"
 	"github.com/intob/godave/types"
 )
 
-/*
 type mockReader struct {
 	packet   []byte
 	addrPort netip.AddrPort
@@ -50,23 +51,18 @@ func BenchmarkProcessor(b *testing.B) {
 		b.Error(err)
 	}
 	buf = buf[:n]
-	proc, err := NewPacketProcessor(&PacketProcessorCfg{
-		NumWorkers: runtime.NumCPU(),
-		BufSize:    1424,
-		Socket:     &mockReader{buf, netip.MustParseAddrPort("127.0.0.1:6102")},
-		Logger: logger.NewLogger(&logger.LoggerCfg{
-			Output: logger.DevNull(),
-		}),
-	})
+	proc, err := NewPacketProcessor(
+		&mockReader{buf, netip.MustParseAddrPort("127.0.0.1:6102")},
+		logger.NewLoggerToDevNull())
 	if err != nil {
 		b.Fatalf("failed to init packet processor: %s", err)
 	}
+	packets := proc.In()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		<-proc.Packets()
+		<-packets
 	}
 }
-*/
 
 /*
 BenchmarkProto-12        	2904609	       412.0 ns/op	     600 B/op	       9 allocs/op

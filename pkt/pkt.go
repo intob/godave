@@ -1,9 +1,7 @@
 package pkt
 
 import (
-	"errors"
 	"net/netip"
-	"sync"
 
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/types"
@@ -14,22 +12,21 @@ type Socket interface {
 	WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n int, err error)
 }
 
+type RawPacket struct {
+	Data     []byte
+	AddrPort netip.AddrPort
+}
+
 type Packet struct {
 	Msg      *types.Msg
 	AddrPort netip.AddrPort
 }
 
 type PacketProcessor struct {
-	resultChan chan *Packet
-	bpool      *sync.Pool
-	logger     *logger.Logger
+	packetsIn  chan *RawPacket
+	packetsOut chan *Packet
 	myAddrPort chan netip.AddrPort
-}
-
-type PacketProcessorCfg struct {
-	Socket  Socket
-	BufSize int
-	Logger  *logger.Logger
+	logger     *logger.Logger
 }
 
 func MapToIPv6(addr netip.AddrPort) netip.AddrPort {
@@ -44,58 +41,64 @@ func MapToIPv6(addr netip.AddrPort) netip.AddrPort {
 	return netip.AddrPortFrom(v6, addr.Port())
 }
 
-func NewPacketProcessor(cfg *PacketProcessorCfg) (*PacketProcessor, error) {
-	if cfg == nil || cfg.Logger == nil {
-		return nil, errors.New("invalid config")
-	}
+func NewPacketProcessor(sock Socket, logger *logger.Logger) (*PacketProcessor, error) {
 	pp := &PacketProcessor{
-		resultChan: make(chan *Packet, 1000),
-		bpool:      &sync.Pool{New: func() any { return make([]byte, cfg.BufSize) }},
-		logger:     cfg.Logger,
+		packetsIn:  make(chan *RawPacket, 10000),
+		packetsOut: make(chan *Packet, 100),
+		logger:     logger,
 		myAddrPort: make(chan netip.AddrPort),
 	}
-	go func(socket Socket) {
-		var myAddrPort netip.AddrPort
-		for {
-			select {
-			case newAddrPort := <-pp.myAddrPort:
-				myAddrPort = newAddrPort
-				pp.logger.Debug("updated my addrport to %s", myAddrPort)
-			default:
-				buf := pp.bpool.Get().([]byte)
-				n, raddr, err := socket.ReadFromUDPAddrPort(buf)
-				if err != nil {
-					pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-					pp.logger.Error("failed to read from socket: %s", err)
-					continue
-				}
-				if n > types.MaxMsgLen {
-					pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-					pp.logger.Debug("packet dropped: size greater than limit")
-					continue
-				}
-				ipv6 := MapToIPv6(raddr)
-				if ipv6 == myAddrPort {
-					pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-					pp.logger.Debug("packet dropped: loopback")
-					continue
-				}
-				msg := &types.Msg{}
-				err = msg.Unmarshal(buf[:n])
-				if err != nil {
-					pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-					pp.logger.Error("unmarshal error: %s", err)
-					continue
-				}
-				pp.resultChan <- &Packet{Msg: msg, AddrPort: ipv6}
-				pp.bpool.Put(buf) //lint:ignore SA6002 slice is already a reference
-			}
-
-		}
-	}(cfg.Socket)
+	go pp.readFromSocket(sock)
+	go pp.writeToSocket(sock)
 	return pp, nil
 }
 
-func (pp *PacketProcessor) Packets() <-chan *Packet { return pp.resultChan }
+func (pp *PacketProcessor) In() <-chan *RawPacket { return pp.packetsIn }
+
+func (pp *PacketProcessor) Out() chan<- *Packet { return pp.packetsOut }
 
 func (pp *PacketProcessor) MyAddrPortChan() chan<- netip.AddrPort { return pp.myAddrPort }
+
+func (pp *PacketProcessor) readFromSocket(socket Socket) {
+	var myAddrPort netip.AddrPort
+	buf := make([]byte, types.MaxMsgLen)
+	for {
+		select {
+		case newAddrPort := <-pp.myAddrPort:
+			myAddrPort = newAddrPort
+			pp.logger.Debug("updated my addrport to %s", myAddrPort)
+		default:
+			buf = buf[:cap(buf)]
+			n, raddr, err := socket.ReadFromUDPAddrPort(buf)
+			if err != nil {
+				pp.logger.Error("failed to read from socket: %s", err)
+				continue
+			}
+			ipv6 := MapToIPv6(raddr)
+			if ipv6 == myAddrPort {
+				pp.logger.Debug("packet dropped: loopback")
+				continue
+			}
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			pp.packetsIn <- &RawPacket{data, ipv6}
+		}
+
+	}
+}
+
+func (pp *PacketProcessor) writeToSocket(socket Socket) {
+	buf := make([]byte, types.MaxMsgLen)
+	for pkt := range pp.packetsOut {
+		buf = buf[:cap(buf)]
+		n, err := pkt.Msg.Marshal(buf)
+		if err != nil {
+			pp.logger.Error("dispatch error: %s", err)
+			continue
+		}
+		_, err = socket.WriteToUDPAddrPort(buf[:n], pkt.AddrPort)
+		if err != nil {
+			pp.logger.Error("dispatch error: %s", err)
+		}
+	}
+}

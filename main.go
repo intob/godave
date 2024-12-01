@@ -40,18 +40,17 @@ const (
 )
 
 type Dave struct {
-	privateKey      ed25519.PrivateKey
-	publicKey       ed25519.PublicKey
-	kill, done      chan struct{}
-	packetOut       chan *pkt.Packet
-	peers           *peer.Store
-	store           *store.Store
-	packetProcessor *pkt.PacketProcessor
-	ring            *ringbuffer.RingBuffer[*types.Dat]
-	logger          *logger.Logger
+	privateKey ed25519.PrivateKey
+	publicKey  ed25519.PublicKey
+	kill, done chan struct{}
+	peers      *peer.Store
+	store      *store.Store
+	pproc      *pkt.PacketProcessor
+	ring       *ringbuffer.RingBuffer[*types.Dat]
+	logger     *logger.Logger
 }
 
-type Cfg struct {
+type DaveCfg struct {
 	Socket         pkt.Socket
 	PrivateKey     ed25519.PrivateKey
 	Edges          []netip.AddrPort
@@ -60,7 +59,7 @@ type Cfg struct {
 	Logger         *logger.Logger
 }
 
-func NewDave(cfg *Cfg) (*Dave, error) {
+func NewDave(cfg *DaveCfg) (*Dave, error) {
 	if cfg.PrivateKey == nil || len(cfg.PrivateKey) != ed25519.PrivateKeySize {
 		return nil, errors.New("no valid private key provided")
 	}
@@ -69,7 +68,6 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 		publicKey:  cfg.PrivateKey.Public().(ed25519.PublicKey),
 		kill:       make(chan struct{}),
 		done:       make(chan struct{}),
-		packetOut:  make(chan *pkt.Packet, 1),
 		ring:       ringbuffer.NewRingBuffer[*types.Dat](cfg.ShardCap),
 		peers: peer.NewStore(&peer.StoreCfg{
 			Probe:            PROBE,
@@ -96,16 +94,12 @@ func NewDave(cfg *Cfg) (*Dave, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init store: %w", err)
 	}
-	dave.packetProcessor, err = pkt.NewPacketProcessor(&pkt.PacketProcessorCfg{
-		BufSize: types.MaxMsgLen,
-		Socket:  cfg.Socket,
-		Logger:  cfg.Logger.WithPrefix("/packet_proc")})
+	dave.pproc, err = pkt.NewPacketProcessor(cfg.Socket, cfg.Logger.WithPrefix("/pproc"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
 	}
 	go dave.run()
 	go dave.handlePackets()
-	go dave.writePackets(cfg.Socket)
 	return dave, nil
 }
 
@@ -147,25 +141,33 @@ func (d *Dave) handlePackets() {
 		go func() {
 			hasher := blake3.New(32, nil)
 			var myAddrPort netip.AddrPort
-			for packet := range d.packetProcessor.Packets() {
-				switch packet.Msg.Op {
+			for packet := range d.pproc.In() {
+				msg := &types.Msg{}
+				err := msg.Unmarshal(packet.Data)
+				if err != nil {
+					d.logger.Error("failed to unmarshal packet: %s", err)
+				}
+				switch msg.Op {
 				case types.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
-					err := d.handlePong(packet, myAddrPort)
+					err := d.handlePong(msg, packet.AddrPort, myAddrPort)
 					if err != nil {
 						d.logger.Error("failed to handle pong: %s", err)
 					}
 				case types.Op_PING: // SOLVE CHALLENGE & GIVE PEERS
-					d.handlePing(packet)
+					d.handlePing(msg, packet.AddrPort)
 				case types.Op_PUT: // STORE DAT
-					d.handlePut(hasher, packet)
+					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
+					if err != nil {
+						d.logger.Debug("failed to handle put: %s", err)
+					}
 				case types.Op_GETMYADDRPORT:
-					d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT_ACK,
+					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT_ACK,
 						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
 				case types.Op_GETMYADDRPORT_ACK:
 					// Only accept from edge peers
-					if d.peers.IsEdge(packet.AddrPort) && len(packet.Msg.AddrPorts) == 1 {
-						myAddrPort = packet.Msg.AddrPorts[0]
-						d.packetProcessor.MyAddrPortChan() <- myAddrPort
+					if d.peers.IsEdge(packet.AddrPort) && len(msg.AddrPorts) == 1 {
+						myAddrPort = msg.AddrPorts[0]
+						d.pproc.MyAddrPortChan() <- myAddrPort
 					} else {
 						d.logger.Error("rejected MYADDRPORT_ACK from %s", packet.AddrPort)
 					}
@@ -210,7 +212,7 @@ func (d *Dave) run() {
 					d.logger.Error("failed to create challenge: %s", err)
 					continue
 				}
-				d.packetOut <- &pkt.Packet{Msg: &types.Msg{
+				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{
 					Op: types.Op_PING, Challenge: challenge},
 					AddrPort: peer.AddrPort()}
 			}
@@ -226,7 +228,7 @@ func (d *Dave) run() {
 func (d *Dave) sendGetMyAddrPort() error {
 	for _, p := range d.peers.Edges() {
 		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
-			d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT},
+			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT},
 				AddrPort: p.AddrPort()}
 			d.logger.Debug("sent GETMYADDRPORT to %s", p.AddrPort())
 			return nil
@@ -235,9 +237,11 @@ func (d *Dave) sendGetMyAddrPort() error {
 	return errors.New("failed to send MYADDRPORT")
 }
 
-func (d *Dave) handlePut(hasher *blake3.Hasher, packet *pkt.Packet) error {
-	d.peers.AddPeer(packet.AddrPort, false)
-	dat := packet.Msg.Dat
+func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
+	d.peers.AddPeer(raddr, false)
+	if dat == nil {
+		return errors.New("dat is nil")
+	}
 	if pow.Nzerobit(dat.Work) < MIN_WORK {
 		return fmt.Errorf("work is insufficient: %x", dat.Work)
 	}
@@ -256,26 +260,26 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, packet *pkt.Packet) error {
 	}
 	err = d.store.Put(dat)
 	if err != nil {
-		return err
+		return nil
 	}
-	d.ring.Write(packet.Msg.Dat)
-	distance, err := xor.Xor256Uint8(d.publicKey, packet.Msg.Dat.PubKey)
+	d.ring.Write(dat)
+	distance, err := xor.Xor256Uint8(d.publicKey, dat.PubKey)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to xor: %w", err)
 	}
-	d.peers.UpdateTrust(packet.AddrPort, 255-distance)
-	d.logger.Debug("stored %s", packet.Msg.Dat.Key)
+	d.peers.UpdateTrust(raddr, 255-distance)
+	d.logger.Debug("stored %s", dat.Key)
 	return nil
 }
 
-func (d *Dave) handlePing(packet *pkt.Packet) {
-	d.peers.AddPeer(packet.AddrPort, false)
-	if !d.peers.IsPingExpected(packet.AddrPort, PING) {
-		d.logger.Error("unexpected ping from %s", packet.AddrPort)
+func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
+	d.peers.AddPeer(raddr, false)
+	if !d.peers.IsPingExpected(raddr, PING) {
+		d.logger.Error("unexpected ping from %s", raddr)
 		return
 	}
-	d.peers.UpdatePingReceived(packet.AddrPort)
-	randPeers := d.peers.TrustWeightedRandPeers(NPEER_LIMIT, &packet.AddrPort)
+	d.peers.UpdatePingReceived(raddr)
+	randPeers := d.peers.TrustWeightedRandPeers(NPEER_LIMIT, &raddr)
 	addrPorts := make([]netip.AddrPort, len(randPeers))
 	for i, p := range randPeers {
 		addrPorts[i] = p.AddrPort()
@@ -283,77 +287,61 @@ func (d *Dave) handlePing(packet *pkt.Packet) {
 	salt := make([]byte, 16)
 	rand.Read(salt)
 	hash := blake3.New(32, nil)
-	hash.Write(packet.Msg.Challenge[:])
+	hash.Write(msg.Challenge[:])
 	hash.Write(salt)
 	sig := ed25519.Sign(d.privateKey, hash.Sum(nil))
-	d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PONG,
-		Solution: &types.Solution{Challenge: packet.Msg.Challenge,
+	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PONG,
+		Solution: &types.Solution{Challenge: msg.Challenge,
 			Salt:      types.Salt(salt),
 			PublicKey: d.publicKey,
 			Signature: types.Signature(sig)},
-		AddrPorts: addrPorts}, AddrPort: packet.AddrPort}
+		AddrPorts: addrPorts}, AddrPort: raddr}
 }
 
 func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	sorted := sortPeersByDistance(dat.PubKey, activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
-		d.packetOut <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PUT, Dat: dat},
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PUT, Dat: dat},
 			AddrPort: sorted[i].peer.AddrPort()}
 	}
 }
 
-func (d *Dave) writePackets(socket pkt.Socket) {
-	buf := make([]byte, types.MaxMsgLen)
-	for pkt := range d.packetOut {
-		buf = buf[:cap(buf)]
-		n, err := pkt.Msg.Marshal(buf)
-		if err != nil {
-			d.logger.Error("dispatch error: %s", err)
-			continue
-		}
-		_, err = socket.WriteToUDPAddrPort(buf[:n], pkt.AddrPort)
-		if err != nil {
-			d.logger.Error("dispatch error: %s", err)
-		}
-	}
-}
-
-func (d *Dave) handlePong(packet *pkt.Packet, myAddrPort netip.AddrPort) error {
-	d.peers.AddPeer(packet.AddrPort, false)
-	challenge, storedPubKey, err := d.peers.CurrentChallengeAndPubKey(packet.AddrPort)
+func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
+	d.peers.AddPeer(raddr, false)
+	challenge, storedPubKey, err := d.peers.CurrentChallengeAndPubKey(raddr)
 	if err != nil {
 		return err
 	}
-	if packet.Msg.Solution.Challenge != challenge {
+	if msg.Solution.Challenge != challenge {
 		return errors.New("challenge is incorrect")
 	}
-	if len(packet.Msg.Solution.PublicKey) != ed25519.PublicKeySize {
+	if len(msg.Solution.PublicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("pub key is invalid: %s", err)
 	}
-	if storedPubKey != nil && !storedPubKey.Equal(packet.Msg.Solution.PublicKey) {
+	if storedPubKey != nil && !storedPubKey.Equal(msg.Solution.PublicKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
 	h := blake3.New(32, nil)
 	h.Write(challenge[:])
-	h.Write(packet.Msg.Solution.Salt[:])
+	h.Write(msg.Solution.Salt[:])
 	hash := h.Sum(nil)
-	if !ed25519.Verify(packet.Msg.Solution.PublicKey, hash, packet.Msg.Solution.Signature[:]) {
+	if !ed25519.Verify(msg.Solution.PublicKey, hash, msg.Solution.Signature[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
 	if storedPubKey == nil {
-		d.peers.SetPubKey(packet.AddrPort, packet.Msg.Solution.PublicKey)
+		d.peers.SetPubKey(raddr, msg.Solution.PublicKey)
 	}
-	if len(packet.Msg.AddrPorts) > NPEER_LIMIT {
+	if len(msg.AddrPorts) > NPEER_LIMIT {
 		return fmt.Errorf("message contains more than %d addrports", NPEER_LIMIT)
 	}
-	for _, addrPort := range packet.Msg.AddrPorts {
+	for _, addrPort := range msg.AddrPorts {
 		if addrPort != myAddrPort {
 			d.peers.AddPeer(addrPort, false)
 		} else {
 			return fmt.Errorf("my own addrport was given")
 		}
 	}
-	d.peers.ChallengeSolved(packet.AddrPort)
+	d.peers.ChallengeSolved(raddr)
 	return nil
 }
 
@@ -369,7 +357,6 @@ type peerDistance struct {
 	distance []byte
 }
 
-// Returns a copy of the peer slice sorted by distance, closest first
 func sortPeersByDistance(target ed25519.PublicKey, peers []peer.Peer) []peerDistance {
 	distances := make([]peerDistance, 0, len(peers))
 	for _, peer := range peers {
