@@ -17,7 +17,7 @@ var ErrPeerNotFound = errors.New("peer not found")
 
 type StoreCfg struct {
 	Probe           int           // Inverse of probability that an untrusted peer is chosen
-	ActivationDelay time.Duration // Time until new peers are candidates for selection
+	ActivateAfter   time.Duration // Time until new peers are candidates for selection
 	DeactivateAfter time.Duration // Time until unresponsive peers are deactivated
 	DropAfter       time.Duration // Time until unresponsive peers are dropped
 	PruneEvery      time.Duration
@@ -30,7 +30,7 @@ type Store struct {
 	active          []*peer // Sorted by trust descending
 	edges           []*peer
 	probe           int
-	activationDelay time.Duration
+	activateAfter   time.Duration
 	deactivateAfter time.Duration
 	dropAfter       time.Duration
 	logger          logger.Logger
@@ -42,7 +42,7 @@ func NewStore(cfg *StoreCfg) *Store {
 		active:          make([]*peer, 0),
 		edges:           make([]*peer, 0),
 		probe:           cfg.Probe,
-		activationDelay: cfg.ActivationDelay,
+		activateAfter:   cfg.ActivateAfter,
 		deactivateAfter: cfg.DeactivateAfter,
 		dropAfter:       cfg.DropAfter,
 		logger:          cfg.Logger,
@@ -324,7 +324,7 @@ func (s *Store) prune() {
 			}
 		} else {
 			if time.Since(p.authChallengeSolved) < s.dropAfter {
-				if time.Since(p.added) > s.activationDelay &&
+				if time.Since(p.added) > s.activateAfter &&
 					time.Since(p.authChallengeSolved) < s.deactivateAfter {
 					newActive = append(newActive, p)
 				}

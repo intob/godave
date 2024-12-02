@@ -27,9 +27,9 @@ const (
 	NPEER_LIMIT         = 5                // Maximum number of peer descriptors in a PONG message.
 	MIN_WORK            = 20               // Minimum amount of acceptable work in number of leading zero bits.
 	PING                = 1 * time.Second  // Period between pinging peers.
+	ACTIVATE_AFTER      = 5 * PING         // Time until new peers are activated.
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
-	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
-	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
+	DROP_AFTER          = 12 * PING        // Time until protocol-deviating peers are dropped.
 	GETMYADDRPORT_EVERY = 10 * time.Minute // Period between getting my addrport from an edge.
 	// Time-to-live of data. Data older than this will be replaced as needed,
 	// if new data has a higher priority. Priority is a function of age and
@@ -73,9 +73,9 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		kill: make(chan struct{}), done: make(chan struct{}),
 		peers: peer.NewStore(&peer.StoreCfg{
 			Probe:           PROBE,
-			ActivationDelay: ACTIVATION_DELAY,
+			ActivateAfter:   ACTIVATE_AFTER,
 			DeactivateAfter: DEACTIVATE_AFTER,
-			DropAfter:       DROP,
+			DropAfter:       DROP_AFTER,
 			PruneEvery:      DEACTIVATE_AFTER,
 			Logger:          cfg.Logger.WithPrefix("/peers")}),
 		logger: cfg.Logger,
