@@ -28,7 +28,7 @@ type StoreCfg struct {
 type Store struct {
 	mu              sync.RWMutex
 	table           map[netip.AddrPort]*Peer
-	active          []*Peer // sorted by trust descending
+	active          []*Peer // Sorted by trust descending
 	edges           []*Peer
 	trustSum        float64
 	probe           int
@@ -92,9 +92,7 @@ func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta float64) {
 	if !exists {
 		return
 	}
-	oldTrust := peer.trust
 	peer.trust = peer.trust + delta
-	s.trustSum += peer.trust - oldTrust
 }
 
 func (s *Store) CreateChallenge(addrPort netip.AddrPort) (types.Challenge, error) {
@@ -284,7 +282,8 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []Peer {
 
 // Drops/deactivates inactive peers. Inactive edges are not dropped, but deactivated..
 func (s *Store) prune() {
-	s.mu.RLock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	activeCount := 0
 	for _, p := range s.table {
 		if time.Since(p.challengeSolved) < s.deactivateAfter {
@@ -293,7 +292,6 @@ func (s *Store) prune() {
 	}
 	if activeCount == len(s.table) && activeCount == len(s.active) {
 		s.log(logger.ERROR, "prune skipped, active: %d/%d", activeCount, activeCount)
-		s.mu.RUnlock()
 		return
 	}
 	newTable := make(map[netip.AddrPort]*Peer, activeCount)
@@ -319,16 +317,13 @@ func (s *Store) prune() {
 			}
 		}
 	}
-	s.mu.RUnlock()
 	sort.Slice(newActive, func(i, j int) bool {
 		return newActive[i].trust > newActive[j].trust
 	})
-	s.mu.Lock()
 	s.table = newTable
 	s.active = newActive
 	s.trustSum = trustSum
 	s.log(logger.ERROR, "pruned, active: %d/%d", len(s.active), len(s.table))
-	s.mu.Unlock()
 }
 
 func (s *Store) decayTrust(decayFactor float64) {

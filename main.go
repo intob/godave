@@ -22,9 +22,9 @@ import (
 const (
 	FANOUT              = 3                // Number of peers selected when sending dats.
 	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
-	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
+	NPEER_LIMIT         = 5                // Maximum number of peer descriptors in a PONG message.
 	MIN_WORK            = 20               // Minimum amount of acceptable work in number of leading zero bits.
-	PING                = 1 * time.Second  // Period between pinging peers.
+	PING                = 3 * time.Second  // Period between pinging peers.
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
 	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
 	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
@@ -186,7 +186,7 @@ func (d *Dave) run() {
 	}
 	for {
 		select {
-		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
+		case <-pingTick.C:
 			for _, peer := range d.peers.ListAll() {
 				challenge, err := d.peers.CreateChallenge(peer.AddrPort())
 				if err != nil {
@@ -197,7 +197,7 @@ func (d *Dave) run() {
 					Op: types.Op_PING, Challenge: challenge},
 					AddrPort: peer.AddrPort()}
 			}
-		case <-getMyAddrPortTick.C: // REQUEST MY ADDRPORT
+		case <-getMyAddrPortTick.C:
 			err := d.sendGetMyAddrPort()
 			if err != nil {
 				d.log(logger.ERROR, "failed to send GETMYADDRPORT: no edge is online")
@@ -219,7 +219,6 @@ func (d *Dave) sendGetMyAddrPort() error {
 }
 
 func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
-	//d.peers.AddPeer(raddr, false)
 	if dat == nil {
 		return errors.New("dat is nil")
 	}
@@ -244,11 +243,15 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 		return err
 	}
 	activePeers := d.peers.ListActive(&raddr)
+	// Maybe make this depend on trust, or maybe leave this up to the originator.
+	// This improves reliability, as we may know a closer peer that the originator
+	// is unaware of. This also improves anonymity, as we don't know which peer was
+	// the originator.
 	if len(activePeers) >= FANOUT {
 		d.sendToClosestPeers(activePeers, dat)
 	}
-	normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
-	d.peers.UpdateTrust(raddr, 1-normDistance)
+	// normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
+	// d.peers.UpdateTrust(raddr, 1-normDistance)
 	d.log(logger.DEBUG, "stored %s", dat.Key)
 	return nil
 }
@@ -288,7 +291,6 @@ func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 }
 
 func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
-	//d.peers.AddPeer(raddr, false)
 	challenge, storedPubKey, err := d.peers.CurrentChallengeAndPubKey(raddr)
 	if err != nil {
 		return err

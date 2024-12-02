@@ -261,5 +261,4 @@ func TestStorePrune(t *testing.T) {
 			t.Errorf("zero-distance dat with key %s was pruned", dat.Key)
 		}
 	}
-
 }
