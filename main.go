@@ -117,7 +117,6 @@ func (d *Dave) Put(dat types.Dat) error {
 		return errors.New("no active peers")
 	}
 	d.sendToClosestPeers(activePeers, &dat)
-	d.log(logger.ERROR, "sent to %s")
 	return nil
 }
 
