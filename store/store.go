@@ -30,7 +30,6 @@ type Store struct {
 	backup         chan *types.Dat
 	kill           <-chan struct{}
 	done           chan<- struct{}
-	currentShard   uint8
 	capacity       int64
 	usedSpace      atomic.Int64
 	ttl            time.Duration
@@ -51,7 +50,6 @@ type shard struct {
 	mu   sync.RWMutex
 	data map[uint64]types.Dat
 	heap *priorityHeap
-	pos  uint32
 }
 
 func NewStore(cfg *StoreCfg) *Store {
@@ -93,6 +91,10 @@ func (s *Store) ReadBackup() error {
 	return s.writeFreshBackup()
 }
 
+func (s *Store) Capacity() int64 {
+	return s.capacity
+}
+
 func (s *Store) Used() int64 {
 	return s.usedSpace.Load()
 }
@@ -105,7 +107,7 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	if dat == nil {
 		return errors.New("nil dat provided")
 	}
-	shardIndex, key := Keys(dat.PubKey, dat.Key)
+	shardIndex, key := keys(dat.PubKey, dat.Key)
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
@@ -160,12 +162,8 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	return nil
 }
 
-func calculateEntrySize(dat *types.Dat) int64 {
-	return int64(len(dat.Val) + len(dat.Key) + types.DatInMemorySize)
-}
-
 func (s *Store) Read(pubKey ed25519.PublicKey, datKey string) (types.Dat, error) {
-	shardIndex, key := Keys(pubKey, datKey)
+	shardIndex, key := keys(pubKey, datKey)
 	shard := s.shards[shardIndex]
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
@@ -212,14 +210,6 @@ func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []types.Dat 
 		results = append(results, result)
 	}
 	return results
-}
-
-func Keys(pubKey ed25519.PublicKey, datKey string) (uint8, uint64) {
-	h := xxhash.New()
-	h.Write(pubKey)
-	h.WriteString(datKey)
-	sum64 := h.Sum64()
-	return uint8(sum64 >> 56), sum64
 }
 
 func (s *Store) readBackup() error {
@@ -322,31 +312,20 @@ func (s *Store) writeBackup() {
 	}
 }
 
-func (s *Store) Next() (types.Dat, bool) {
-	s.currentShard++ // overflows to 0
-	shard := s.shards[s.currentShard]
-	shard.mu.Lock()
-	defer shard.mu.Unlock()
-	if len(shard.data) == 0 {
-		return types.Dat{}, false
-	}
-	shard.pos++
-	if shard.pos >= uint32(len(shard.data)) {
-		shard.pos = 0
-	}
-	var currentPos uint32
-	for _, dat := range shard.data {
-		if currentPos != shard.pos {
-			currentPos++
-			continue
-		}
-		return dat, true
-	}
-	return types.Dat{}, false
-}
-
 func (s *Store) log(level logger.LogLevel, msg string, args ...any) {
 	if s.logger != nil {
 		s.logger.Log(level, msg, args...)
 	}
+}
+
+func keys(pubKey ed25519.PublicKey, datKey string) (uint8, uint64) {
+	h := xxhash.New()
+	h.Write(pubKey)
+	h.WriteString(datKey)
+	sum64 := h.Sum64()
+	return uint8(sum64 >> 56), sum64
+}
+
+func calculateEntrySize(dat *types.Dat) int64 {
+	return int64(len(dat.Val) + len(dat.Key) + types.DatInMemorySize)
 }

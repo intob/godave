@@ -69,7 +69,7 @@ func TestStorePriorityReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to generate key: %v", err)
 	}
-	pubAShardID, _ := Keys(pubA, dataKey)
+	pubAShardID, _ := keys(pubA, dataKey)
 	// Brute-force second pub key that lands in the same shard
 	var pubB ed25519.PublicKey
 	for {
@@ -77,7 +77,7 @@ func TestStorePriorityReplacement(t *testing.T) {
 		if err != nil {
 			t.Fatalf("failed to generate key pair: %v", err)
 		}
-		shardID, _ := Keys(pub, dataKey)
+		shardID, _ := keys(pub, dataKey)
 		if pubAShardID == shardID {
 			pubB = pub
 			break
