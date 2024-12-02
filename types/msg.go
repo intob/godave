@@ -15,8 +15,9 @@ const (
 	OP_PONG              = Op(1)
 	OP_PUT               = Op(2)
 	OP_GET               = Op(3)
-	OP_GETMYADDRPORT     = Op(4)
-	OP_GETMYADDRPORT_ACK = Op(5)
+	OP_GET_ACK           = Op(4)
+	OP_GETMYADDRPORT     = Op(5)
+	OP_GETMYADDRPORT_ACK = Op(6)
 	lenAddrPort          = 18
 )
 
@@ -57,12 +58,42 @@ func (sol *AuthSolution) Unmarshal(buf []byte) error {
 	return nil
 }
 
+type Get struct {
+	PublicKey ed25519.PublicKey
+	DatKey    string
+}
+
+func (g Get) Marshal(buf []byte) (int, error) {
+	if len(buf) < 32+1+len(g.DatKey) {
+		return 0, errors.New("buffer too small")
+	}
+	copy(buf, g.PublicKey)
+	buf[32] = byte(len(g.DatKey))
+	copy(buf[33:], g.DatKey)
+	return 32 + 1 + len(g.DatKey), nil
+}
+
+func (g *Get) Unmarshal(buf []byte) error {
+	if len(buf) < 32+1 {
+		return errors.New("buffer too small")
+	}
+	g.PublicKey = make([]byte, 32)
+	copy(g.PublicKey, buf[:32])
+	keyLen := int(buf[32])
+	if len(buf) < 32+1+keyLen {
+		return errors.New("buffer too small for dat key")
+	}
+	g.DatKey = string(buf[33 : 33+keyLen])
+	return nil
+}
+
 type Msg struct {
 	Op            Op
 	AddrPorts     []netip.AddrPort
 	AuthChallenge AuthChallenge
 	AuthSolution  *AuthSolution
 	Dat           *Dat
+	Get           *Get
 }
 
 func (msg *Msg) Unmarshal(buf []byte) error {
@@ -79,27 +110,18 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 			var err error
 			msg.AddrPorts, err = parseAddrs(buf[2 : 2+lenAddrs])
 			if err != nil {
-				return fmt.Errorf("failed to parse addrports: %s", err)
+				return fmt.Errorf("failed to parse addrports: %w", err)
 			}
 		}
 		msg.AuthSolution = &AuthSolution{}
-		err := msg.AuthSolution.Unmarshal(buf[2+lenAddrs:])
-		if err != nil {
-			return fmt.Errorf("failed to unmarshal solution: %s", err)
-		}
+		return msg.AuthSolution.Unmarshal(buf[2+lenAddrs:])
 	case OP_PUT:
-		if len(buf) < 1+2 {
-			return errors.New("buffer too small for op code and len prefix")
-		}
-		lenDat := binary.LittleEndian.Uint16(buf[1:3])
-		if lenDat == 0 {
-			return errors.New("dat len prefix is zero")
-		}
-		if int(lenDat) > len(buf)-3 {
-			return errors.New("dat len prefix value is too large")
-		}
-		msg.Dat = &Dat{}
-		msg.Dat.Unmarshal(buf[3:])
+		return msg.unmarshalDat(buf[1:])
+	case OP_GET:
+		msg.Get = &Get{}
+		return msg.Get.Unmarshal(buf[1:])
+	case OP_GET_ACK:
+		return msg.unmarshalDat(buf[1:])
 	case OP_GETMYADDRPORT_ACK:
 		addrPort, err := parseAddr(buf[1:])
 		if err != nil {
@@ -110,13 +132,28 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 	return nil
 }
 
+func (msg *Msg) unmarshalDat(buf []byte) error {
+	if len(buf) < 2 {
+		return errors.New("buffer too small for op code and len prefix")
+	}
+	lenDat := binary.LittleEndian.Uint16(buf[:2])
+	if lenDat == 0 {
+		return errors.New("dat len prefix is zero")
+	}
+	if int(lenDat) > len(buf)-2 {
+		return errors.New("dat len prefix value is too large")
+	}
+	msg.Dat = &Dat{}
+	_, err := msg.Dat.Unmarshal(buf[2:])
+	return err
+}
+
 func (msg *Msg) Marshal(buf []byte) (int, error) {
 	if len(buf) < 1 {
 		return 0, errors.New("buffer too small")
 	}
 	buf[0] = byte(msg.Op)
 	n := 1
-
 	switch msg.Op {
 	case OP_PING:
 		if len(buf) < 1+8 {
@@ -125,11 +162,8 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		n += copy(buf[1:], msg.AuthChallenge[:])
 		return n, nil
 	case OP_PONG:
-		// Write length of addresses
 		addrBufLen := len(msg.AddrPorts) * lenAddrPort
 		buf[1] = uint8(addrBufLen)
-
-		// Marshal addresses
 		offset := 2
 		for _, addr := range msg.AddrPorts {
 			ip := addr.Addr().As16()
@@ -137,8 +171,6 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 			binary.LittleEndian.PutUint16(buf[offset+16:offset+18], addr.Port())
 			offset += lenAddrPort
 		}
-
-		// Marshal solution
 		if msg.AuthSolution == nil {
 			return 0, errors.New("solution is required for PONG")
 		}
@@ -148,15 +180,20 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		}
 		return 1 + 1 + addrBufLen + solLen, nil
 	case OP_PUT:
-		if msg.Dat == nil {
-			return 0, errors.New("dat is required for PUT")
+		datLen, err := msg.marshalDat(buf[1:])
+		return 1 + datLen, err
+	case OP_GET:
+		if msg.Get == nil {
+			return 0, errors.New("msg.Get is nil")
 		}
-		datLen, err := msg.Dat.Marshal(buf[3:])
+		getLen, err := msg.Get.Marshal(buf[1:])
 		if err != nil {
-			return 0, fmt.Errorf("failed to marshal dat: %s", err)
+			return 0, fmt.Errorf("failed to marshal get: %w", err)
 		}
-		binary.LittleEndian.PutUint16(buf[1:3], uint16(datLen))
-		return 1 + 2 + datLen, nil
+		return 1 + getLen, nil
+	case OP_GET_ACK:
+		datLen, err := msg.marshalDat(buf[1:])
+		return 1 + datLen, err
 	case OP_GETMYADDRPORT:
 		return n, nil
 	case OP_GETMYADDRPORT_ACK:
@@ -170,6 +207,18 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		return n, nil
 	}
 	return 0, errors.New("unknown op code")
+}
+
+func (msg *Msg) marshalDat(buf []byte) (int, error) {
+	if msg.Dat == nil {
+		return 0, errors.New("dat is nil")
+	}
+	datLen, err := msg.Dat.Marshal(buf[2:])
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal dat: %w", err)
+	}
+	binary.LittleEndian.PutUint16(buf[:2], uint16(datLen))
+	return 2 + datLen, nil
 }
 
 func parseAddrs(buf []byte) ([]netip.AddrPort, error) {

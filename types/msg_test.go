@@ -276,10 +276,10 @@ func TestUnmarshalGetMyAddrPortAck(t *testing.T) {
 }
 
 /*
-BenchmarkProto-12        				2904609	       412.0 ns/op	     600 B/op	       9 allocs/op
-BenchmarkMsgMarshalUnmarshal-12    	 	9422624	       109.4 ns/op	     256 B/op	       4 allocs/op
+BenchmarkProtobuf-12        				2904609	       412.0 ns/op	     600 B/op	       9 allocs/op
+BenchmarkMarshalUnmarshalDatMsg-12    	 	9422624	       109.4 ns/op	     256 B/op	       4 allocs/op
 */
-func BenchmarkMsgMarshalUnmarshal(b *testing.B) {
+func BenchmarkMarshalUnmarshalDatMsg(b *testing.B) {
 	pubKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		b.Fatal(err)
@@ -306,7 +306,7 @@ func BenchmarkMsgMarshalUnmarshal(b *testing.B) {
 	}
 }
 
-func BenchmarkMsgMarshal(b *testing.B) {
+func BenchmarkDatMsgMarshal(b *testing.B) {
 	pubKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		b.Fatal(err)
@@ -331,7 +331,7 @@ func BenchmarkMsgMarshal(b *testing.B) {
 	}
 }
 
-func BenchmarkMsgUnmarshal(b *testing.B) {
+func BenchmarkDatMsgUnmarshal(b *testing.B) {
 	pubKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		b.Fatal(err)
@@ -355,5 +355,130 @@ func BenchmarkMsgUnmarshal(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m := &Msg{}
 		m.Unmarshal(buf[:n])
+	}
+}
+
+func TestMarshalGet(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	datKey := "test-key"
+	g := &Get{PublicKey: pubKey, DatKey: datKey}
+	buf := make([]byte, 32+1+len(datKey))
+	n, err := g.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 32+1+len(datKey) {
+		t.Errorf("returned n value is wrong, expected %d, got %d", 32+1+len(datKey), n)
+	}
+	if !bytes.Equal(buf[:32], pubKey) {
+		t.Errorf("pub key not as expected")
+	}
+	if int(buf[32]) != len(datKey) {
+		t.Errorf("dat key len prefix is wrong, expected %d, got %d", len(datKey), int(buf[32]))
+	}
+}
+
+func TestUnmarshalGet(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	datKey := "another-test-key"
+	g := &Get{PublicKey: pubKey, DatKey: datKey}
+	buf := make([]byte, 32+1+len(datKey))
+	_, err = g.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g2 := &Get{}
+	err = g2.Unmarshal(buf)
+	if err != nil {
+		t.Error(err)
+	}
+	if g2.DatKey != g.DatKey {
+		t.Errorf("dat key wrong, expected %s, got %s", g.DatKey, g2.DatKey)
+	}
+	if !bytes.Equal(pubKey, g2.PublicKey) {
+		t.Errorf("public key incorrect, expected %x, got %x", pubKey, g2.PublicKey)
+	}
+}
+
+func TestMarshalUnmarshalGetMsg(t *testing.T) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	datKey := "another-test-key"
+	msg := &Msg{Op: OP_GET, Get: &Get{PublicKey: pubKey, DatKey: datKey}}
+	buf := make([]byte, 1+32+1+len(datKey))
+	_, err = msg.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg2 := &Msg{}
+	err = msg2.Unmarshal(buf)
+	if err != nil {
+		t.Error(err)
+	}
+	if msg2.Get == nil {
+		t.Fatal("msg.Get is nil")
+	}
+	if msg2.Get.DatKey != datKey {
+		t.Errorf("dat key wrong, expected %s, got %s", datKey, msg2.Get.DatKey)
+	}
+	if !bytes.Equal(pubKey, msg2.Get.PublicKey) {
+		t.Errorf("public key incorrect, expected %x, got %x", pubKey, msg2.Get.PublicKey)
+	}
+}
+
+func TestMarshalUnmarshalGetAckMsgNilDat(t *testing.T) {
+	msg := &Msg{Op: OP_GET_ACK}
+	buf := make([]byte, 1+2+DatHeaderSize)
+	_, err := msg.Marshal(buf)
+	if err == nil {
+		t.Fatal("should error, as dat is nil")
+	}
+}
+
+func TestMarshalUnmarshalyGetAckMsgEmptyDat(t *testing.T) {
+	msg := &Msg{Op: OP_GET_ACK, Dat: &Dat{}}
+	buf := make([]byte, 1+2+DatHeaderSize)
+	_, err := msg.Marshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg2 := &Msg{}
+	err = msg2.Unmarshal(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg2.Dat == nil {
+		t.Error("expected empty dat, got nil")
+	}
+}
+
+func BenchmarkMarshalUnmarshalGet(b *testing.B) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	datKey := "another-test-key"
+	g := &Get{PublicKey: pubKey, DatKey: datKey}
+	buf := make([]byte, 32+1+len(datKey))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, err = g.Marshal(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
+		g2 := &Get{}
+		err = g2.Unmarshal(buf)
+		if err != nil {
+			b.Fatal(err)
+		}
 	}
 }

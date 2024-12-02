@@ -1,6 +1,7 @@
 package godave
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -24,7 +25,7 @@ const (
 	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
 	NPEER_LIMIT         = 5                // Maximum number of peer descriptors in a PONG message.
 	MIN_WORK            = 20               // Minimum amount of acceptable work in number of leading zero bits.
-	PING                = 3 * time.Second  // Period between pinging peers.
+	PING                = 1 * time.Second  // Period between pinging peers.
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
 	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
 	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
@@ -41,6 +42,7 @@ type Dave struct {
 	peers      *peer.Store
 	store      *store.Store
 	pproc      *pkt.PacketProcessor
+	getAck     chan types.Dat
 	logger     logger.Logger
 }
 
@@ -80,7 +82,9 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 			DecayEvery:       TRUST_DECAY_RATE,
 			PruneEvery:       DEACTIVATE_AFTER,
 			Logger:           cfg.Logger.WithPrefix("/peers")}),
-		logger: cfg.Logger}
+		logger: cfg.Logger,
+		getAck: make(chan types.Dat, 1),
+	}
 	for _, addrPort := range cfg.Edges {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
@@ -116,6 +120,34 @@ func (d *Dave) Put(dat types.Dat) error {
 	d.sendToClosestPeers(activePeers, &dat)
 	d.log(logger.ERROR, "sent to %s")
 	return nil
+}
+
+func (d *Dave) Get(get *types.Get) (*types.Dat, error) {
+	if get == nil {
+		return nil, errors.New("get is nil")
+	}
+	dat, err := d.store.Read(get.PublicKey, get.DatKey)
+	if err == nil {
+		return &dat, nil
+	}
+	activePeers := d.peers.ListActive(nil)
+	if len(activePeers) == 0 {
+		return nil, errors.New("no active peers")
+	}
+	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(get.PublicKey), activePeers)
+	for i := 0; i < FANOUT && i < len(sorted); i++ {
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET, Get: get},
+			AddrPort: sorted[i].Peer.AddrPort()}
+	}
+	for dat := range d.getAck {
+		if bytes.Equal(dat.PubKey, get.PublicKey) && dat.Key == get.DatKey {
+			if dat.Sig == (types.Signature{}) {
+				return nil, errors.New("not found")
+			}
+			return &dat, nil
+		}
+	}
+	return nil, errors.New("get ack channel closed")
 }
 
 func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
@@ -156,6 +188,13 @@ func (d *Dave) handlePackets() {
 					if err != nil {
 						d.log(logger.DEBUG, "failed to handle put: %s", err)
 					}
+				case types.OP_GET:
+					err = d.handleGet(msg.Get, packet.AddrPort)
+					if err != nil {
+						d.log(logger.DEBUG, "failed to handle get: %s", err)
+					}
+				case types.OP_GET_ACK:
+					d.getAck <- *msg.Dat
 				case types.OP_GETMYADDRPORT:
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
 						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
@@ -325,6 +364,18 @@ func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) erro
 		}
 	}
 	d.peers.AuthChallengeSolved(raddr)
+	return nil
+}
+
+func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
+	dat, err := d.store.Read(get.PublicKey, get.DatKey)
+	if err != nil {
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK,
+			Dat: &types.Dat{PubKey: get.PublicKey, Key: get.DatKey}},
+			AddrPort: raddr}
+		return fmt.Errorf("failed to read from store: %s", err)
+	}
+	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Dat: &dat}, AddrPort: raddr}
 	return nil
 }
 
