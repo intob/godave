@@ -238,19 +238,21 @@ func (s *Store) readBackup() error {
 		if err != nil {
 			return fmt.Errorf("err reading length-prefixed msg: %w", err)
 		}
-		msg := &types.Msg{}
-		err = msg.Unmarshal(datbuf)
+		dat := &types.Dat{}
+		err = dat.Unmarshal(datbuf)
 		if err != nil {
-			return fmt.Errorf("err unmarshalling proto msg: %w", err)
+			return fmt.Errorf("err unmarshalling dat: %w", err)
 		}
-		if msg.Dat == nil {
-			return errors.New("dat is nil")
-		}
-		err = pow.Check(hasher, msg.Dat)
+		err = pow.Check(hasher, dat)
 		if err != nil {
+			s.log(logger.ERROR, "read backup skipped dat: invalid checksum")
 			continue
 		}
-		s.write(msg.Dat, false)
+		if !ed25519.Verify(dat.PubKey, dat.Work[:], dat.Sig[:]) {
+			s.log(logger.ERROR, "read backup skipped dat: invalid signature")
+			continue
+		}
+		s.write(dat, false)
 	}
 	return nil
 }

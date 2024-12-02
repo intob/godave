@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	mrand "math/rand"
 	"net/netip"
 	"runtime"
 	"time"
@@ -29,9 +30,13 @@ const (
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
 	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
 	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
-	TRUST_DECAY_FACTOR  = 0.99             // Factor used to decay peer trust.
-	TRUST_DECAY_RATE    = time.Minute      // Rate at which trust decays.
 	GETMYADDRPORT_EVERY = 10 * time.Minute // Period between getting my addrport from an edge.
+	// Time-to-live of data. Data older than this will be replaced as needed,
+	// if new data has a higher priority. Priority is a function of age and
+	// XOR distance.
+	TTL                           = 365 * 24 * time.Hour
+	STORAGE_CHALLENGE_PROBABILITY = 1 // Probability that a dat will be used as a storage challenge.
+	STORAGE_CHALLENGE_EVERY       = 10 * time.Second
 )
 
 type Dave struct {
@@ -52,48 +57,42 @@ type DaveCfg struct {
 	Socket pkt.Socket
 	// Node private key. The last 32 bytes are the public key. The node ID is
 	// derived from the first 8 bytes of the public key.
-	PrivateKey    ed25519.PrivateKey
-	Edges         []netip.AddrPort // Bootstrap peers.
-	ShardCapacity int64            // Capacity of each of 256 shards in bytes.
-	// Time-to-live of data. Data older than this will be replaced as needed,
-	// if new data has a higher priority. Priority is a function of age and
-	// XOR distance.
-	TTL            time.Duration
-	BackupFilename string // Filename of backup file. Leave blank to disable backup.
+	PrivateKey     ed25519.PrivateKey
+	Edges          []netip.AddrPort // Bootstrap peers.
+	ShardCapacity  int64            // Capacity of each of 256 shards in bytes.
+	BackupFilename string           // Filename of backup file. Leave blank to disable backup.
 	// Set to nil to disable logging, although this is not reccomended. Currently
 	// logging is the best way to monitor. In future, the API will be better.
 	Logger logger.Logger
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
-	if cfg.PrivateKey == nil || len(cfg.PrivateKey) != ed25519.PrivateKeySize {
-		return nil, errors.New("no valid private key provided")
-	}
 	dave := &Dave{
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
 		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
 		kill: make(chan struct{}), done: make(chan struct{}),
 		peers: peer.NewStore(&peer.StoreCfg{
-			Probe:            PROBE,
-			ActivationDelay:  ACTIVATION_DELAY,
-			DeactivateAfter:  DEACTIVATE_AFTER,
-			DropAfter:        DROP,
-			TrustDecayFactor: TRUST_DECAY_FACTOR,
-			DecayEvery:       TRUST_DECAY_RATE,
-			PruneEvery:       DEACTIVATE_AFTER,
-			Logger:           cfg.Logger.WithPrefix("/peers")}),
+			Probe:           PROBE,
+			ActivationDelay: ACTIVATION_DELAY,
+			DeactivateAfter: DEACTIVATE_AFTER,
+			DropAfter:       DROP,
+			PruneEvery:      DEACTIVATE_AFTER,
+			Logger:          cfg.Logger.WithPrefix("/peers")}),
 		logger: cfg.Logger,
-		getAck: make(chan types.Dat, 1),
+		getAck: make(chan types.Dat),
 	}
 	for _, addrPort := range cfg.Edges {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
 	dave.store = store.NewStore(&store.StoreCfg{
 		MyID:     peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
-		Capacity: cfg.ShardCapacity, TTL: cfg.TTL,
+		Capacity: cfg.ShardCapacity, TTL: TTL,
 		BackupFilename: cfg.BackupFilename, Kill: dave.kill, Done: dave.done,
 		Logger: cfg.Logger.WithPrefix("/dats")})
-	var err error
+	err := dave.store.ReadBackup()
+	if err != nil {
+		dave.log(logger.ERROR, "failed to read backup: %s", err)
+	}
 	dave.pproc, err = pkt.NewPacketProcessor(cfg.Socket, cfg.Logger.WithPrefix("/pproc"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
@@ -128,6 +127,7 @@ func (d *Dave) Get(get *types.Get) (*types.Dat, error) {
 	}
 	dat, err := d.store.Read(get.PublicKey, get.DatKey)
 	if err == nil {
+		d.log(logger.DEBUG, "found locally: %s", dat.Key)
 		return &dat, nil
 	}
 	activePeers := d.peers.ListActive(nil)
@@ -135,14 +135,22 @@ func (d *Dave) Get(get *types.Get) (*types.Dat, error) {
 		return nil, errors.New("no active peers")
 	}
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(get.PublicKey), activePeers)
+	start := time.Now()
+	defer func() {
+		d.log(logger.DEBUG, "found dat in %s", time.Since(start))
+	}()
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET, Get: get},
-			AddrPort: sorted[i].Peer.AddrPort()}
+			AddrPort: sorted[i].Peer.AddrPort}
 	}
 	for dat := range d.getAck {
 		if bytes.Equal(dat.PubKey, get.PublicKey) && dat.Key == get.DatKey {
 			if dat.Sig == (types.Signature{}) {
 				return nil, errors.New("not found")
+			}
+			err = d.store.Write(&dat)
+			if err != nil {
+				d.log(logger.DEBUG, "failed to store dat: %s", err)
 			}
 			return &dat, nil
 		}
@@ -179,22 +187,34 @@ func (d *Dave) handlePackets() {
 				case types.OP_PONG:
 					err := d.handlePong(hasher, msg, packet.AddrPort, myAddrPort)
 					if err != nil {
-						d.log(logger.ERROR, "failed to handle pong: %s", err)
+						d.log(logger.ERROR, "failed to handle PONG: %s", err)
 					}
 				case types.OP_PING:
 					d.handlePing(hasher, msg, packet.AddrPort)
 				case types.OP_PUT:
-					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
+					err = d.handlePut(hasher, msg.Dat)
 					if err != nil {
-						d.log(logger.DEBUG, "failed to handle put: %s", err)
+						d.log(logger.DEBUG, "failed to handle PUT: %s", err)
+						continue
+					}
+					activePeers := d.peers.ListActive(&packet.AddrPort)
+					// Maybe make this depend on trust, or maybe leave this up to the originator.
+					// This improves reliability, as we may know a closer peer that the originator
+					// is unaware of. This also improves anonymity, as we don't know which peer was
+					// the originator.
+					if len(activePeers) >= FANOUT {
+						d.sendToClosestPeers(activePeers, msg.Dat)
 					}
 				case types.OP_GET:
 					err = d.handleGet(msg.Get, packet.AddrPort)
 					if err != nil {
-						d.log(logger.DEBUG, "failed to handle get: %s", err)
+						d.log(logger.DEBUG, "failed to handle GET: %s", err)
 					}
 				case types.OP_GET_ACK:
-					d.getAck <- *msg.Dat
+					err = d.handleGetAck(hasher, msg.Dat, packet.AddrPort)
+					if err != nil {
+						d.log(logger.ERROR, "failed to handle GET_ACK: %s", err)
+					}
 				case types.OP_GETMYADDRPORT:
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
 						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
@@ -214,6 +234,7 @@ func (d *Dave) handlePackets() {
 
 func (d *Dave) run() {
 	pingTick := time.NewTicker(PING)
+	storageChallengeTick := time.NewTicker(STORAGE_CHALLENGE_EVERY)
 	getMyAddrPortTick := time.NewTicker(GETMYADDRPORT_EVERY)
 	if len(d.peers.Edges()) == 0 {
 		getMyAddrPortTick.Stop()
@@ -227,14 +248,23 @@ func (d *Dave) run() {
 		select {
 		case <-pingTick.C:
 			for _, peer := range d.peers.ListAll() {
-				challenge, err := d.peers.CreateAuthChallenge(peer.AddrPort())
+				challenge, err := d.peers.CreateAuthChallenge(peer.AddrPort)
 				if err != nil {
 					d.log(logger.ERROR, "failed to create challenge: %s", err)
 					continue
 				}
 				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{
 					Op: types.OP_PING, AuthChallenge: challenge},
-					AddrPort: peer.AddrPort()}
+					AddrPort: peer.AddrPort}
+			}
+		case <-storageChallengeTick.C:
+			for _, peer := range d.peers.RandPeers(FANOUT, nil) {
+				challenge, err := d.peers.GetStorageChallenge(peer.AddrPort)
+				if err == nil {
+					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET,
+						Get: &types.Get{PublicKey: challenge.PublicKey, DatKey: challenge.DatKey}},
+						AddrPort: peer.AddrPort}
+				}
 			}
 		case <-getMyAddrPortTick.C:
 			err := d.sendGetMyAddrPort()
@@ -247,17 +277,17 @@ func (d *Dave) run() {
 
 func (d *Dave) sendGetMyAddrPort() error {
 	for _, p := range d.peers.Edges() {
-		if time.Since(p.AuthChallengeSolved()) < DEACTIVATE_AFTER {
+		if time.Since(p.AuthChallengeSolved) < DEACTIVATE_AFTER {
 			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
-				AddrPort: p.AddrPort()}
-			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort())
+				AddrPort: p.AddrPort}
+			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort)
 			return nil
 		}
 	}
 	return errors.New("failed to send MYADDRPORT")
 }
 
-func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
+func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat) error {
 	if dat == nil {
 		return errors.New("dat is nil")
 	}
@@ -281,31 +311,16 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	if err != nil {
 		return err
 	}
-	activePeers := d.peers.ListActive(&raddr)
-	// Maybe make this depend on trust, or maybe leave this up to the originator.
-	// This improves reliability, as we may know a closer peer that the originator
-	// is unaware of. This also improves anonymity, as we don't know which peer was
-	// the originator.
-	if len(activePeers) >= FANOUT {
-		d.sendToClosestPeers(activePeers, dat)
-	}
-	// normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
-	// d.peers.UpdateTrust(raddr, 1-normDistance)
 	d.log(logger.DEBUG, "stored %s", dat.Key)
 	return nil
 }
 
 func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.AddrPort) {
 	d.peers.AddPeer(raddr, false)
-	if !d.peers.IsPingExpected(raddr, PING) {
-		d.log(logger.ERROR, "unexpected ping from %s", raddr)
-		return
-	}
-	d.peers.UpdatePingReceived(raddr)
-	randPeers := d.peers.TrustWeightedRandPeers(NPEER_LIMIT, &raddr)
+	randPeers := d.peers.RandPeers(NPEER_LIMIT, &raddr)
 	addrPorts := make([]netip.AddrPort, len(randPeers))
 	for i, p := range randPeers {
-		addrPorts[i] = p.AddrPort()
+		addrPorts[i] = p.AddrPort
 	}
 	salt := make([]byte, 16)
 	rand.Read(salt)
@@ -321,11 +336,16 @@ func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.Add
 		AddrPorts: addrPorts}, AddrPort: raddr}
 }
 
-func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
+func (d *Dave) sendToClosestPeers(activePeers []peer.PeerCopy, dat *types.Dat) {
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
+		p := sorted[i].Peer
+		if mrand.Float64() <= STORAGE_CHALLENGE_PROBABILITY { // Randomly create storage challenge
+			d.peers.SetStorageChallenge(p.AddrPort, &peer.StorageChallenge{
+				PublicKey: dat.PubKey, DatKey: dat.Key, Expires: time.Now().Add(TTL - time.Second)})
+		}
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Dat: dat},
-			AddrPort: sorted[i].Peer.AddrPort()}
+			AddrPort: p.AddrPort}
 	}
 }
 
@@ -376,6 +396,50 @@ func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
 		return fmt.Errorf("failed to read from store: %s", err)
 	}
 	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Dat: &dat}, AddrPort: raddr}
+	return nil
+}
+
+func (d *Dave) handleGetAck(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
+	select {
+	case d.getAck <- *dat:
+	default: // don't block if no reciever is waiting
+	}
+	challenge, err := d.peers.GetStorageChallenge(raddr)
+	if err != nil {
+		return nil
+	}
+	if !bytes.Equal(challenge.PublicKey, dat.PubKey) {
+		return nil
+	}
+	if challenge.DatKey != dat.Key {
+		return nil
+	}
+	if pow.Nzerobit(dat.Work) < MIN_WORK {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("work is insufficient: %x", dat.Work)
+	}
+	if err := pow.Check(hasher, dat); err != nil {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("work is invalid: %s", err)
+	}
+	if l := len(dat.PubKey); l != ed25519.PublicKeySize {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("pub key is invalid: len %d", l)
+	}
+	pubKey, err := unmarshalEd25519PublicKey(dat.PubKey)
+	if err != nil {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("failed to unmarshal pub key: %s", err)
+	}
+	if !ed25519.Verify(pubKey, dat.Work[:], dat.Sig[:]) {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("signature is invalid")
+	}
+	err = d.peers.StorageChallengeCompleted(raddr)
+	if err != nil {
+		return fmt.Errorf("failed to set storage challenge completed: %s", err)
+	}
+	d.log(logger.ERROR, "YAYY!! STORAGE CHALLENGE COMPLETED")
 	return nil
 }
 

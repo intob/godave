@@ -81,15 +81,11 @@ func (l *DaveLogger) Log(level LogLevel, msg string, args ...any) {
 	if level > l.level {
 		return
 	}
-	l.output <- fmt.Sprintf(l.prefix+" "+msg, args...)
-}
-
-func (l *DaveLogger) Error(msg string, args ...any) {
-	l.Log(ERROR, msg, args...)
-}
-
-func (l *DaveLogger) Debug(msg string, args ...any) {
-	l.Log(DEBUG, msg, args...)
+	if l.prefix != "" {
+		l.output <- fmt.Sprintf(l.prefix+" "+msg, args...)
+	} else {
+		l.output <- fmt.Sprintf(msg, args...)
+	}
 }
 
 func (l *DaveLogger) WithPrefix(prefix string) Logger {

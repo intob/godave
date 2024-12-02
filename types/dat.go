@@ -56,10 +56,10 @@ func (dat Dat) Marshal(buf []byte) (int, error) {
 	return n, nil
 }
 
-func (dat *Dat) Unmarshal(buf []byte) (int, error) {
+func (dat *Dat) Unmarshal(buf []byte) error {
 	// Minimum size check for fixed fields
 	if len(buf) < DatHeaderSize {
-		return 0, errors.New("buffer too small for fixed fields")
+		return errors.New("buffer too small for fixed fields")
 	}
 
 	// Read fixed-size fields
@@ -75,7 +75,7 @@ func (dat *Dat) Unmarshal(buf []byte) (int, error) {
 	keyLen := int(buf[n])
 	n++
 	if len(buf) < n+keyLen+2 { // +2 for val length
-		return 0, errors.New("buffer too small for key")
+		return errors.New("buffer too small for key")
 	}
 
 	// Read key
@@ -84,24 +84,24 @@ func (dat *Dat) Unmarshal(buf []byte) (int, error) {
 
 	// Read value length
 	if len(buf) < n+2 {
-		return 0, errors.New("buffer too small for value length")
+		return errors.New("buffer too small for value length")
 	}
 	valLen := int(binary.LittleEndian.Uint16(buf[n:]))
 	n += 2
 
 	// Validate total message length
 	if len(buf) < n+valLen {
-		return 0, errors.New("buffer too small for value")
+		return errors.New("buffer too small for value")
 	}
 	if keyLen+valLen > DatMaxKVLen {
-		return 0, errors.New("total length exceeds maximum")
+		return errors.New("total length exceeds maximum")
 	}
 
 	// Read value
 	dat.Val = make([]byte, valLen)
-	n += copy(dat.Val, buf[n:])
+	copy(dat.Val, buf[n:])
 
-	return n, nil
+	return nil
 }
 
 func Ttb(t time.Time) []byte {

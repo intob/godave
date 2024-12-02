@@ -8,10 +8,10 @@ import (
 func BenchmarkSortPeersByDistance(b *testing.B) {
 	myPubKey, _, _ := ed25519.GenerateKey(nil)
 	myID := IDFromPublicKey(myPubKey)
-	peers := make([]Peer, 0, 500)
+	peers := make([]PeerCopy, 0, 500)
 	for i := 0; i < 500; i++ {
 		pubKey, _, _ := ed25519.GenerateKey(nil)
-		peers = append(peers, Peer{id: IDFromPublicKey(pubKey)})
+		peers = append(peers, PeerCopy{ID: IDFromPublicKey(pubKey)})
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -22,10 +22,10 @@ func BenchmarkSortPeersByDistance(b *testing.B) {
 func TestSortPeersByDistance(t *testing.T) {
 	myPubKey, _, _ := ed25519.GenerateKey(nil)
 	myID := IDFromPublicKey(myPubKey)
-	peers := make([]Peer, 0, 500)
+	peers := make([]PeerCopy, 0, 500)
 	for i := 0; i < 500; i++ {
 		pubKey, _, _ := ed25519.GenerateKey(nil)
-		peers = append(peers, Peer{id: IDFromPublicKey(pubKey)})
+		peers = append(peers, PeerCopy{ID: IDFromPublicKey(pubKey)})
 	}
 	sorted := SortPeersByDistance(myID, peers)
 	// Ensure peer distances ascend, closest first

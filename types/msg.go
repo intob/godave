@@ -144,7 +144,7 @@ func (msg *Msg) unmarshalDat(buf []byte) error {
 		return errors.New("dat len prefix value is too large")
 	}
 	msg.Dat = &Dat{}
-	_, err := msg.Dat.Unmarshal(buf[2:])
+	err := msg.Dat.Unmarshal(buf[2:])
 	return err
 }
 
