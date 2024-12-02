@@ -6,7 +6,7 @@ Dave is a peer-to-peer key-value store built on UDP, designed for efficient data
 
 - Distributed key-value storage over UDP
 - XOR metric used to prioritise replicas
-- Trust-based peer selection
+- Random storage challenges measure peer reliability
 - Sharding for concurrent processing
 - Automatic peer discovery
 - Data backup and recovery
@@ -56,14 +56,15 @@ type DaveCfg struct {
 
 - **PING/PONG**: Peer liveness and discovery
 - **PUT**: Store data with proof-of-work
-- **GET**: Retrieve stored data
+- **GET/GET_ACK**: Retrieve stored data
 - **GETMYADDRPORT/GETMYADDRPORT_ACK**: Get own address:port from a remote
 
 ## Trust System
 
-- Trust influences peer selection probability
-- No trust gossip to prevent attack vectors
-- Trust influences re-propagation
+- Reliability is measured using random storage challenges
+- No gossip about reliability to prevent attack vectors
+- Reliability influences peer selection
+- Reliability influences re-propagation
 
 ## Pruning and Maintenance
 
