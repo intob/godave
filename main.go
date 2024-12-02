@@ -177,12 +177,12 @@ func (d *Dave) handlePackets() {
 				}
 				switch msg.Op {
 				case types.OP_PONG:
-					err := d.handlePong(msg, packet.AddrPort, myAddrPort)
+					err := d.handlePong(hasher, msg, packet.AddrPort, myAddrPort)
 					if err != nil {
 						d.log(logger.ERROR, "failed to handle pong: %s", err)
 					}
 				case types.OP_PING:
-					d.handlePing(msg, packet.AddrPort)
+					d.handlePing(hasher, msg, packet.AddrPort)
 				case types.OP_PUT:
 					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
 					if err != nil {
@@ -295,7 +295,7 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	return nil
 }
 
-func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
+func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.AddrPort) {
 	d.peers.AddPeer(raddr, false)
 	if !d.peers.IsPingExpected(raddr, PING) {
 		d.log(logger.ERROR, "unexpected ping from %s", raddr)
@@ -309,10 +309,10 @@ func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
 	}
 	salt := make([]byte, 16)
 	rand.Read(salt)
-	hash := blake3.New(32, nil)
-	hash.Write(msg.AuthChallenge[:])
-	hash.Write(salt)
-	sig := ed25519.Sign(d.privateKey, hash.Sum(nil))
+	hasher.Reset()
+	hasher.Write(msg.AuthChallenge[:])
+	hasher.Write(salt)
+	sig := ed25519.Sign(d.privateKey, hasher.Sum(nil))
 	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PONG,
 		AuthSolution: &types.AuthSolution{Challenge: msg.AuthChallenge,
 			Salt:      types.Salt(salt),
@@ -329,7 +329,7 @@ func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	}
 }
 
-func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
+func (d *Dave) handlePong(hasher *blake3.Hasher, msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
 	challenge, storedPubKey, err := d.peers.CurrentAuthChallengeAndPubKey(raddr)
 	if err != nil {
 		return err
@@ -343,10 +343,10 @@ func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) erro
 	if storedPubKey != nil && !storedPubKey.Equal(msg.AuthSolution.PublicKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
-	h := blake3.New(32, nil)
-	h.Write(challenge[:])
-	h.Write(msg.AuthSolution.Salt[:])
-	hash := h.Sum(nil)
+	hasher.Reset()
+	hasher.Write(challenge[:])
+	hasher.Write(msg.AuthSolution.Salt[:])
+	hash := hasher.Sum(nil)
 	if !ed25519.Verify(msg.AuthSolution.PublicKey, hash, msg.AuthSolution.Signature[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
