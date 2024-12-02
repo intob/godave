@@ -360,14 +360,8 @@ func (s *Store) prune() {
 			}
 		}
 	}
-	// TODO: sort active slice by uptime reliability score or storage challenge pass rate
-	/*
-		sort.Slice(newActive, func(i, j int) bool {
-			return newActive[i].trust > newActive[j].trust
-		})
-	*/
 	s.active = newActive
-	s.log(logger.ERROR, "pruned, active: %d/%d", len(s.active), len(s.table))
+	s.log(logger.DEBUG, "pruned, active: %d/%d", len(s.active), len(s.table))
 }
 
 func (s *Store) log(level logger.LogLevel, msg string, args ...any) {
