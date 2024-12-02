@@ -171,6 +171,18 @@ func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
 	}
 }
 
+func (d *Dave) UsedSpace() int64 {
+	return d.store.Used()
+}
+
+func (d *Dave) Capacity() int64 {
+	return d.store.Capacity()
+}
+
+func (d *Dave) ActivePeerCount() int {
+	return d.peers.CountActive()
+}
+
 func (d *Dave) handlePackets() {
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
