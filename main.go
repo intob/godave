@@ -30,7 +30,6 @@ const (
 	DEACTIVATE_AFTER    = 3 * PING               // Time until protocol-deviating peers are deactivated.
 	DROP                = 12 * PING              // Time until protocol-deviating peers are dropped.
 	ACTIVATION_DELAY    = 5 * PING               // Time until new peers are activated.
-	PRUNE_DATS          = 30 * time.Second       // Period between pruning dats.
 	TRUST_DECAY_FACTOR  = 0.99                   // Factor used to decay peer trust.
 	TRUST_DECAY_RATE    = time.Minute            // Rate at which trust decays.
 	GETMYADDRPORT_EVERY = 10 * time.Minute       // Period between getting my addrport from an edge.
@@ -52,8 +51,8 @@ type DaveCfg struct {
 	Socket             pkt.Socket
 	PrivateKey         ed25519.PrivateKey
 	Edges              []netip.AddrPort
-	ShardCapacity      uint64 // Bytes
-	RingBufferCapacity int    // Number of Dats
+	ShardCapacity      int64 // Bytes
+	RingBufferCapacity int   // Number of Dats
 	TTL                time.Duration
 	BackupFilename     string
 	Logger             *logger.Logger
@@ -82,7 +81,8 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
 	dave.store = store.NewStore(&store.StoreCfg{
-		MyID:           peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
+		MyID:     peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
+		Capacity: cfg.ShardCapacity, TTL: cfg.TTL,
 		BackupFilename: cfg.BackupFilename, Kill: dave.kill, Done: dave.done,
 		Logger: cfg.Logger.WithPrefix("/dats")})
 	var err error

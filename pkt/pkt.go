@@ -83,7 +83,6 @@ func (pp *PacketProcessor) readFromSocket(socket Socket) {
 			copy(data, buf[:n])
 			pp.packetsIn <- &RawPacket{data, ipv6}
 		}
-
 	}
 }
 
