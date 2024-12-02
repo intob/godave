@@ -66,17 +66,17 @@ func (pp *PacketProcessor) readFromSocket(socket Socket) {
 		select {
 		case newAddrPort := <-pp.myAddrPort:
 			myAddrPort = newAddrPort
-			pp.logger.Debug("updated my addrport to %s", myAddrPort)
+			pp.log(logger.DEBUG, "updated my addrport to %s", myAddrPort)
 		default:
 			buf = buf[:cap(buf)]
 			n, raddr, err := socket.ReadFromUDPAddrPort(buf)
 			if err != nil {
-				pp.logger.Error("failed to read from socket: %s", err)
+				pp.log(logger.ERROR, "failed to read from socket: %s", err)
 				continue
 			}
 			ipv6 := MapToIPv6(raddr)
 			if ipv6 == myAddrPort {
-				pp.logger.Debug("packet dropped: loopback")
+				pp.log(logger.ERROR, "packet dropped: loopback")
 				continue
 			}
 			data := make([]byte, n)
@@ -93,12 +93,18 @@ func (pp *PacketProcessor) writeToSocket(socket Socket) {
 		buf = buf[:cap(buf)]
 		n, err := pkt.Msg.Marshal(buf)
 		if err != nil {
-			pp.logger.Error("dispatch error: %s", err)
+			pp.log(logger.ERROR, "dispatch error: %s", err)
 			continue
 		}
 		_, err = socket.WriteToUDPAddrPort(buf[:n], pkt.AddrPort)
 		if err != nil {
-			pp.logger.Error("dispatch error: %s", err)
+			pp.log(logger.ERROR, "dispatch error: %s", err)
 		}
+	}
+}
+
+func (pp *PacketProcessor) log(level logger.LogLevel, msg string, args ...any) {
+	if pp.logger != nil {
+		pp.logger.Log(level, msg, args...)
 	}
 }

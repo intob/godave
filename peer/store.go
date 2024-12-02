@@ -4,7 +4,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
-	"math"
 	mrand "math/rand"
 	"net/netip"
 	"sort"
@@ -31,7 +30,7 @@ type Store struct {
 	table           map[netip.AddrPort]*Peer
 	active          []*Peer // sorted by trust descending
 	edges           []*Peer
-	trustSum        uint32
+	trustSum        float64
 	probe           int
 	activationDelay time.Duration
 	deactivateAfter time.Duration
@@ -83,10 +82,10 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 	if isEdge {
 		s.edges = append(s.edges, peer)
 	}
-	s.logger.Error("added %s", peer.addrPort)
+	s.log(logger.ERROR, "added %s", peer.addrPort)
 }
 
-func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta uint8) {
+func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta float64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
@@ -94,14 +93,8 @@ func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta uint8) {
 		return
 	}
 	oldTrust := peer.trust
-	if peer.trust > math.MaxUint8-delta {
-		peer.trust = math.MaxUint8
-	} else {
-		peer.trust = peer.trust + delta
-	}
-	s.trustSum += uint32(peer.trust - oldTrust)
-	//s.logger.Debug("%s's trust updated to %f", peer.addrPort, peer.trust)
-	//s.logger.Debug("trust sum updated to %f", s.trustSum)
+	peer.trust = peer.trust + delta
+	s.trustSum += peer.trust - oldTrust
 }
 
 func (s *Store) CreateChallenge(addrPort netip.AddrPort) (types.Challenge, error) {
@@ -130,20 +123,21 @@ func (s *Store) CurrentChallengeAndPubKey(addrPort netip.AddrPort) (types.Challe
 	}
 	currentChallenge := peer.challenge
 	peer.challenge = types.Challenge{}
-	return currentChallenge, peer.pubKey, nil
+	return currentChallenge, peer.publicKey, nil
 }
 
-func (s *Store) SetPubKey(addrPort netip.AddrPort, pubKey ed25519.PublicKey) error {
+func (s *Store) SetPublicKeyAndID(addrPort netip.AddrPort, publicKey ed25519.PublicKey) error {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return errors.New("peer not found")
 	}
-	if peer.pubKey != nil {
-		return errors.New("pub key is already set")
+	if peer.publicKey != nil {
+		return errors.New("public key is already set")
 	}
-	peer.pubKey = pubKey
+	peer.publicKey = publicKey
+	peer.id = IDFromPublicKey(publicKey)
 	return nil
 }
 
@@ -289,19 +283,19 @@ func (s *Store) prune() {
 		}
 	}
 	if activeCount == len(s.table) && activeCount == len(s.active) {
-		s.logger.Error("prune skipped, active: %d/%d", activeCount, activeCount)
+		s.log(logger.ERROR, "prune skipped, active: %d/%d", activeCount, activeCount)
 		s.mu.RUnlock()
 		return
 	}
 	newTable := make(map[netip.AddrPort]*Peer, activeCount)
 	newActive := make([]*Peer, 0, activeCount)
-	var trustSum uint32
+	var trustSum float64
 	for k, p := range s.table {
 		if p.edge { // Never drop edges, even if they go offline
 			newTable[k] = p
 			if time.Since(p.challengeSolved) < s.deactivateAfter {
 				newActive = append(newActive, p)
-				trustSum += uint32(p.trust)
+				trustSum += p.trust
 			}
 		} else {
 			if time.Since(p.challengeSolved) < s.dropAfter {
@@ -309,10 +303,10 @@ func (s *Store) prune() {
 				if time.Since(p.added) > s.activationDelay &&
 					time.Since(p.challengeSolved) < s.deactivateAfter {
 					newActive = append(newActive, p)
-					trustSum += uint32(p.trust)
+					trustSum += p.trust
 				}
 			} else {
-				s.logger.Error("dropped %s", p.addrPort)
+				s.log(logger.ERROR, "dropped %s", p.addrPort)
 			}
 		}
 	}
@@ -324,7 +318,7 @@ func (s *Store) prune() {
 	s.table = newTable
 	s.active = newActive
 	s.trustSum = trustSum
-	s.logger.Error("pruned, active: %d/%d", len(s.active), len(s.table))
+	s.log(logger.ERROR, "pruned, active: %d/%d", len(s.active), len(s.table))
 	s.mu.Unlock()
 }
 
@@ -332,8 +326,14 @@ func (s *Store) decayTrust(decayFactor float64) {
 	for _, peer := range s.active {
 		if peer.trust > 0 {
 			oldTrust := peer.trust
-			peer.trust = uint8(float64(peer.trust) * decayFactor)
-			s.trustSum -= uint32(oldTrust - peer.trust)
+			peer.trust = peer.trust * decayFactor
+			s.trustSum -= oldTrust - peer.trust
 		}
+	}
+}
+
+func (s *Store) log(level logger.LogLevel, msg string, args ...any) {
+	if s.logger != nil {
+		s.logger.Log(level, msg, args...)
 	}
 }

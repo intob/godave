@@ -8,7 +8,11 @@ import (
 	"time"
 )
 
-const MaxKVLen = MaxMsgLen - (8 + 16 + 32 + 64 + 32 + 1 + 2)
+const (
+	DatInMemorySize = 200
+	DatHeaderSize   = 8 + 16 + 32 + 64 + 32 + 1 + 2
+	DatMaxKVLen     = MaxMsgLen - DatHeaderSize
+)
 
 type Dat struct {
 	Time   time.Time
@@ -27,13 +31,13 @@ func (dat Dat) Marshal(buf []byte) (int, error) {
 	if lenKey > 255 {
 		return 0, errors.New("key must be no longer than 255 bytes")
 	}
-	totalNeeded := 8 + 16 + 32 + 64 + 32 + 1 + lenKey + 2 + lenVal
+	totalNeeded := DatHeaderSize + lenKey + lenVal
 	if len(buf) < totalNeeded {
 		return 0, errors.New("buffer too small")
 	}
 
-	if lenKey+lenVal > MaxKVLen {
-		return 0, fmt.Errorf("length of key+val must be no greater than %d bytes", MaxKVLen)
+	if lenKey+lenVal > DatMaxKVLen {
+		return 0, fmt.Errorf("length of key+val must be no greater than %d bytes", DatMaxKVLen)
 	}
 	// Copy fixed-length fields
 	n := copy(buf[0:], Ttb(dat.Time)) // 8
@@ -54,8 +58,7 @@ func (dat Dat) Marshal(buf []byte) (int, error) {
 
 func (dat *Dat) Unmarshal(buf []byte) (int, error) {
 	// Minimum size check for fixed fields
-	minSize := 8 + 16 + 32 + 64 + 32 + 1 // Time + Salt + Work + Sig + PubKey + KeyLen
-	if len(buf) < minSize {
+	if len(buf) < DatHeaderSize {
 		return 0, errors.New("buffer too small for fixed fields")
 	}
 
@@ -71,9 +74,6 @@ func (dat *Dat) Unmarshal(buf []byte) (int, error) {
 	// Read key length and validate
 	keyLen := int(buf[n])
 	n++
-	if keyLen > 255 {
-		return 0, errors.New("invalid key length")
-	}
 	if len(buf) < n+keyLen+2 { // +2 for val length
 		return 0, errors.New("buffer too small for key")
 	}
@@ -93,7 +93,7 @@ func (dat *Dat) Unmarshal(buf []byte) (int, error) {
 	if len(buf) < n+valLen {
 		return 0, errors.New("buffer too small for value")
 	}
-	if keyLen+valLen > MaxMsgLen-8+16+32+64+32+1+2 {
+	if keyLen+valLen > DatMaxKVLen {
 		return 0, errors.New("total length exceeds maximum")
 	}
 

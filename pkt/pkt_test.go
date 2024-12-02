@@ -2,7 +2,6 @@ package pkt
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"net/netip"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ type mockReader struct {
 }
 
 func buildMockPacket(buf []byte) (int, error) {
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
+	pubKey, privKey, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		return 0, err
 	}
@@ -61,35 +60,5 @@ func BenchmarkProcessor(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		<-packets
-	}
-}
-
-/*
-BenchmarkProto-12        	2904609	       412.0 ns/op	     600 B/op	       9 allocs/op
-BenchmarkNewMsg-12    	 	9422624	       109.4 ns/op	     256 B/op	       4 allocs/op
-*/
-func BenchmarkNewMsg(b *testing.B) {
-	pubKey, privKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		b.Fatal(err)
-	}
-	msg := &types.Msg{
-		Op: types.Op_PUT,
-		Dat: &types.Dat{
-			Key:    "test",
-			Val:    []byte("test_val"),
-			Time:   time.Now(),
-			PubKey: pubKey,
-		},
-	}
-	msg.Dat.Work, msg.Dat.Salt = pow.DoWork(msg.Dat.Key, msg.Dat.Val, msg.Dat.Time, 16)
-	msg.Dat.Sig = types.Signature(ed25519.Sign(privKey, msg.Dat.Work[:]))
-	buf := make([]byte, types.MaxMsgLen)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		n, _ := msg.Marshal(buf)
-		m := &types.Msg{}
-		m.Unmarshal(buf[:n])
 	}
 }

@@ -1,7 +1,6 @@
 package godave
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -9,7 +8,6 @@ import (
 	"fmt"
 	"net/netip"
 	"runtime"
-	"sort"
 	"time"
 
 	"github.com/intob/godave/logger"
@@ -19,7 +17,6 @@ import (
 	"github.com/intob/godave/ringbuffer"
 	"github.com/intob/godave/store"
 	"github.com/intob/godave/types"
-	"github.com/intob/godave/xor"
 	"lukechampine.com/blake3"
 )
 
@@ -42,6 +39,7 @@ const (
 type Dave struct {
 	privateKey ed25519.PrivateKey
 	publicKey  ed25519.PublicKey
+	myID       uint64
 	kill, done chan struct{}
 	peers      *peer.Store
 	store      *store.Store
@@ -51,12 +49,14 @@ type Dave struct {
 }
 
 type DaveCfg struct {
-	Socket         pkt.Socket
-	PrivateKey     ed25519.PrivateKey
-	Edges          []netip.AddrPort
-	ShardCap       int
-	BackupFilename string
-	Logger         *logger.Logger
+	Socket             pkt.Socket
+	PrivateKey         ed25519.PrivateKey
+	Edges              []netip.AddrPort
+	ShardCapacity      uint64 // Bytes
+	RingBufferCapacity int    // Number of Dats
+	TTL                time.Duration
+	BackupFilename     string
+	Logger             *logger.Logger
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
@@ -64,11 +64,10 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		return nil, errors.New("no valid private key provided")
 	}
 	dave := &Dave{
-		privateKey: cfg.PrivateKey,
-		publicKey:  cfg.PrivateKey.Public().(ed25519.PublicKey),
-		kill:       make(chan struct{}),
-		done:       make(chan struct{}),
-		ring:       ringbuffer.NewRingBuffer[*types.Dat](cfg.ShardCap),
+		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
+		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
+		kill: make(chan struct{}), done: make(chan struct{}),
+		ring: ringbuffer.NewRingBuffer[*types.Dat](cfg.RingBufferCapacity),
 		peers: peer.NewStore(&peer.StoreCfg{
 			Probe:            PROBE,
 			ActivationDelay:  ACTIVATION_DELAY,
@@ -82,18 +81,11 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 	for _, addrPort := range cfg.Edges {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
+	dave.store = store.NewStore(&store.StoreCfg{
+		MyID:           peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
+		BackupFilename: cfg.BackupFilename, Kill: dave.kill, Done: dave.done,
+		Logger: cfg.Logger.WithPrefix("/dats")})
 	var err error
-	dave.store, err = store.NewStore(&store.StoreCfg{
-		ShardCap:       cfg.ShardCap,
-		PruneEvery:     PRUNE_DATS,
-		BackupFilename: cfg.BackupFilename,
-		PublicKey:      cfg.PrivateKey.Public().(ed25519.PublicKey),
-		Kill:           dave.kill,
-		Done:           dave.done,
-		Logger:         cfg.Logger.WithPrefix("/dats")})
-	if err != nil {
-		return nil, fmt.Errorf("failed to init store: %w", err)
-	}
 	dave.pproc, err = pkt.NewPacketProcessor(cfg.Socket, cfg.Logger.WithPrefix("/pproc"))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
@@ -109,7 +101,7 @@ func (d *Dave) Kill() {
 }
 
 func (d *Dave) Put(dat types.Dat) error {
-	err := d.store.Put(&dat)
+	err := d.store.Write(&dat)
 	if err != nil {
 		return fmt.Errorf("failed to put dat in local store: %s", err)
 	}
@@ -258,16 +250,13 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	if !ed25519.Verify(pubKey, dat.Work[:], dat.Sig[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
-	err = d.store.Put(dat)
+	err = d.store.Write(dat)
 	if err != nil {
 		return nil
 	}
 	d.ring.Write(dat)
-	distance, err := xor.Xor256Uint8(d.publicKey, dat.PubKey)
-	if err != nil {
-		return fmt.Errorf("failed to xor: %w", err)
-	}
-	d.peers.UpdateTrust(raddr, 255-distance)
+	normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
+	d.peers.UpdateTrust(raddr, 1-normDistance)
 	d.logger.Debug("stored %s", dat.Key)
 	return nil
 }
@@ -299,10 +288,10 @@ func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
 }
 
 func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
-	sorted := sortPeersByDistance(dat.PubKey, activePeers)
+	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PUT, Dat: dat},
-			AddrPort: sorted[i].peer.AddrPort()}
+			AddrPort: sorted[i].Peer.AddrPort()}
 	}
 }
 
@@ -329,7 +318,7 @@ func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) erro
 		return fmt.Errorf("signature is invalid")
 	}
 	if storedPubKey == nil {
-		d.peers.SetPubKey(raddr, msg.Solution.PublicKey)
+		d.peers.SetPublicKeyAndID(raddr, msg.Solution.PublicKey)
 	}
 	if len(msg.AddrPorts) > NPEER_LIMIT {
 		return fmt.Errorf("message contains more than %d addrports", NPEER_LIMIT)
@@ -350,25 +339,4 @@ func unmarshalEd25519PublicKey(publicKeyBytes []byte) (ed25519.PublicKey, error)
 		return nil, fmt.Errorf("ed25519: public key must be %d bytes", ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(publicKeyBytes), nil
-}
-
-type peerDistance struct {
-	peer     peer.Peer
-	distance []byte
-}
-
-func sortPeersByDistance(target ed25519.PublicKey, peers []peer.Peer) []peerDistance {
-	distances := make([]peerDistance, 0, len(peers))
-	for _, peer := range peers {
-		if peer.PubKey() == nil {
-			continue
-		}
-		dist := make([]byte, ed25519.PublicKeySize)
-		xor.Xor256Into(dist, peer.PubKey(), target)
-		distances = append(distances, peerDistance{peer, dist})
-	}
-	sort.Slice(distances, func(i, j int) bool {
-		return bytes.Compare(distances[i].distance, distances[j].distance) < 0
-	})
-	return distances
 }

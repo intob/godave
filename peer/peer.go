@@ -9,12 +9,16 @@ import (
 )
 
 type Peer struct {
+	// First 8 bytes of public key. Benchmarks show it's 2% more efficient
+	// to compute once. In future, if the network grows large,
+	// maybe we will compute this on the fly.
+	id              uint64
 	addrPort        netip.AddrPort
 	added           time.Time
 	edge            bool
-	trust           uint8
+	trust           float64
 	challenge       types.Challenge
-	pubKey          ed25519.PublicKey
+	publicKey       ed25519.PublicKey
 	challengeSolved time.Time
 	pingReceived    time.Time
 }
@@ -23,14 +27,18 @@ func (p Peer) AddrPort() netip.AddrPort {
 	return p.addrPort
 }
 
-func (p Peer) PubKey() ed25519.PublicKey {
-	return p.pubKey
+func (p Peer) PublicKey() ed25519.PublicKey {
+	return p.publicKey
 }
 
-func (p Peer) Trust() uint8 {
+func (p Peer) Trust() float64 {
 	return p.trust
 }
 
 func (p Peer) ChallengeSolved() time.Time {
 	return p.challengeSolved
+}
+
+func (p Peer) ID() uint64 {
+	return p.id
 }

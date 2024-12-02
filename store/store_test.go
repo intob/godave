@@ -3,42 +3,156 @@ package store
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
 	"fmt"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/intob/godave/logger"
+	"github.com/intob/godave/peer"
 	"github.com/intob/godave/types"
 )
 
 const (
 	NUM_PUT     = 1000
 	NUM_ROUTINE = 250
+	CAPACITY    = 1000000000
 )
 
-func TestConcurrentPut(t *testing.T) {
-	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(&StoreCfg{
-		ShardCap:   100000,
-		PruneEvery: 200 * time.Millisecond,
-		Logger:     logger.NewLoggerToDevNull(),
-		PublicKey:  pubKey,
+func TestStoreWriteAndRead(t *testing.T) {
+	store := NewStore(&StoreCfg{
+		MyID:     1,
+		Capacity: 1024 * 1024, // 1MB
+		TTL:      time.Hour,
+		Kill:     make(chan struct{}),
+		Done:     make(chan struct{}),
 	})
+	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("failed to generate key pair: %v", err)
 	}
+	testData := &types.Dat{
+		PubKey: pub,
+		Key:    "test-key",
+		Val:    []byte("test-value"),
+		Time:   time.Now(),
+	}
+	err = store.Write(testData)
+	if err != nil {
+		t.Errorf("failed to write data: %v", err)
+	}
+	result, err := store.Read(pub, "test-key")
+	if err != nil {
+		t.Errorf("failed to read data: %v", err)
+	}
+	if string(result.Val) != string(testData.Val) {
+		t.Errorf("got %s, want %s", string(result.Val), string(testData.Val))
+	}
+}
+
+func TestStorePriorityReplacement(t *testing.T) {
+	myPubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	myID := peer.IDFromPublicKey(myPubKey)
+	// Setup store with small capacity
+	store := NewStore(&StoreCfg{
+		MyID:     myID,
+		Capacity: 400,
+		TTL:      2 * time.Hour,
+		Kill:     make(chan struct{}),
+		Done:     make(chan struct{}),
+	})
+	dataKey := "test-key"
+	// Generate first key
+	pubA, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	pubAShardID, _ := Keys(pubA, dataKey)
+	// Brute-force second pub key that lands in the same shard
+	var pubB ed25519.PublicKey
+	for {
+		pub, _, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			t.Fatalf("failed to generate key pair: %v", err)
+		}
+		shardID, _ := Keys(pub, dataKey)
+		if pubAShardID == shardID {
+			pubB = pub
+			break
+		}
+	}
+	var farPub, closePub ed25519.PublicKey
+	if myID^peer.IDFromPublicKey(pubA) < myID^peer.IDFromPublicKey(pubB) {
+		closePub = pubA
+		farPub = pubB
+	} else {
+		closePub = pubB
+		farPub = pubA
+	}
+	// Create data from a "far" peer
+	farData := &types.Dat{
+		PubKey: farPub,
+		Key:    dataKey,
+		Val:    []byte("far-peer-data"),
+		Time:   time.Now().Add(-time.Hour),
+	}
+	// Write far peer data
+	err = store.Write(farData)
+	if err != nil {
+		t.Errorf("failed to write far peer data: %v", err)
+	}
+	// Verify far peer data was written
+	result, err := store.Read(farPub, dataKey)
+	if err != nil {
+		t.Errorf("failed to read far peer data: %v", err)
+	}
+	if string(result.Val) != "far-peer-data" {
+		t.Errorf("got %s, want far-peer-data", string(result.Val))
+	}
+	// Create data from a "closer" peer with same key
+	closeData := &types.Dat{
+		PubKey: closePub,
+		Key:    dataKey,
+		Val:    []byte("close-peer-data"),
+		Time:   time.Now(),
+	}
+	// Write close peer data
+	err = store.Write(closeData)
+	if err != nil {
+		t.Errorf("failed to write close peer data: %v", err)
+	}
+	// Verify close peer data replaced far peer data
+	result, err = store.Read(closePub, dataKey)
+	if err != nil {
+		t.Errorf("failed to read close peer data: %v", err)
+	}
+	if string(result.Val) != "close-peer-data" {
+		t.Errorf("got %s, want close-peer-data", string(result.Val))
+	}
+	// Verify far peer data was removed
+	_, err = store.Read(farPub, dataKey)
+	if err == nil {
+		t.Error("far peer data should have been removed")
+	}
+}
+
+func TestConcurrentPut(t *testing.T) {
+	pubKey, _, _ := ed25519.GenerateKey(nil)
+	store := NewStore(&StoreCfg{
+		MyID:     peer.IDFromPublicKey(pubKey),
+		TTL:      time.Minute,
+		Done:     make(chan<- struct{}),
+		Capacity: CAPACITY,
+	})
 	wg := sync.WaitGroup{}
 	for i := 0; i < NUM_ROUTINE; i++ {
 		wg.Add(1)
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Put(&types.Dat{
+				store.Write(&types.Dat{
 					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
@@ -48,48 +162,31 @@ func TestConcurrentPut(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
-	fmt.Println(store.count.Load())
-
-	// Wait for prune
-	time.Sleep(time.Second)
-
-	count := store.count.Load()
-
-	if count != NUM_PUT*NUM_ROUTINE {
-		t.Errorf("expected %d, got %d", NUM_PUT*NUM_ROUTINE, count)
-	}
-
-	dat, ok := store.Get(pubKey, fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1))
-	if !ok {
-		t.FailNow()
+	fmt.Println(store.usedSpace.Load())
+	dat, err := store.Read(pubKey, fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if !bytes.Equal(dat.Val, []byte("test")) {
-		t.FailNow()
+		t.Fatalf("expected value %s, got %s", "test", string(dat.Val))
 	}
 }
 
 func TestList(t *testing.T) {
-	pubKey, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(&StoreCfg{
-		ShardCap:   100000,
-		PruneEvery: 5 * time.Second,
-		Logger:     logger.NewLoggerToDevNull(),
-		PublicKey:  pubKey,
+	pubKey, _, _ := ed25519.GenerateKey(nil)
+	store := NewStore(&StoreCfg{
+		MyID:     peer.IDFromPublicKey(pubKey),
+		TTL:      time.Minute,
+		Done:     make(chan<- struct{}),
+		Capacity: CAPACITY,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	wg := sync.WaitGroup{}
 	for i := 0; i < NUM_ROUTINE; i++ {
 		wg.Add(1)
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Put(&types.Dat{
+				store.Write(&types.Dat{
 					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
@@ -101,34 +198,21 @@ func TestList(t *testing.T) {
 	wg.Wait()
 	dats := store.List(pubKey, fmt.Sprintf("routine_%d", NUM_ROUTINE-1))
 	if len(dats) != NUM_PUT {
-		t.FailNow()
+		t.Fatalf("expected %d dats, got %d", NUM_PUT, len(dats))
 	}
 }
 
 func TestStorePrune(t *testing.T) {
-	storePubKey, _, err := ed25519.GenerateKey(rand.Reader)
+	storePubKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	const shardCap = 10
-	logger, err := logger.NewLogger(&logger.LoggerCfg{
-		Level:  logger.DEBUG,
-		Output: logger.DevNull(),
+	store := NewStore(&StoreCfg{
+		MyID:     peer.IDFromPublicKey(storePubKey),
+		TTL:      time.Minute,
+		Done:     make(chan<- struct{}),
+		Capacity: CAPACITY,
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewStore(&StoreCfg{
-		ShardCap:   shardCap,
-		PruneEvery: 200 * time.Millisecond,
-		Logger:     logger,
-		PublicKey:  storePubKey,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	// Create dats with zero distance (same as store public key)
 	zeroDats := make([]types.Dat, 5)
 	for i := range zeroDats {
@@ -138,12 +222,11 @@ func TestStorePrune(t *testing.T) {
 			Time:   time.Now(),
 			PubKey: storePubKey,
 		}
-		err = store.Put(&zeroDats[i])
+		err = store.Write(&zeroDats[i])
 		if err != nil {
 			t.Fatalf("failed to put zero dat: %s", err)
 		}
 	}
-
 	// Create random dats concurrently
 	const numRoutines = 8
 	const datsPerRoutine = 1000
@@ -153,12 +236,12 @@ func TestStorePrune(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			for j := 0; j < datsPerRoutine; j++ {
-				pub, _, err := ed25519.GenerateKey(rand.Reader)
+				pub, _, err := ed25519.GenerateKey(nil)
 				if err != nil {
 					t.Error(err)
 					return
 				}
-				err = store.Put(&types.Dat{
+				err = store.Write(&types.Dat{
 					Key:    fmt.Sprintf("routine_%d_random_%d", i, j),
 					Val:    []byte("random_value"),
 					Time:   time.Now(),
@@ -171,25 +254,12 @@ func TestStorePrune(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-
-	// Wait for pruning to occur
-	time.Sleep(300 * time.Millisecond)
-
 	// Verify all zero-distance dats are retained
 	for _, dat := range zeroDats {
-		_, exists := store.Get(dat.PubKey, dat.Key)
-		if !exists {
+		_, err := store.Read(dat.PubKey, dat.Key)
+		if err != nil {
 			t.Errorf("zero-distance dat with key %s was pruned", dat.Key)
 		}
 	}
 
-	// Verify each shard stays within capacity
-	for _, shard := range store.shards {
-		shard.mu.Lock()
-		count := len(shard.table)
-		if count > shardCap {
-			t.Errorf("shard exceeded capacity: got %d items, want <= %d", count, shardCap)
-		}
-		shard.mu.Unlock()
-	}
 }

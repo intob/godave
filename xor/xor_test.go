@@ -94,6 +94,13 @@ func BenchmarkXorUint8(b *testing.B) {
 	}
 }
 
+func BenchmarkXorUint64(b *testing.B) {
+	data := testData()
+	for i := 0; i < b.N; i++ {
+		Xor256Uint64(data[0], data[1])
+	}
+}
+
 func TestXor256Into(t *testing.T) {
 	data := testData()
 	dst := make([]byte, 32)
@@ -141,5 +148,13 @@ func TestXor256Uint8(t *testing.T) {
 	result, _ := Xor256Uint8(data[0], data[1])
 	if result != 123 {
 		t.Errorf("expected 123, got %d", result)
+	}
+}
+
+func TestXor256Uint64(t *testing.T) {
+	data := testData()
+	result, _ := Xor256Uint64(data[0], data[1])
+	if result != 1547495526266473639 {
+		t.Errorf("expected 1547495526266473639, got %d", result)
 	}
 }

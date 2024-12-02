@@ -3,10 +3,12 @@ package types
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/binary"
 	"net/netip"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseAddrs(t *testing.T) {
@@ -186,6 +188,14 @@ func TestParseAddrs2(t *testing.T) {
 }
 
 func TestPongMessageEdgeCases(t *testing.T) {
+	pubKey, _, _ := ed25519.GenerateKey(nil)
+	solution := &Solution{
+		Challenge: Challenge{1, 2, 3, 4, 5, 6, 7, 8},
+		Salt:      Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		PublicKey: pubKey,
+		Signature: Signature{},
+	}
+
 	tests := []struct {
 		name    string
 		msg     *Msg
@@ -196,7 +206,7 @@ func TestPongMessageEdgeCases(t *testing.T) {
 			msg: &Msg{
 				Op:        Op_PONG,
 				AddrPorts: []netip.AddrPort{},
-				Solution:  &Solution{},
+				Solution:  solution,
 			},
 			wantErr: false,
 		},
@@ -218,7 +228,7 @@ func TestPongMessageEdgeCases(t *testing.T) {
 					netip.MustParseAddrPort("[2001:db8::2]:9090"),
 					netip.MustParseAddrPort("[2001:db8::3]:7070"),
 				},
-				Solution: &Solution{},
+				Solution: solution,
 			},
 			wantErr: false,
 		},
@@ -262,5 +272,88 @@ func TestUnmarshalGetMyAddrPortAck(t *testing.T) {
 	}
 	if msg2.AddrPorts[0] != addr {
 		t.Fatalf("expected %s, got %s", addr, msg2.AddrPorts[0])
+	}
+}
+
+/*
+BenchmarkProto-12        				2904609	       412.0 ns/op	     600 B/op	       9 allocs/op
+BenchmarkMsgMarshalUnmarshal-12    	 	9422624	       109.4 ns/op	     256 B/op	       4 allocs/op
+*/
+func BenchmarkMsgMarshalUnmarshal(b *testing.B) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := &Msg{
+		Op: Op_PUT,
+		Dat: &Dat{
+			Key:    "test",
+			Val:    []byte("test_val"),
+			Time:   time.Now(),
+			PubKey: pubKey,
+		},
+	}
+	rand.Read(msg.Dat.Salt[:])
+	rand.Read(msg.Dat.Work[:])
+	rand.Read(msg.Dat.Sig[:])
+	buf := make([]byte, MaxMsgLen)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		n, _ := msg.Marshal(buf)
+		m := &Msg{}
+		m.Unmarshal(buf[:n])
+	}
+}
+
+func BenchmarkMsgMarshal(b *testing.B) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := &Msg{
+		Op: Op_PUT,
+		Dat: &Dat{
+			Key:    "test",
+			Val:    []byte("test_val"),
+			Time:   time.Now(),
+			PubKey: pubKey,
+		},
+	}
+	rand.Read(msg.Dat.Salt[:])
+	rand.Read(msg.Dat.Work[:])
+	rand.Read(msg.Dat.Sig[:])
+	buf := make([]byte, MaxMsgLen)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		msg.Marshal(buf)
+	}
+}
+
+func BenchmarkMsgUnmarshal(b *testing.B) {
+	pubKey, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	msg := &Msg{
+		Op: Op_PUT,
+		Dat: &Dat{
+			Key:    "test",
+			Val:    []byte("test_val"),
+			Time:   time.Now(),
+			PubKey: pubKey,
+		},
+	}
+	rand.Read(msg.Dat.Salt[:])
+	rand.Read(msg.Dat.Work[:])
+	rand.Read(msg.Dat.Sig[:])
+	buf := make([]byte, MaxMsgLen)
+	n, _ := msg.Marshal(buf)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m := &Msg{}
+		m.Unmarshal(buf[:n])
 	}
 }
