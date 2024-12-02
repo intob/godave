@@ -187,12 +187,21 @@ func (s *Store) CountActive() int {
 	return len(s.active)
 }
 
-func (s *Store) ListActive() []Peer {
+func (s *Store) ListActive(exclude *netip.AddrPort) []Peer {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	list := make([]Peer, len(s.active))
-	for i, p := range s.active {
-		list[i] = *p
+	if exclude != nil {
+		deref := *exclude
+		for i, p := range s.active {
+			if deref != p.addrPort {
+				list[i] = *p
+			}
+		}
+	} else {
+		for i, p := range s.active {
+			list[i] = *p
+		}
 	}
 	return list
 }
@@ -230,9 +239,9 @@ func (s *Store) TrustWeightedRandPeers(limit int, exclude *netip.AddrPort) []Pee
 		return s.RandPeers(limit, exclude)
 	}
 	selected := make([]Peer, 0, min(limit, len(s.active)))
-	r := mrand.Intn(int(s.trustSum))
+	r := mrand.Float64() * s.trustSum
 	for _, peer := range s.active {
-		r -= int(peer.trust)
+		r -= peer.trust
 		if exclude != nil && peer.addrPort == *exclude {
 			continue
 		}

@@ -109,14 +109,12 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-
 	newEntry := &entry{
 		key:      key,
 		distance: peer.IDFromPublicKey(dat.PubKey) ^ s.myID,
 		expires:  dat.Time.Add(s.ttl),
 	}
-
-	// Check if we're updating an existing entry
+	// Check if updating an existing entry
 	existing, exists := shard.data[key]
 	if exists {
 		if !existing.PubKey.Equal(dat.PubKey) {
@@ -129,10 +127,8 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 			return errors.New("existing data matches new data")
 		}
 	}
-
-	newEntrySize := calculateEntrySize(dat)
-
 	// If at capacity and no existing entry, try to make space
+	newEntrySize := calculateEntrySize(dat)
 	if !exists && s.usedSpace.Load()+newEntrySize > s.capacity {
 		if shard.heap.Len() > 0 {
 			lowest := shard.heap.Peek()
@@ -148,8 +144,7 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 			return errors.New("storage full")
 		}
 	}
-
-	// Add/update entry
+	// Add/update map & heap
 	if exists {
 		shard.heap.Remove(key)
 		oldSize := calculateEntrySize(&existing)
@@ -159,11 +154,9 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	}
 	shard.data[key] = *dat
 	heap.Push(shard.heap, newEntry)
-
 	if backup && s.backupFilename != "" {
 		s.backup <- dat
 	}
-
 	return nil
 }
 

@@ -14,25 +14,23 @@ import (
 	"github.com/intob/godave/peer"
 	"github.com/intob/godave/pkt"
 	"github.com/intob/godave/pow"
-	"github.com/intob/godave/ringbuffer"
 	"github.com/intob/godave/store"
 	"github.com/intob/godave/types"
 	"lukechampine.com/blake3"
 )
 
 const (
-	EPOCH               = 500 * time.Microsecond // Period between seeding rounds.
-	FANOUT              = 2                      // Number of peers selected when sending dats.
-	PROBE               = 12                     // Inverse of probability that a peer is selected regardless of trust.
-	NPEER_LIMIT         = 3                      // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK            = 16                     // Minimum amount of acceptable work in number of leading zero bits.
-	PING                = 1 * time.Second        // Period between pinging peers.
-	DEACTIVATE_AFTER    = 3 * PING               // Time until protocol-deviating peers are deactivated.
-	DROP                = 12 * PING              // Time until protocol-deviating peers are dropped.
-	ACTIVATION_DELAY    = 5 * PING               // Time until new peers are activated.
-	TRUST_DECAY_FACTOR  = 0.99                   // Factor used to decay peer trust.
-	TRUST_DECAY_RATE    = time.Minute            // Rate at which trust decays.
-	GETMYADDRPORT_EVERY = 10 * time.Minute       // Period between getting my addrport from an edge.
+	FANOUT              = 3                // Number of peers selected when sending dats.
+	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
+	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
+	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
+	PING                = 1 * time.Second  // Period between pinging peers.
+	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
+	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
+	ACTIVATION_DELAY    = 5 * PING         // Time until new peers are activated.
+	TRUST_DECAY_FACTOR  = 0.99             // Factor used to decay peer trust.
+	TRUST_DECAY_RATE    = time.Minute      // Rate at which trust decays.
+	GETMYADDRPORT_EVERY = 10 * time.Minute // Period between getting my addrport from an edge.
 )
 
 type Dave struct {
@@ -43,19 +41,26 @@ type Dave struct {
 	peers      *peer.Store
 	store      *store.Store
 	pproc      *pkt.PacketProcessor
-	ring       *ringbuffer.RingBuffer[*types.Dat]
 	logger     *logger.Logger
 }
 
 type DaveCfg struct {
-	Socket             pkt.Socket
-	PrivateKey         ed25519.PrivateKey
-	Edges              []netip.AddrPort
-	ShardCapacity      int64 // Bytes
-	RingBufferCapacity int   // Number of Dats
-	TTL                time.Duration
-	BackupFilename     string
-	Logger             *logger.Logger
+	// A UDP socket. Normally from net.ListenUDP. This interface can be mocked
+	// to build simulations.
+	Socket pkt.Socket
+	// Node private key. The last 32 bytes are the public key. The node ID is
+	// derived from the first 8 bytes of the public key.
+	PrivateKey    ed25519.PrivateKey
+	Edges         []netip.AddrPort // Bootstrap peers.
+	ShardCapacity int64            // Capacity of each of 256 shards in bytes.
+	// Time-to-live of data. Data older than this will be replaced as needed,
+	// if new data has a higher priority. Priority is a function of age and
+	// XOR distance.
+	TTL            time.Duration
+	BackupFilename string // Filename of backup file. Leave blank to disable backup.
+	// Set to nil to disable logging, although this is not reccomended. Currently
+	// logging is the best way to monitor. In future, the API will be better.
+	Logger *logger.Logger
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
@@ -66,7 +71,6 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
 		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
 		kill: make(chan struct{}), done: make(chan struct{}),
-		ring: ringbuffer.NewRingBuffer[*types.Dat](cfg.RingBufferCapacity),
 		peers: peer.NewStore(&peer.StoreCfg{
 			Probe:            PROBE,
 			ActivationDelay:  ACTIVATION_DELAY,
@@ -105,7 +109,7 @@ func (d *Dave) Put(dat types.Dat) error {
 	if err != nil {
 		return fmt.Errorf("failed to put dat in local store: %s", err)
 	}
-	activePeers := d.peers.ListActive()
+	activePeers := d.peers.ListActive(nil)
 	if len(activePeers) == 0 {
 		return errors.New("no active peers")
 	}
@@ -140,14 +144,14 @@ func (d *Dave) handlePackets() {
 					d.logger.Error("failed to unmarshal packet: %s", err)
 				}
 				switch msg.Op {
-				case types.Op_PONG: // VALIDATE SOLUTION & STORE PEERS
+				case types.Op_PONG:
 					err := d.handlePong(msg, packet.AddrPort, myAddrPort)
 					if err != nil {
 						d.logger.Error("failed to handle pong: %s", err)
 					}
-				case types.Op_PING: // SOLVE CHALLENGE & GIVE PEERS
+				case types.Op_PING:
 					d.handlePing(msg, packet.AddrPort)
-				case types.Op_PUT: // STORE DAT
+				case types.Op_PUT:
 					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
 					if err != nil {
 						d.logger.Debug("failed to handle put: %s", err)
@@ -171,7 +175,6 @@ func (d *Dave) handlePackets() {
 
 func (d *Dave) run() {
 	pingTick := time.NewTicker(PING)
-	epochTick := time.NewTicker(EPOCH)
 	getMyAddrPortTick := time.NewTicker(GETMYADDRPORT_EVERY)
 	if len(d.peers.Edges()) == 0 {
 		getMyAddrPortTick.Stop()
@@ -183,20 +186,6 @@ func (d *Dave) run() {
 	}
 	for {
 		select {
-		case <-epochTick.C: // SEED
-			activePeers := d.peers.ListActive()
-			if len(activePeers) < FANOUT {
-				continue
-			}
-			ringDat, ok := d.ring.Read()
-			if ok {
-				d.sendToClosestPeers(activePeers, ringDat)
-			} else {
-				nextDat, ok := d.store.Next()
-				if ok {
-					d.sendToClosestPeers(activePeers, &nextDat)
-				}
-			}
 		case <-pingTick.C: // PING PEERS WITH A CHALLENGE
 			for _, peer := range d.peers.ListAll() {
 				challenge, err := d.peers.CreateChallenge(peer.AddrPort())
@@ -252,9 +241,12 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	}
 	err = d.store.Write(dat)
 	if err != nil {
-		return nil
+		return err
 	}
-	d.ring.Write(dat)
+	activePeers := d.peers.ListActive(&raddr)
+	if len(activePeers) >= FANOUT {
+		d.sendToClosestPeers(activePeers, dat)
+	}
 	normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
 	d.peers.UpdateTrust(raddr, 1-normDistance)
 	d.logger.Debug("stored %s", dat.Key)
