@@ -144,22 +144,22 @@ func (d *Dave) handlePackets() {
 					d.log(logger.ERROR, "failed to unmarshal packet: %s", err)
 				}
 				switch msg.Op {
-				case types.Op_PONG:
+				case types.OP_PONG:
 					err := d.handlePong(msg, packet.AddrPort, myAddrPort)
 					if err != nil {
 						d.log(logger.ERROR, "failed to handle pong: %s", err)
 					}
-				case types.Op_PING:
+				case types.OP_PING:
 					d.handlePing(msg, packet.AddrPort)
-				case types.Op_PUT:
+				case types.OP_PUT:
 					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
 					if err != nil {
 						d.log(logger.DEBUG, "failed to handle put: %s", err)
 					}
-				case types.Op_GETMYADDRPORT:
-					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT_ACK,
+				case types.OP_GETMYADDRPORT:
+					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
 						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
-				case types.Op_GETMYADDRPORT_ACK:
+				case types.OP_GETMYADDRPORT_ACK:
 					// Only accept from edge peers
 					if d.peers.IsEdge(packet.AddrPort) && len(msg.AddrPorts) == 1 {
 						myAddrPort = msg.AddrPorts[0]
@@ -188,13 +188,13 @@ func (d *Dave) run() {
 		select {
 		case <-pingTick.C:
 			for _, peer := range d.peers.ListAll() {
-				challenge, err := d.peers.CreateChallenge(peer.AddrPort())
+				challenge, err := d.peers.CreateAuthChallenge(peer.AddrPort())
 				if err != nil {
 					d.log(logger.ERROR, "failed to create challenge: %s", err)
 					continue
 				}
 				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{
-					Op: types.Op_PING, Challenge: challenge},
+					Op: types.OP_PING, AuthChallenge: challenge},
 					AddrPort: peer.AddrPort()}
 			}
 		case <-getMyAddrPortTick.C:
@@ -208,8 +208,8 @@ func (d *Dave) run() {
 
 func (d *Dave) sendGetMyAddrPort() error {
 	for _, p := range d.peers.Edges() {
-		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
-			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT},
+		if time.Since(p.AuthChallengeSolved()) < DEACTIVATE_AFTER {
+			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
 				AddrPort: p.AddrPort()}
 			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort())
 			return nil
@@ -271,11 +271,11 @@ func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
 	salt := make([]byte, 16)
 	rand.Read(salt)
 	hash := blake3.New(32, nil)
-	hash.Write(msg.Challenge[:])
+	hash.Write(msg.AuthChallenge[:])
 	hash.Write(salt)
 	sig := ed25519.Sign(d.privateKey, hash.Sum(nil))
-	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PONG,
-		Solution: &types.Solution{Challenge: msg.Challenge,
+	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PONG,
+		AuthSolution: &types.AuthSolution{Challenge: msg.AuthChallenge,
 			Salt:      types.Salt(salt),
 			PublicKey: d.publicKey,
 			Signature: types.Signature(sig)},
@@ -285,34 +285,34 @@ func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
 func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_PUT, Dat: dat},
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Dat: dat},
 			AddrPort: sorted[i].Peer.AddrPort()}
 	}
 }
 
 func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
-	challenge, storedPubKey, err := d.peers.CurrentChallengeAndPubKey(raddr)
+	challenge, storedPubKey, err := d.peers.CurrentAuthChallengeAndPubKey(raddr)
 	if err != nil {
 		return err
 	}
-	if msg.Solution.Challenge != challenge {
+	if msg.AuthSolution.Challenge != challenge {
 		return errors.New("challenge is incorrect")
 	}
-	if len(msg.Solution.PublicKey) != ed25519.PublicKeySize {
+	if len(msg.AuthSolution.PublicKey) != ed25519.PublicKeySize {
 		return fmt.Errorf("pub key is invalid: %s", err)
 	}
-	if storedPubKey != nil && !storedPubKey.Equal(msg.Solution.PublicKey) {
+	if storedPubKey != nil && !storedPubKey.Equal(msg.AuthSolution.PublicKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
 	h := blake3.New(32, nil)
 	h.Write(challenge[:])
-	h.Write(msg.Solution.Salt[:])
+	h.Write(msg.AuthSolution.Salt[:])
 	hash := h.Sum(nil)
-	if !ed25519.Verify(msg.Solution.PublicKey, hash, msg.Solution.Signature[:]) {
+	if !ed25519.Verify(msg.AuthSolution.PublicKey, hash, msg.AuthSolution.Signature[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
 	if storedPubKey == nil {
-		d.peers.SetPublicKeyAndID(raddr, msg.Solution.PublicKey)
+		d.peers.SetPublicKeyAndID(raddr, msg.AuthSolution.PublicKey)
 	}
 	if len(msg.AddrPorts) > NPEER_LIMIT {
 		return fmt.Errorf("message contains more than %d addrports", NPEER_LIMIT)
@@ -324,7 +324,7 @@ func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) erro
 			return fmt.Errorf("my own addrport was given")
 		}
 	}
-	d.peers.ChallengeSolved(raddr)
+	d.peers.AuthChallengeSolved(raddr)
 	return nil
 }
 

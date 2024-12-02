@@ -95,8 +95,8 @@ func TestParseAddrs(t *testing.T) {
 func TestPongMessageMarshalUnmarshal(t *testing.T) {
 	// Setup test data
 	pubKey, _, _ := ed25519.GenerateKey(nil)
-	solution := &Solution{
-		Challenge: Challenge{1, 2, 3, 4, 5, 6, 7, 8},
+	solution := &AuthSolution{
+		Challenge: AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
 		Salt:      Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		PublicKey: pubKey,
 		Signature: Signature{},
@@ -106,9 +106,9 @@ func TestPongMessageMarshalUnmarshal(t *testing.T) {
 	addr2 := netip.MustParseAddrPort("[2001:db8::2]:9090")
 
 	msg := &Msg{
-		Op:        Op_PONG,
-		AddrPorts: []netip.AddrPort{addr1, addr2},
-		Solution:  solution,
+		Op:           OP_PONG,
+		AddrPorts:    []netip.AddrPort{addr1, addr2},
+		AuthSolution: solution,
 	}
 
 	// Test marshaling
@@ -126,8 +126,8 @@ func TestPongMessageMarshalUnmarshal(t *testing.T) {
 	}
 
 	// Verify fields
-	if newMsg.Op != Op_PONG {
-		t.Errorf("Op mismatch: got %v, want %v", newMsg.Op, Op_PONG)
+	if newMsg.Op != OP_PONG {
+		t.Errorf("Op mismatch: got %v, want %v", newMsg.Op, OP_PONG)
 	}
 
 	if len(newMsg.AddrPorts) != len(msg.AddrPorts) {
@@ -140,15 +140,15 @@ func TestPongMessageMarshalUnmarshal(t *testing.T) {
 		}
 	}
 
-	if !bytes.Equal(newMsg.Solution.Challenge[:], solution.Challenge[:]) {
+	if !bytes.Equal(newMsg.AuthSolution.Challenge[:], solution.Challenge[:]) {
 		t.Error("Challenge mismatch")
 	}
 
-	if !bytes.Equal(newMsg.Solution.Salt[:], solution.Salt[:]) {
+	if !bytes.Equal(newMsg.AuthSolution.Salt[:], solution.Salt[:]) {
 		t.Error("Salt mismatch")
 	}
 
-	if !bytes.Equal(newMsg.Solution.PublicKey, solution.PublicKey) {
+	if !bytes.Equal(newMsg.AuthSolution.PublicKey, solution.PublicKey) {
 		t.Error("PublicKey mismatch")
 	}
 }
@@ -189,8 +189,8 @@ func TestParseAddrs2(t *testing.T) {
 
 func TestPongMessageEdgeCases(t *testing.T) {
 	pubKey, _, _ := ed25519.GenerateKey(nil)
-	solution := &Solution{
-		Challenge: Challenge{1, 2, 3, 4, 5, 6, 7, 8},
+	solution := &AuthSolution{
+		Challenge: AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
 		Salt:      Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		PublicKey: pubKey,
 		Signature: Signature{},
@@ -204,31 +204,31 @@ func TestPongMessageEdgeCases(t *testing.T) {
 		{
 			name: "empty addrports",
 			msg: &Msg{
-				Op:        Op_PONG,
-				AddrPorts: []netip.AddrPort{},
-				Solution:  solution,
+				Op:           OP_PONG,
+				AddrPorts:    []netip.AddrPort{},
+				AuthSolution: solution,
 			},
 			wantErr: false,
 		},
 		{
 			name: "nil solution",
 			msg: &Msg{
-				Op:        Op_PONG,
-				AddrPorts: []netip.AddrPort{},
-				Solution:  nil,
+				Op:           OP_PONG,
+				AddrPorts:    []netip.AddrPort{},
+				AuthSolution: nil,
 			},
 			wantErr: true,
 		},
 		{
 			name: "multiple addresses",
 			msg: &Msg{
-				Op: Op_PONG,
+				Op: OP_PONG,
 				AddrPorts: []netip.AddrPort{
 					netip.MustParseAddrPort("[2001:db8::1]:8080"),
 					netip.MustParseAddrPort("[2001:db8::2]:9090"),
 					netip.MustParseAddrPort("[2001:db8::3]:7070"),
 				},
-				Solution: solution,
+				AuthSolution: solution,
 			},
 			wantErr: false,
 		},
@@ -247,7 +247,7 @@ func TestPongMessageEdgeCases(t *testing.T) {
 
 func TestMarshalGetMyAddrPortAck(t *testing.T) {
 	addr := netip.MustParseAddrPort("[2001:db8::1]:8080")
-	msg := &Msg{Op: Op_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
+	msg := &Msg{Op: OP_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
 	buf := make([]byte, 19)
 	n, err := msg.Marshal(buf)
 	if err != nil {
@@ -259,7 +259,7 @@ func TestMarshalGetMyAddrPortAck(t *testing.T) {
 }
 func TestUnmarshalGetMyAddrPortAck(t *testing.T) {
 	addr := netip.MustParseAddrPort("[2001:db8::1]:8080")
-	msg := &Msg{Op: Op_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
+	msg := &Msg{Op: OP_GETMYADDRPORT_ACK, AddrPorts: []netip.AddrPort{addr}}
 	buf := make([]byte, 19)
 	_, err := msg.Marshal(buf)
 	if err != nil {
@@ -285,7 +285,7 @@ func BenchmarkMsgMarshalUnmarshal(b *testing.B) {
 		b.Fatal(err)
 	}
 	msg := &Msg{
-		Op: Op_PUT,
+		Op: OP_PUT,
 		Dat: &Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
@@ -312,7 +312,7 @@ func BenchmarkMsgMarshal(b *testing.B) {
 		b.Fatal(err)
 	}
 	msg := &Msg{
-		Op: Op_PUT,
+		Op: OP_PUT,
 		Dat: &Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
@@ -337,7 +337,7 @@ func BenchmarkMsgUnmarshal(b *testing.B) {
 		b.Fatal(err)
 	}
 	msg := &Msg{
-		Op: Op_PUT,
+		Op: OP_PUT,
 		Dat: &Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),

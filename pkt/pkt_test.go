@@ -22,7 +22,7 @@ func buildMockPacket(buf []byte) (int, error) {
 		return 0, err
 	}
 	msg := &types.Msg{
-		Op: types.Op_PUT,
+		Op: types.OP_PUT,
 		Dat: &types.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),

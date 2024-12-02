@@ -11,29 +11,30 @@ import (
 const (
 	// Max packet size, 1500 MTU is typical, prevents packet fragmentation
 	MaxMsgLen            = 1424
-	Op_PING              = Op(0)
-	Op_PONG              = Op(1)
-	Op_PUT               = Op(2)
-	Op_GETMYADDRPORT     = Op(3)
-	Op_GETMYADDRPORT_ACK = Op(4)
+	OP_PING              = Op(0)
+	OP_PONG              = Op(1)
+	OP_PUT               = Op(2)
+	OP_GET               = Op(3)
+	OP_GETMYADDRPORT     = Op(4)
+	OP_GETMYADDRPORT_ACK = Op(5)
 	lenAddrPort          = 18
 )
 
 type Op byte
-type Challenge [8]byte
+type AuthChallenge [8]byte
 type Hash [32]byte
 type Salt [16]byte
 type Signature [64]byte
 
-type Solution struct {
-	Challenge Challenge
+type AuthSolution struct {
+	Challenge AuthChallenge
 	// Salting the challenge prevents a "chosen-text" attack
 	Salt      Salt
 	PublicKey ed25519.PublicKey
 	Signature Signature
 }
 
-func (sol Solution) Marshal(buf []byte) (int, error) {
+func (sol AuthSolution) Marshal(buf []byte) (int, error) {
 	n := copy(buf, sol.Challenge[:])     // 8
 	n += copy(buf[n:], sol.Salt[:])      // 16
 	n += copy(buf[n:], sol.PublicKey)    // 32
@@ -44,7 +45,7 @@ func (sol Solution) Marshal(buf []byte) (int, error) {
 	return n, nil
 }
 
-func (sol *Solution) Unmarshal(buf []byte) error {
+func (sol *AuthSolution) Unmarshal(buf []byte) error {
 	if len(buf) != 8+16+32+64 {
 		return errors.New("invalid buffer length")
 	}
@@ -57,22 +58,22 @@ func (sol *Solution) Unmarshal(buf []byte) error {
 }
 
 type Msg struct {
-	Op        Op
-	AddrPorts []netip.AddrPort
-	Challenge Challenge
-	Solution  *Solution
-	Dat       *Dat
+	Op            Op
+	AddrPorts     []netip.AddrPort
+	AuthChallenge AuthChallenge
+	AuthSolution  *AuthSolution
+	Dat           *Dat
 }
 
 func (msg *Msg) Unmarshal(buf []byte) error {
 	msg.Op = Op(buf[0])
 	switch msg.Op {
-	case Op_PING:
+	case OP_PING:
 		if len(buf) < 1+8 {
 			return errors.New("buffer too small for op code and challenge")
 		}
-		msg.Challenge = Challenge(buf[1:9])
-	case Op_PONG:
+		msg.AuthChallenge = AuthChallenge(buf[1:9])
+	case OP_PONG:
 		lenAddrs := uint8(buf[1])
 		if lenAddrs > 0 {
 			var err error
@@ -81,12 +82,12 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 				return fmt.Errorf("failed to parse addrports: %s", err)
 			}
 		}
-		msg.Solution = &Solution{}
-		err := msg.Solution.Unmarshal(buf[2+lenAddrs:])
+		msg.AuthSolution = &AuthSolution{}
+		err := msg.AuthSolution.Unmarshal(buf[2+lenAddrs:])
 		if err != nil {
 			return fmt.Errorf("failed to unmarshal solution: %s", err)
 		}
-	case Op_PUT:
+	case OP_PUT:
 		if len(buf) < 1+2 {
 			return errors.New("buffer too small for op code and len prefix")
 		}
@@ -99,7 +100,7 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 		}
 		msg.Dat = &Dat{}
 		msg.Dat.Unmarshal(buf[3:])
-	case Op_GETMYADDRPORT_ACK:
+	case OP_GETMYADDRPORT_ACK:
 		addrPort, err := parseAddr(buf[1:])
 		if err != nil {
 			return fmt.Errorf("failed to parse addrport: %w", err)
@@ -117,13 +118,13 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 	n := 1
 
 	switch msg.Op {
-	case Op_PING:
+	case OP_PING:
 		if len(buf) < 1+8 {
 			return 0, errors.New("buffer too small")
 		}
-		n += copy(buf[1:], msg.Challenge[:])
+		n += copy(buf[1:], msg.AuthChallenge[:])
 		return n, nil
-	case Op_PONG:
+	case OP_PONG:
 		// Write length of addresses
 		addrBufLen := len(msg.AddrPorts) * lenAddrPort
 		buf[1] = uint8(addrBufLen)
@@ -138,15 +139,15 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		}
 
 		// Marshal solution
-		if msg.Solution == nil {
+		if msg.AuthSolution == nil {
 			return 0, errors.New("solution is required for PONG")
 		}
-		solLen, err := msg.Solution.Marshal(buf[offset:])
+		solLen, err := msg.AuthSolution.Marshal(buf[offset:])
 		if err != nil {
 			return 0, fmt.Errorf("failed to marshal solution: %s", err)
 		}
 		return 1 + 1 + addrBufLen + solLen, nil
-	case Op_PUT:
+	case OP_PUT:
 		if msg.Dat == nil {
 			return 0, errors.New("dat is required for PUT")
 		}
@@ -156,9 +157,9 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		}
 		binary.LittleEndian.PutUint16(buf[1:3], uint16(datLen))
 		return 1 + 2 + datLen, nil
-	case Op_GETMYADDRPORT:
+	case OP_GETMYADDRPORT:
 		return n, nil
-	case Op_GETMYADDRPORT_ACK:
+	case OP_GETMYADDRPORT_ACK:
 		if len(msg.AddrPorts) != 1 {
 			return 0, errors.New("expected one addrport")
 		}

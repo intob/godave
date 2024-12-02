@@ -17,11 +17,11 @@ type peerDistanceOld struct {
 func sortPeersByDistanceOld(target ed25519.PublicKey, peers []Peer) []peerDistanceOld {
 	distances := make([]peerDistanceOld, 0, len(peers))
 	for _, peer := range peers {
-		if peer.PublicKey() == nil {
+		if peer.publicKey == nil {
 			continue
 		}
 		dist := make([]byte, ed25519.PublicKeySize)
-		xor.Xor256Into(dist, peer.PublicKey(), target)
+		xor.Xor256Into(dist, peer.publicKey, target)
 		distances = append(distances, peerDistanceOld{peer, dist})
 	}
 	sort.Slice(distances, func(i, j int) bool {

@@ -73,10 +73,10 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 		return
 	}
 	peer := &Peer{
-		addrPort:        addrPort,
-		added:           time.Now(),
-		challengeSolved: time.Now(),
-		edge:            isEdge,
+		addrPort:            addrPort,
+		added:               time.Now(),
+		authChallengeSolved: time.Now(),
+		edge:                isEdge,
 	}
 	s.table[addrPort] = peer
 	if isEdge {
@@ -95,32 +95,32 @@ func (s *Store) UpdateTrust(addrPort netip.AddrPort, delta float64) {
 	peer.trust = peer.trust + delta
 }
 
-func (s *Store) CreateChallenge(addrPort netip.AddrPort) (types.Challenge, error) {
+func (s *Store) CreateAuthChallenge(addrPort netip.AddrPort) (types.AuthChallenge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
-		return types.Challenge{}, errors.New("peer not found")
+		return types.AuthChallenge{}, errors.New("peer not found")
 	}
-	_, err := rand.Read(peer.challenge[:])
+	_, err := rand.Read(peer.authChallenge[:])
 	if err != nil {
-		return types.Challenge{}, err
+		return types.AuthChallenge{}, err
 	}
-	return peer.challenge, nil
+	return peer.authChallenge, nil
 }
 
-func (s *Store) CurrentChallengeAndPubKey(addrPort netip.AddrPort) (types.Challenge, ed25519.PublicKey, error) {
+func (s *Store) CurrentAuthChallengeAndPubKey(addrPort netip.AddrPort) (types.AuthChallenge, ed25519.PublicKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
-		return types.Challenge{}, nil, errors.New("peer not found")
+		return types.AuthChallenge{}, nil, errors.New("peer not found")
 	}
-	if peer.challenge == (types.Challenge{}) {
-		return types.Challenge{}, nil, errors.New("challenge is empty")
+	if peer.authChallenge == (types.AuthChallenge{}) {
+		return types.AuthChallenge{}, nil, errors.New("challenge is empty")
 	}
-	currentChallenge := peer.challenge
-	peer.challenge = types.Challenge{}
+	currentChallenge := peer.authChallenge
+	peer.authChallenge = types.AuthChallenge{}
 	return currentChallenge, peer.publicKey, nil
 }
 
@@ -139,14 +139,14 @@ func (s *Store) SetPublicKeyAndID(addrPort netip.AddrPort, publicKey ed25519.Pub
 	return nil
 }
 
-func (s *Store) ChallengeSolved(addrPort netip.AddrPort) {
+func (s *Store) AuthChallengeSolved(addrPort netip.AddrPort) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
 		return
 	}
-	peer.challengeSolved = time.Now()
+	peer.authChallengeSolved = time.Now()
 }
 
 func (s *Store) IsPingExpected(addrPort netip.AddrPort, ping time.Duration) bool {
@@ -286,7 +286,7 @@ func (s *Store) prune() {
 	defer s.mu.Unlock()
 	activeCount := 0
 	for _, p := range s.table {
-		if time.Since(p.challengeSolved) < s.deactivateAfter {
+		if time.Since(p.authChallengeSolved) < s.deactivateAfter {
 			activeCount++
 		}
 	}
@@ -300,15 +300,15 @@ func (s *Store) prune() {
 	for k, p := range s.table {
 		if p.edge { // Never drop edges, even if they go offline
 			newTable[k] = p
-			if time.Since(p.challengeSolved) < s.deactivateAfter {
+			if time.Since(p.authChallengeSolved) < s.deactivateAfter {
 				newActive = append(newActive, p)
 				trustSum += p.trust
 			}
 		} else {
-			if time.Since(p.challengeSolved) < s.dropAfter {
+			if time.Since(p.authChallengeSolved) < s.dropAfter {
 				newTable[k] = p
 				if time.Since(p.added) > s.activationDelay &&
-					time.Since(p.challengeSolved) < s.deactivateAfter {
+					time.Since(p.authChallengeSolved) < s.deactivateAfter {
 					newActive = append(newActive, p)
 					trustSum += p.trust
 				}
