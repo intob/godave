@@ -77,6 +77,32 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 	s.log(logger.ERROR, "added %s", addrPort)
 }
 
+func (s *Store) SetPeerUsedSpaceAndCapacity(addrPort netip.AddrPort, usedSpace, capacity int64) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	peer, exists := s.table[addrPort]
+	if !exists {
+		return ErrPeerNotFound
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	peer.usedSpace = usedSpace
+	peer.capacity = capacity
+	return nil
+}
+
+func (s *Store) TotalUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, p := range s.active {
+		p.mu.RLock()
+		usedSpace += uint64(p.usedSpace)
+		capacity += uint64(p.capacity)
+		p.mu.RUnlock()
+	}
+	return usedSpace, capacity
+}
+
 func (s *Store) CreateAuthChallenge(addrPort netip.AddrPort) (types.AuthChallenge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -29,6 +29,7 @@ type peer struct {
 	storageChallenge           *StorageChallenge
 	storageChallengesCompleted uint32
 	storageChallengesFailed    uint32
+	capacity, usedSpace        int64
 }
 
 type PeerCopy struct {

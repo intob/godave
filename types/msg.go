@@ -87,6 +87,29 @@ func (g *Get) Unmarshal(buf []byte) error {
 	return nil
 }
 
+type Status struct {
+	UsedSpace int64
+	Capacity  int64
+}
+
+func (s Status) Marshal(buf []byte) (int, error) {
+	if len(buf) < 16 {
+		return 0, errors.New("buffer too small")
+	}
+	binary.LittleEndian.PutUint64(buf[:8], uint64(s.UsedSpace))
+	binary.LittleEndian.PutUint64(buf[8:], uint64(s.Capacity))
+	return 16, nil
+}
+
+func (s *Status) Unmarshal(buf []byte) error {
+	if len(buf) < 16 {
+		return errors.New("buffer too small")
+	}
+	s.UsedSpace = int64(binary.LittleEndian.Uint64(buf[:8]))
+	s.Capacity = int64(binary.LittleEndian.Uint64(buf[8:16]))
+	return nil
+}
+
 type Msg struct {
 	Op            Op
 	AddrPorts     []netip.AddrPort
@@ -94,16 +117,19 @@ type Msg struct {
 	AuthSolution  *AuthSolution
 	Dat           *Dat
 	Get           *Get
+	Status        *Status
 }
 
 func (msg *Msg) Unmarshal(buf []byte) error {
 	msg.Op = Op(buf[0])
 	switch msg.Op {
 	case OP_PING:
-		if len(buf) < 1+8 {
-			return errors.New("buffer too small for op code and challenge")
+		if len(buf) < 1+8+16 {
+			return errors.New("buffer too small")
 		}
 		msg.AuthChallenge = AuthChallenge(buf[1:9])
+		msg.Status = &Status{}
+		return msg.Status.Unmarshal(buf[9:])
 	case OP_PONG:
 		lenAddrs := uint8(buf[1])
 		if lenAddrs > 0 {
@@ -160,7 +186,11 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 			return 0, errors.New("buffer too small")
 		}
 		n += copy(buf[1:], msg.AuthChallenge[:])
-		return n, nil
+		if msg.Status == nil {
+			return 0, errors.New("status is nil")
+		}
+		statLen, err := msg.Status.Marshal(buf[n:])
+		return n + statLen, err
 	case OP_PONG:
 		addrBufLen := len(msg.AddrPorts) * lenAddrPort
 		buf[1] = uint8(addrBufLen)

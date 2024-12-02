@@ -183,6 +183,10 @@ func (d *Dave) ActivePeerCount() int {
 	return d.peers.CountActive()
 }
 
+func (d *Dave) NetworkUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
+	return d.peers.TotalUsedSpaceAndCapacity()
+}
+
 func (d *Dave) handlePackets() {
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
@@ -264,9 +268,10 @@ func (d *Dave) run() {
 					d.log(logger.ERROR, "failed to create challenge: %s", err)
 					continue
 				}
-				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{
-					Op: types.OP_PING, AuthChallenge: challenge},
-					AddrPort: peer.AddrPort}
+				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PING,
+					AuthChallenge: challenge, Status: &types.Status{
+						UsedSpace: d.UsedSpace(), Capacity: d.Capacity()},
+				}, AddrPort: peer.AddrPort}
 			}
 		case <-storageChallengeTick.C:
 			for _, peer := range d.peers.RandPeers(FANOUT, nil) {
@@ -345,22 +350,27 @@ func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.Add
 			PublicKey: d.publicKey,
 			Signature: types.Signature(sig)},
 		AddrPorts: addrPorts}, AddrPort: raddr}
+	err := d.peers.SetPeerUsedSpaceAndCapacity(raddr, msg.Status.UsedSpace, msg.Status.Capacity)
+	if err != nil {
+		d.log(logger.ERROR, "failed to set peer used space & capacity: %s", err)
+	}
 }
 
 func (d *Dave) sendToClosestPeers(activePeers []peer.PeerCopy, dat *types.Dat) {
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	for i := 0; i < FANOUT && i < len(sorted); i++ {
 		p := sorted[i].Peer
-		if mrand.Float64() <= STORAGE_CHALLENGE_PROBABILITY { // Randomly create storage challenge
+		if mrand.Float64() <= STORAGE_CHALLENGE_PROBABILITY {
 			d.peers.SetStorageChallenge(p.AddrPort, &peer.StorageChallenge{
-				PublicKey: dat.PubKey, DatKey: dat.Key, Expires: time.Now().Add(TTL - time.Second)})
+				PublicKey: dat.PubKey, DatKey: dat.Key,
+				Expires: time.Now().Add(TTL - time.Second)})
 		}
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Dat: dat},
 			AddrPort: p.AddrPort}
 	}
 }
 
-func (d *Dave) handlePong(hasher *blake3.Hasher, msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
+func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.AddrPort) error {
 	challenge, storedPubKey, err := d.peers.CurrentAuthChallengeAndPubKey(raddr)
 	if err != nil {
 		return err
@@ -374,10 +384,10 @@ func (d *Dave) handlePong(hasher *blake3.Hasher, msg *types.Msg, raddr, myAddrPo
 	if storedPubKey != nil && !storedPubKey.Equal(msg.AuthSolution.PublicKey) {
 		return fmt.Errorf("msg pub key does not match stored pub key")
 	}
-	hasher.Reset()
-	hasher.Write(challenge[:])
-	hasher.Write(msg.AuthSolution.Salt[:])
-	hash := hasher.Sum(nil)
+	h.Reset()
+	h.Write(challenge[:])
+	h.Write(msg.AuthSolution.Salt[:])
+	hash := h.Sum(nil)
 	if !ed25519.Verify(msg.AuthSolution.PublicKey, hash, msg.AuthSolution.Signature[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
@@ -388,7 +398,7 @@ func (d *Dave) handlePong(hasher *blake3.Hasher, msg *types.Msg, raddr, myAddrPo
 		return fmt.Errorf("message contains more than %d addrports", NPEER_LIMIT)
 	}
 	for _, addrPort := range msg.AddrPorts {
-		if addrPort != myAddrPort {
+		if addrPort != myAddr {
 			d.peers.AddPeer(addrPort, false)
 		} else {
 			return fmt.Errorf("my own addrport was given")
