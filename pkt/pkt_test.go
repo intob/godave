@@ -52,7 +52,7 @@ func BenchmarkProcessor(b *testing.B) {
 	buf = buf[:n]
 	proc, err := NewPacketProcessor(
 		&mockReader{buf, netip.MustParseAddrPort("127.0.0.1:6102")},
-		logger.NewLoggerToDevNull())
+		logger.NewDaveLoggerToDevNull())
 	if err != nil {
 		b.Fatalf("failed to init packet processor: %s", err)
 	}

@@ -8,6 +8,11 @@ import (
 	"os"
 )
 
+type Logger interface {
+	Log(level LogLevel, msg string, args ...any)
+	WithPrefix(prefix string) Logger
+}
+
 type LogLevel int
 
 const (
@@ -15,13 +20,13 @@ const (
 	DEBUG = LogLevel(1)
 )
 
-type LoggerCfg struct {
+type DaveLoggerCfg struct {
 	Level  LogLevel
 	Output chan<- string
 	Prefix string
 }
 
-type Logger struct {
+type DaveLogger struct {
 	level  LogLevel
 	output chan<- string
 	prefix string
@@ -52,49 +57,49 @@ func DevNull() chan<- string {
 	return logs
 }
 
-func NewLogger(cfg *LoggerCfg) (*Logger, error) {
+func NewDaveLogger(cfg *DaveLoggerCfg) (*DaveLogger, error) {
 	if cfg == nil {
 		return nil, errors.New("cfg is nil")
 	}
 	if cfg.Output == nil {
 		return nil, errors.New("logger output is nil")
 	}
-	return &Logger{
+	return &DaveLogger{
 		level:  cfg.Level,
 		output: cfg.Output,
 		prefix: cfg.Prefix,
 	}, nil
 }
 
-func NewLoggerToDevNull() *Logger {
-	return &Logger{
+func NewDaveLoggerToDevNull() *DaveLogger {
+	return &DaveLogger{
 		output: DevNull(),
 	}
 }
 
-func (l *Logger) Log(level LogLevel, msg string, args ...any) {
+func (l *DaveLogger) Log(level LogLevel, msg string, args ...any) {
 	if level > l.level {
 		return
 	}
 	l.output <- fmt.Sprintf(l.prefix+" "+msg, args...)
 }
 
-func (l *Logger) Error(msg string, args ...any) {
+func (l *DaveLogger) Error(msg string, args ...any) {
 	l.Log(ERROR, msg, args...)
 }
 
-func (l *Logger) Debug(msg string, args ...any) {
+func (l *DaveLogger) Debug(msg string, args ...any) {
 	l.Log(DEBUG, msg, args...)
 }
 
-func (l *Logger) WithPrefix(prefix string) *Logger {
-	return &Logger{
+func (l *DaveLogger) WithPrefix(prefix string) Logger {
+	return &DaveLogger{
 		level:  l.level,
 		output: l.output,
 		prefix: l.prefix + prefix,
 	}
 }
 
-func (l *Logger) Level() LogLevel {
+func (l *DaveLogger) Level() LogLevel {
 	return l.level
 }

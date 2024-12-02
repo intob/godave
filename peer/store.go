@@ -22,7 +22,7 @@ type StoreCfg struct {
 	TrustDecayFactor float64
 	PruneEvery       time.Duration
 	DecayEvery       time.Duration
-	Logger           *logger.Logger
+	Logger           logger.Logger
 }
 
 type Store struct {
@@ -35,7 +35,7 @@ type Store struct {
 	activationDelay time.Duration
 	deactivateAfter time.Duration
 	dropAfter       time.Duration
-	logger          *logger.Logger
+	logger          logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {

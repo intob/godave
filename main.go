@@ -23,7 +23,7 @@ const (
 	FANOUT              = 3                // Number of peers selected when sending dats.
 	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
 	NPEER_LIMIT         = 3                // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
+	MIN_WORK            = 20               // Minimum amount of acceptable work in number of leading zero bits.
 	PING                = 1 * time.Second  // Period between pinging peers.
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
 	DROP                = 12 * PING        // Time until protocol-deviating peers are dropped.
@@ -41,7 +41,7 @@ type Dave struct {
 	peers      *peer.Store
 	store      *store.Store
 	pproc      *pkt.PacketProcessor
-	logger     *logger.Logger
+	logger     logger.Logger
 }
 
 type DaveCfg struct {
@@ -60,7 +60,7 @@ type DaveCfg struct {
 	BackupFilename string // Filename of backup file. Leave blank to disable backup.
 	// Set to nil to disable logging, although this is not reccomended. Currently
 	// logging is the best way to monitor. In future, the API will be better.
-	Logger *logger.Logger
+	Logger logger.Logger
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
@@ -114,7 +114,7 @@ func (d *Dave) Put(dat types.Dat) error {
 		return errors.New("no active peers")
 	}
 	d.sendToClosestPeers(activePeers, &dat)
-	d.logger.Error("sent to %s")
+	d.log(logger.ERROR, "sent to %s")
 	return nil
 }
 
@@ -141,20 +141,20 @@ func (d *Dave) handlePackets() {
 				msg := &types.Msg{}
 				err := msg.Unmarshal(packet.Data)
 				if err != nil {
-					d.logger.Error("failed to unmarshal packet: %s", err)
+					d.log(logger.ERROR, "failed to unmarshal packet: %s", err)
 				}
 				switch msg.Op {
 				case types.Op_PONG:
 					err := d.handlePong(msg, packet.AddrPort, myAddrPort)
 					if err != nil {
-						d.logger.Error("failed to handle pong: %s", err)
+						d.log(logger.ERROR, "failed to handle pong: %s", err)
 					}
 				case types.Op_PING:
 					d.handlePing(msg, packet.AddrPort)
 				case types.Op_PUT:
 					err = d.handlePut(hasher, msg.Dat, packet.AddrPort)
 					if err != nil {
-						d.logger.Debug("failed to handle put: %s", err)
+						d.log(logger.DEBUG, "failed to handle put: %s", err)
 					}
 				case types.Op_GETMYADDRPORT:
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT_ACK,
@@ -165,7 +165,7 @@ func (d *Dave) handlePackets() {
 						myAddrPort = msg.AddrPorts[0]
 						d.pproc.MyAddrPortChan() <- myAddrPort
 					} else {
-						d.logger.Error("rejected MYADDRPORT_ACK from %s", packet.AddrPort)
+						d.log(logger.ERROR, "rejected MYADDRPORT_ACK from %s", packet.AddrPort)
 					}
 				}
 			}
@@ -181,7 +181,7 @@ func (d *Dave) run() {
 	} else { // also send now
 		err := d.sendGetMyAddrPort()
 		if err != nil {
-			d.logger.Error("failed to send GETMYADDRPORT: no edge is online")
+			d.log(logger.ERROR, "failed to send GETMYADDRPORT: no edge is online")
 		}
 	}
 	for {
@@ -190,7 +190,7 @@ func (d *Dave) run() {
 			for _, peer := range d.peers.ListAll() {
 				challenge, err := d.peers.CreateChallenge(peer.AddrPort())
 				if err != nil {
-					d.logger.Error("failed to create challenge: %s", err)
+					d.log(logger.ERROR, "failed to create challenge: %s", err)
 					continue
 				}
 				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{
@@ -200,7 +200,7 @@ func (d *Dave) run() {
 		case <-getMyAddrPortTick.C: // REQUEST MY ADDRPORT
 			err := d.sendGetMyAddrPort()
 			if err != nil {
-				d.logger.Error("failed to send GETMYADDRPORT: no edge is online")
+				d.log(logger.ERROR, "failed to send GETMYADDRPORT: no edge is online")
 			}
 		}
 	}
@@ -211,7 +211,7 @@ func (d *Dave) sendGetMyAddrPort() error {
 		if time.Since(p.ChallengeSolved()) < DEACTIVATE_AFTER {
 			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.Op_GETMYADDRPORT},
 				AddrPort: p.AddrPort()}
-			d.logger.Debug("sent GETMYADDRPORT to %s", p.AddrPort())
+			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort())
 			return nil
 		}
 	}
@@ -219,7 +219,7 @@ func (d *Dave) sendGetMyAddrPort() error {
 }
 
 func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
-	d.peers.AddPeer(raddr, false)
+	//d.peers.AddPeer(raddr, false)
 	if dat == nil {
 		return errors.New("dat is nil")
 	}
@@ -249,14 +249,14 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	}
 	normDistance := float64(d.myID^peer.IDFromPublicKey(dat.PubKey)) / float64(^uint64(0))
 	d.peers.UpdateTrust(raddr, 1-normDistance)
-	d.logger.Debug("stored %s", dat.Key)
+	d.log(logger.DEBUG, "stored %s", dat.Key)
 	return nil
 }
 
 func (d *Dave) handlePing(msg *types.Msg, raddr netip.AddrPort) {
 	d.peers.AddPeer(raddr, false)
 	if !d.peers.IsPingExpected(raddr, PING) {
-		d.logger.Error("unexpected ping from %s", raddr)
+		d.log(logger.ERROR, "unexpected ping from %s", raddr)
 		return
 	}
 	d.peers.UpdatePingReceived(raddr)
@@ -288,7 +288,7 @@ func (d *Dave) sendToClosestPeers(activePeers []peer.Peer, dat *types.Dat) {
 }
 
 func (d *Dave) handlePong(msg *types.Msg, raddr, myAddrPort netip.AddrPort) error {
-	d.peers.AddPeer(raddr, false)
+	//d.peers.AddPeer(raddr, false)
 	challenge, storedPubKey, err := d.peers.CurrentChallengeAndPubKey(raddr)
 	if err != nil {
 		return err
@@ -331,4 +331,10 @@ func unmarshalEd25519PublicKey(publicKeyBytes []byte) (ed25519.PublicKey, error)
 		return nil, fmt.Errorf("ed25519: public key must be %d bytes", ed25519.PublicKeySize)
 	}
 	return ed25519.PublicKey(publicKeyBytes), nil
+}
+
+func (d *Dave) log(level logger.LogLevel, msg string, args ...any) {
+	if d.logger != nil {
+		d.logger.Log(level, msg, args...)
+	}
 }

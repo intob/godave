@@ -26,7 +26,6 @@ import (
 type Store struct {
 	myID           uint64
 	shards         [256]*shard
-	logger         *logger.Logger
 	backupFilename string
 	backup         chan *types.Dat
 	kill           <-chan struct{}
@@ -35,6 +34,7 @@ type Store struct {
 	capacity       int64
 	usedSpace      atomic.Int64
 	ttl            time.Duration
+	logger         logger.Logger
 }
 
 type StoreCfg struct {
@@ -42,9 +42,9 @@ type StoreCfg struct {
 	Capacity       int64
 	TTL            time.Duration
 	BackupFilename string
-	Logger         *logger.Logger
 	Kill           <-chan struct{}
 	Done           chan<- struct{}
+	Logger         logger.Logger
 }
 
 type shard struct {

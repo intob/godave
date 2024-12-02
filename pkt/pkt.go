@@ -26,7 +26,7 @@ type PacketProcessor struct {
 	packetsIn  chan *RawPacket
 	packetsOut chan *Packet
 	myAddrPort chan netip.AddrPort
-	logger     *logger.Logger
+	logger     logger.Logger
 }
 
 func MapToIPv6(addr netip.AddrPort) netip.AddrPort {
@@ -41,7 +41,7 @@ func MapToIPv6(addr netip.AddrPort) netip.AddrPort {
 	return netip.AddrPortFrom(v6, addr.Port())
 }
 
-func NewPacketProcessor(sock Socket, logger *logger.Logger) (*PacketProcessor, error) {
+func NewPacketProcessor(sock Socket, logger logger.Logger) (*PacketProcessor, error) {
 	pp := &PacketProcessor{
 		packetsIn:  make(chan *RawPacket, 10000),
 		packetsOut: make(chan *Packet, 100),
