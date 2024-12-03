@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/sub"
 	"github.com/intob/godave/types"
 )
 
@@ -21,6 +22,7 @@ type StoreCfg struct {
 	DeactivateAfter time.Duration // Time until unresponsive peers are deactivated
 	DropAfter       time.Duration // Time until unresponsive peers are dropped
 	PruneEvery      time.Duration
+	SubSvc          *sub.SubscriptionService
 	Logger          logger.Logger
 }
 
@@ -33,6 +35,7 @@ type Store struct {
 	activateAfter   time.Duration
 	deactivateAfter time.Duration
 	dropAfter       time.Duration
+	subSvc          *sub.SubscriptionService
 	logger          logger.Logger
 }
 
@@ -45,6 +48,7 @@ func NewStore(cfg *StoreCfg) *Store {
 		activateAfter:   cfg.ActivateAfter,
 		deactivateAfter: cfg.DeactivateAfter,
 		dropAfter:       cfg.DropAfter,
+		subSvc:          cfg.SubSvc,
 		logger:          cfg.Logger,
 	}
 	go func() {
@@ -57,12 +61,12 @@ func NewStore(cfg *StoreCfg) *Store {
 }
 
 // Peer is added if not found.
-func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
+func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	_, exists := s.table[addrPort]
 	if exists {
-		return
+		return errors.New("peer already added")
 	}
 	p := &peer{
 		addrPort:            addrPort,
@@ -74,7 +78,9 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) {
 	if isEdge {
 		s.edges = append(s.edges, p)
 	}
-	s.log(logger.ERROR, "added %s", addrPort)
+	s.log(logger.DEBUG, "added %s", addrPort)
+	//s.sub.Publish(sub.TopicPeerAdded, copyFromPeer(p))
+	return nil
 }
 
 func (s *Store) SetPeerUsedSpaceAndCapacity(addrPort netip.AddrPort, usedSpace, capacity int64) error {
@@ -178,8 +184,8 @@ func (s *Store) GetStorageChallenge(addrPort netip.AddrPort) (StorageChallenge, 
 	peer.mu.RLock()
 	defer peer.mu.RUnlock()
 	challenge := peer.storageChallenge
-	if challenge == nil || challenge.Expires.Before(time.Now()) {
-		return StorageChallenge{}, errors.New("challenge nil or expired")
+	if challenge == nil {
+		return StorageChallenge{}, errors.New("challenge is nil")
 	}
 	return *challenge, nil
 }
@@ -197,22 +203,6 @@ func (s *Store) SetStorageChallenge(addrPort netip.AddrPort, challenge *StorageC
 		return errors.New("peer already has a valid challenge")
 	}
 	peer.storageChallenge = challenge
-	return nil
-}
-
-func (s *Store) StorageChallengeSent(addrPort netip.AddrPort) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	peer, exists := s.table[addrPort]
-	if !exists {
-		return ErrPeerNotFound
-	}
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
-	if peer.storageChallenge == nil {
-		return errors.New("peer has no storage challenge")
-	}
-	peer.storageChallenge.Sent = time.Now()
 	return nil
 }
 
@@ -381,6 +371,7 @@ func (s *Store) prune() {
 	}
 	s.active = newActive
 	s.log(logger.DEBUG, "pruned, active: %d/%d", len(s.active), len(s.table))
+	s.subSvc.Publish(sub.TopicPeersPruned, struct{}{})
 }
 
 func (s *Store) log(level logger.LogLevel, msg string, args ...any) {

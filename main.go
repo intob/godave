@@ -17,6 +17,7 @@ import (
 	"github.com/intob/godave/pkt"
 	"github.com/intob/godave/pow"
 	"github.com/intob/godave/store"
+	"github.com/intob/godave/sub"
 	"github.com/intob/godave/types"
 	"lukechampine.com/blake3"
 )
@@ -40,7 +41,7 @@ const (
 	// This doesn't really work on it's own. Maybe measure peer ping time and account for that.
 	// This can be broken, though, as peers can add additional time. To fix that, we can
 	// reward low ping time in the same "reliability" function.
-	STORAGE_CHALLENGE_DEADLINE = 100 * time.Millisecond
+	STORAGE_CHALLENGE_DEADLINE = 120 * time.Millisecond
 )
 
 type Dave struct {
@@ -51,8 +52,8 @@ type Dave struct {
 	peers      *peer.Store
 	store      *store.Store
 	pproc      *pkt.PacketProcessor
-	getAck     chan types.Dat
 	logger     logger.Logger
+	subSvc     *sub.SubscriptionService
 }
 
 type DaveCfg struct {
@@ -71,6 +72,7 @@ type DaveCfg struct {
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
+	subSvc := sub.NewSubscriptionService()
 	dave := &Dave{
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
 		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
@@ -81,9 +83,10 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 			DeactivateAfter: DEACTIVATE_AFTER,
 			DropAfter:       DROP_AFTER,
 			PruneEvery:      DEACTIVATE_AFTER,
+			SubSvc:          subSvc,
 			Logger:          cfg.Logger.WithPrefix("/peers")}),
 		logger: cfg.Logger,
-		getAck: make(chan types.Dat, FANOUT),
+		subSvc: subSvc,
 	}
 	for _, addrPort := range cfg.Edges {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
@@ -137,6 +140,8 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*types.Dat, error) {
 	if len(activePeers) == 0 {
 		return nil, errors.New("no active peers")
 	}
+	evch := d.subSvc.Subscribe(sub.TopicRecvGetAck)
+	defer d.subSvc.Unsubscribe(sub.TopicRecvGetAck, evch)
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(get.PublicKey), activePeers)
 	count := min(FANOUT, len(sorted))
 	for i := 0; i < count; i++ {
@@ -149,7 +154,13 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*types.Dat, error) {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case dat := <-d.getAck:
+		case e := <-evch:
+			pkt, ok := e.(*pkt.Packet)
+			if !ok {
+				d.log(logger.ERROR, "expected event type *pkt.Packet, got %T", pkt)
+				continue
+			}
+			dat := pkt.Msg.Dat
 			if !bytes.Equal(dat.PubKey, get.PublicKey) || dat.Key != get.DatKey {
 				continue
 			}
@@ -162,28 +173,29 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*types.Dat, error) {
 					continue
 				}
 			}
-			err = d.verifyDat(hasher, &dat)
+			err = verifyDat(hasher, dat)
 			if err != nil {
 				d.log(logger.ERROR, "verification failed: %s", err)
 				continue
 			}
-			err = d.store.Write(&dat)
+			err = d.store.Write(dat)
 			if err != nil {
 				d.log(logger.ERROR, "failed to store: %s", err)
 				continue
 			}
-			return &dat, nil
+			return dat, nil
 		}
 	}
 }
 
 func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
-	check := time.NewTicker(200 * time.Millisecond)
+	ev := d.subSvc.Subscribe(sub.TopicPeersPruned)
+	defer d.subSvc.Unsubscribe(sub.TopicPeersPruned, ev)
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-check.C:
+		case <-ev:
 			if d.peers.CountActive() >= count {
 				return nil
 			}
@@ -234,10 +246,7 @@ func (d *Dave) handlePackets() {
 						d.log(logger.DEBUG, "failed to handle GET: %s", err)
 					}
 				case types.OP_GET_ACK:
-					err = d.handleGetAck(hasher, msg.Dat, packet.AddrPort)
-					if err != nil {
-						d.log(logger.ERROR, "failed to handle GET_ACK: %s", err)
-					}
+					d.subSvc.Publish(sub.TopicRecvGetAck, &pkt.Packet{Msg: msg, AddrPort: packet.AddrPort})
 				case types.OP_GETMYADDRPORT:
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
 						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
@@ -282,14 +291,50 @@ func (d *Dave) run() {
 				}, AddrPort: peer.AddrPort}
 			}
 		case <-storageChallengeTick.C:
-			for _, peer := range d.peers.RandPeers(FANOUT, nil) {
-				challenge, err := d.peers.GetStorageChallenge(peer.AddrPort)
-				if err == nil {
-					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET,
-						Get: &types.Get{PublicKey: challenge.PublicKey, DatKey: challenge.DatKey}},
-						AddrPort: peer.AddrPort}
-					d.peers.StorageChallengeSent(peer.AddrPort)
+			for _, p := range d.peers.RandPeers(FANOUT, nil) {
+				challenge, err := d.peers.GetStorageChallenge(p.AddrPort)
+				if err != nil {
+					continue
 				}
+				if challenge.Expires.Before(time.Now()) {
+					d.log(logger.DEBUG, "storage challenge expired")
+					continue
+				}
+				go func() {
+					evch := d.subSvc.Subscribe(sub.TopicRecvGetAck)
+					defer d.subSvc.Unsubscribe(sub.TopicRecvGetAck, evch)
+					timer := time.NewTimer(STORAGE_CHALLENGE_DEADLINE)
+					for {
+						select {
+						case <-timer.C:
+							d.peers.StorageChallengeFailed(p.AddrPort)
+							d.log(logger.ERROR, "storage challenge failed: deadline exceeded %s", p.AddrPort)
+						case ev := <-evch:
+							pkt, ok := ev.(*pkt.Packet)
+							if !ok {
+								d.log(logger.ERROR, "expected event *pkt.Packet, got %T", ev)
+							}
+							if !bytes.Equal(challenge.PublicKey, pkt.Msg.Dat.PubKey) {
+								continue
+							}
+							if challenge.DatKey != pkt.Msg.Dat.Key {
+								continue
+							}
+							err = verifyDat(blake3.New(32, nil), pkt.Msg.Dat)
+							if err != nil {
+								d.peers.StorageChallengeFailed(p.AddrPort)
+								d.log(logger.ERROR, "storage challenge failed %s", p.AddrPort)
+							} else {
+								d.peers.StorageChallengeCompleted(p.AddrPort)
+								d.log(logger.DEBUG, "storage challenge completed %s", p.AddrPort)
+							}
+							return
+						}
+					}
+				}()
+				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET,
+					Get: &types.Get{PublicKey: challenge.PublicKey, DatKey: challenge.DatKey}},
+					AddrPort: p.AddrPort}
 			}
 		case <-getMyAddrPortTick.C:
 			err := d.sendGetMyAddrPort()
@@ -310,29 +355,6 @@ func (d *Dave) sendGetMyAddrPort() error {
 		}
 	}
 	return errors.New("failed to send MYADDRPORT")
-}
-
-func (d *Dave) verifyDat(hasher *blake3.Hasher, dat *types.Dat) error {
-	if dat == nil {
-		return errors.New("dat is nil")
-	}
-	if pow.Nzerobit(dat.Work) < MIN_WORK {
-		return fmt.Errorf("work is insufficient: %x", dat.Work)
-	}
-	if err := pow.Check(hasher, dat); err != nil {
-		return fmt.Errorf("work is invalid: %s", err)
-	}
-	if l := len(dat.PubKey); l != ed25519.PublicKeySize {
-		return fmt.Errorf("pub key is invalid: len %d", l)
-	}
-	pubKey, err := unmarshalEd25519PublicKey(dat.PubKey)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal pub key: %s", err)
-	}
-	if !ed25519.Verify(pubKey, dat.Work[:], dat.Sig[:]) {
-		return fmt.Errorf("signature is invalid")
-	}
-	return nil
 }
 
 func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.AddrPort) {
@@ -413,7 +435,7 @@ func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.
 }
 
 func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
-	err := d.verifyDat(hasher, dat)
+	err := verifyDat(hasher, dat)
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
@@ -441,51 +463,23 @@ func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
 	return nil
 }
 
-func (d *Dave) handleGetAck(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
-	select {
-	case d.getAck <- *dat:
-	default: // don't block if no reciever is waiting
-	}
-	challenge, err := d.peers.GetStorageChallenge(raddr)
-	if err != nil {
-		return nil
-	}
-	if !bytes.Equal(challenge.PublicKey, dat.PubKey) {
-		return nil
-	}
-	if challenge.DatKey != dat.Key {
-		return nil
-	}
-	if time.Since(challenge.Sent) > STORAGE_CHALLENGE_DEADLINE {
-		d.peers.StorageChallengeFailed(raddr)
-		return fmt.Errorf("deadline passed, took %s", time.Since(challenge.Sent))
-	}
+func verifyDat(hasher *blake3.Hasher, dat *types.Dat) error {
 	if pow.Nzerobit(dat.Work) < MIN_WORK {
-		d.peers.StorageChallengeFailed(raddr)
 		return fmt.Errorf("work is insufficient: %x", dat.Work)
 	}
 	if err := pow.Check(hasher, dat); err != nil {
-		d.peers.StorageChallengeFailed(raddr)
 		return fmt.Errorf("work is invalid: %s", err)
 	}
 	if l := len(dat.PubKey); l != ed25519.PublicKeySize {
-		d.peers.StorageChallengeFailed(raddr)
 		return fmt.Errorf("pub key is invalid: len %d", l)
 	}
 	pubKey, err := unmarshalEd25519PublicKey(dat.PubKey)
 	if err != nil {
-		d.peers.StorageChallengeFailed(raddr)
 		return fmt.Errorf("failed to unmarshal pub key: %s", err)
 	}
 	if !ed25519.Verify(pubKey, dat.Work[:], dat.Sig[:]) {
-		d.peers.StorageChallengeFailed(raddr)
 		return fmt.Errorf("signature is invalid")
 	}
-	err = d.peers.StorageChallengeCompleted(raddr)
-	if err != nil {
-		return fmt.Errorf("failed to set storage challenge completed: %s", err)
-	}
-	d.log(logger.ERROR, "YAYY!! STORAGE CHALLENGE COMPLETED")
 	return nil
 }
 
