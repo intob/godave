@@ -26,7 +26,7 @@ const (
 	FANOUT              = 3                // Number of peers selected when sending dats.
 	PROBE               = 12               // Inverse of probability that a peer is selected regardless of trust.
 	NPEER_LIMIT         = 5                // Maximum number of peer descriptors in a PONG message.
-	MIN_WORK            = 20               // Minimum amount of acceptable work in number of leading zero bits.
+	MIN_WORK            = 16               // Minimum amount of acceptable work in number of leading zero bits.
 	PING                = 1 * time.Second  // Period between pinging peers.
 	ACTIVATE_AFTER      = 5 * PING         // Time until new peers are activated.
 	DEACTIVATE_AFTER    = 3 * PING         // Time until protocol-deviating peers are deactivated.
@@ -45,15 +45,15 @@ const (
 )
 
 type Dave struct {
-	privateKey ed25519.PrivateKey
-	publicKey  ed25519.PublicKey
-	myID       uint64
-	kill, done chan struct{}
-	peers      *peer.Store
-	store      *store.Store
-	pproc      *pkt.PacketProcessor
-	logger     logger.Logger
-	subSvc     *sub.SubscriptionService
+	privateKey               ed25519.PrivateKey
+	publicKey                ed25519.PublicKey
+	myID                     uint64
+	killStore, killStoreDone chan struct{}
+	peers                    *peer.Store
+	store                    *store.Store
+	pproc                    *pkt.PacketProcessor
+	logger                   logger.Logger
+	subSvc                   *sub.SubscriptionService
 }
 
 type DaveCfg struct {
@@ -75,8 +75,8 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 	subSvc := sub.NewSubscriptionService(100)
 	dave := &Dave{
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
-		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
-		kill: make(chan struct{}), done: make(chan struct{}),
+		myID:      peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
+		killStore: make(chan struct{}), killStoreDone: make(chan struct{}),
 		peers: peer.NewStore(&peer.StoreCfg{
 			Probe:           PROBE,
 			ActivateAfter:   ACTIVATE_AFTER,
@@ -94,7 +94,7 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 	dave.store = store.NewStore(&store.StoreCfg{
 		MyID:     peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
 		Capacity: cfg.ShardCapacity, TTL: TTL,
-		BackupFilename: cfg.BackupFilename, Kill: dave.kill, Done: dave.done,
+		BackupFilename: cfg.BackupFilename, Kill: dave.killStore, Done: dave.killStoreDone,
 		Logger: cfg.Logger.WithPrefix("/dats")})
 	err := dave.store.ReadBackup()
 	if err != nil {
@@ -110,8 +110,8 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 }
 
 func (d *Dave) Kill() {
-	close(d.kill)
-	<-d.done
+	close(d.killStore)
+	<-d.killStoreDone
 }
 
 func (d *Dave) Put(dat types.Dat) error {

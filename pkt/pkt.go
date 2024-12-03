@@ -43,7 +43,7 @@ func MapToIPv6(addr netip.AddrPort) netip.AddrPort {
 
 func NewPacketProcessor(sock Socket, logger logger.Logger) (*PacketProcessor, error) {
 	pp := &PacketProcessor{
-		packetsIn:  make(chan *RawPacket, 10000),
+		packetsIn:  make(chan *RawPacket, 10_000),
 		packetsOut: make(chan *Packet, 100),
 		logger:     logger,
 		myAddrPort: make(chan netip.AddrPort),
