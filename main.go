@@ -72,7 +72,7 @@ type DaveCfg struct {
 }
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
-	subSvc := sub.NewSubscriptionService()
+	subSvc := sub.NewSubscriptionService(100)
 	dave := &Dave{
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
 		myID: peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),

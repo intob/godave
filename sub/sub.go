@@ -5,8 +5,9 @@ import (
 )
 
 type SubscriptionService struct {
-	mu     sync.RWMutex
-	topics map[string]*Topic
+	mu         sync.RWMutex
+	topics     map[string]*Topic
+	bufferSize int
 }
 
 type Topic struct {
@@ -14,9 +15,10 @@ type Topic struct {
 	subs []chan interface{}
 }
 
-func NewSubscriptionService() *SubscriptionService {
+func NewSubscriptionService(bufferSize int) *SubscriptionService {
 	return &SubscriptionService{
-		topics: make(map[string]*Topic),
+		topics:     make(map[string]*Topic),
+		bufferSize: bufferSize,
 	}
 }
 
@@ -24,7 +26,7 @@ func (s *SubscriptionService) Subscribe(topic string) chan interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.topics[topic]
-	ch := make(chan interface{}, 1)
+	ch := make(chan interface{}, s.bufferSize)
 	if !ok {
 		s.topics[topic] = &Topic{
 			subs: []chan interface{}{ch},
@@ -53,8 +55,6 @@ func (s *SubscriptionService) Unsubscribe(topic string, ch chan interface{}) {
 	}
 }
 
-// If sub channels are full this will block. The alternative is dropping events,
-// which could lead to other issues. For now, this is fine.
 func (s *SubscriptionService) Publish(topic string, event interface{}) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -65,6 +65,9 @@ func (s *SubscriptionService) Publish(topic string, event interface{}) {
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 	for _, sub := range t.subs {
-		sub <- event
+		select {
+		case sub <- event:
+		default:
+		}
 	}
 }
