@@ -35,7 +35,7 @@ const (
 	// if new data has a higher priority. Priority is a function of age and
 	// XOR distance.
 	TTL                           = 365 * 24 * time.Hour
-	STORAGE_CHALLENGE_PROBABILITY = 1 // Probability that a dat will be used as a storage challenge.
+	STORAGE_CHALLENGE_PROBABILITY = 0.1 // Probability that a dat will be used as a storage challenge.
 	STORAGE_CHALLENGE_EVERY       = 10 * time.Second
 )
 
@@ -79,7 +79,7 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 			PruneEvery:      DEACTIVATE_AFTER,
 			Logger:          cfg.Logger.WithPrefix("/peers")}),
 		logger: cfg.Logger,
-		getAck: make(chan types.Dat),
+		getAck: make(chan types.Dat, FANOUT),
 	}
 	for _, addrPort := range cfg.Edges {
 		dave.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
@@ -120,7 +120,7 @@ func (d *Dave) Put(dat types.Dat) error {
 	return nil
 }
 
-func (d *Dave) Get(get *types.Get) (*types.Dat, error) {
+func (d *Dave) Get(ctx context.Context, get *types.Get) (*types.Dat, error) {
 	if get == nil {
 		return nil, errors.New("get is nil")
 	}
@@ -134,27 +134,43 @@ func (d *Dave) Get(get *types.Get) (*types.Dat, error) {
 		return nil, errors.New("no active peers")
 	}
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(get.PublicKey), activePeers)
-	start := time.Now()
-	defer func() {
-		d.log(logger.DEBUG, "found dat in %s", time.Since(start))
-	}()
-	for i := 0; i < FANOUT && i < len(sorted); i++ {
+	count := min(FANOUT, len(sorted))
+	for i := 0; i < count; i++ {
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET, Get: get},
 			AddrPort: sorted[i].Peer.AddrPort}
 	}
-	for dat := range d.getAck {
-		if bytes.Equal(dat.PubKey, get.PublicKey) && dat.Key == get.DatKey {
+	hasher := blake3.New(32, nil)
+	var received int
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case dat := <-d.getAck:
+			if !bytes.Equal(dat.PubKey, get.PublicKey) || dat.Key != get.DatKey {
+				continue
+			}
+			received++
 			if dat.Sig == (types.Signature{}) {
-				return nil, errors.New("not found")
+				d.log(logger.DEBUG, "not found from %d/%d", received, count)
+				if received == count {
+					return nil, errors.New("not found")
+				} else {
+					continue
+				}
+			}
+			err = d.verifyDat(hasher, &dat)
+			if err != nil {
+				d.log(logger.ERROR, "verification failed: %s", err)
+				continue
 			}
 			err = d.store.Write(&dat)
 			if err != nil {
-				d.log(logger.DEBUG, "failed to store dat: %s", err)
+				d.log(logger.ERROR, "failed to store: %s", err)
+				continue
 			}
 			return &dat, nil
 		}
 	}
-	return nil, errors.New("get ack channel closed")
 }
 
 func (d *Dave) WaitForActivePeers(ctx context.Context, count int) error {
@@ -207,19 +223,7 @@ func (d *Dave) handlePackets() {
 				case types.OP_PING:
 					d.handlePing(hasher, msg, packet.AddrPort)
 				case types.OP_PUT:
-					err = d.handlePut(hasher, msg.Dat)
-					if err != nil {
-						d.log(logger.DEBUG, "failed to handle PUT: %s", err)
-						continue
-					}
-					activePeers := d.peers.ListActive(&packet.AddrPort)
-					// Maybe make this depend on trust, or maybe leave this up to the originator.
-					// This improves reliability, as we may know a closer peer that the originator
-					// is unaware of. This also improves anonymity, as we don't know which peer was
-					// the originator.
-					if len(activePeers) >= FANOUT {
-						d.sendToClosestPeers(activePeers, msg.Dat)
-					}
+					d.handlePut(hasher, msg.Dat, packet.AddrPort)
 				case types.OP_GET:
 					err = d.handleGet(msg.Get, packet.AddrPort)
 					if err != nil {
@@ -303,7 +307,7 @@ func (d *Dave) sendGetMyAddrPort() error {
 	return errors.New("failed to send MYADDRPORT")
 }
 
-func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat) error {
+func (d *Dave) verifyDat(hasher *blake3.Hasher, dat *types.Dat) error {
 	if dat == nil {
 		return errors.New("dat is nil")
 	}
@@ -323,11 +327,6 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat) error {
 	if !ed25519.Verify(pubKey, dat.Work[:], dat.Sig[:]) {
 		return fmt.Errorf("signature is invalid")
 	}
-	err = d.store.Write(dat)
-	if err != nil {
-		return err
-	}
-	d.log(logger.DEBUG, "stored %s", dat.Key)
 	return nil
 }
 
@@ -405,6 +404,27 @@ func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.
 		}
 	}
 	d.peers.AuthChallengeSolved(raddr)
+	return nil
+}
+
+func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.AddrPort) error {
+	err := d.verifyDat(hasher, dat)
+	if err != nil {
+		return fmt.Errorf("verification failed: %w", err)
+	}
+	err = d.store.Write(dat)
+	if err != nil {
+		return fmt.Errorf("failed to store: %w", err)
+	}
+	d.log(logger.DEBUG, "stored %s", dat.Key)
+	activePeers := d.peers.ListActive(&raddr)
+	// Maybe make this depend on trust, or maybe leave this up to the originator.
+	// This improves reliability, as we may know a closer peer that the originator
+	// is unaware of. This also improves anonymity, as we don't know which peer was
+	// the originator.
+	if len(activePeers) >= FANOUT {
+		d.sendToClosestPeers(activePeers, dat)
+	}
 	return nil
 }
 
