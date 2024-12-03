@@ -79,7 +79,6 @@ func (s *Store) AddPeer(addrPort netip.AddrPort, isEdge bool) error {
 		s.edges = append(s.edges, p)
 	}
 	s.log(logger.DEBUG, "added %s", addrPort)
-	//s.sub.Publish(sub.TopicPeerAdded, copyFromPeer(p))
 	return nil
 }
 
