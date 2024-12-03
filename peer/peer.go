@@ -15,6 +15,7 @@ type StorageChallenge struct {
 	PublicKey ed25519.PublicKey
 	DatKey    string
 	Expires   time.Time
+	Sent      time.Time
 }
 
 type peer struct {

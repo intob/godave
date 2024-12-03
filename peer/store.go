@@ -91,6 +91,9 @@ func (s *Store) SetPeerUsedSpaceAndCapacity(addrPort netip.AddrPort, usedSpace, 
 	return nil
 }
 
+// Currently this is flawed, as a peer can lie about their resources.
+// Maybe remove this entirely, or set bounds for acceptable figures.
+// The larger the network, the more accurate this becomes.
 func (s *Store) TotalUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -194,6 +197,22 @@ func (s *Store) SetStorageChallenge(addrPort netip.AddrPort, challenge *StorageC
 		return errors.New("peer already has a valid challenge")
 	}
 	peer.storageChallenge = challenge
+	return nil
+}
+
+func (s *Store) StorageChallengeSent(addrPort netip.AddrPort) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	peer, exists := s.table[addrPort]
+	if !exists {
+		return ErrPeerNotFound
+	}
+	peer.mu.Lock()
+	defer peer.mu.Unlock()
+	if peer.storageChallenge == nil {
+		return errors.New("peer has no storage challenge")
+	}
+	peer.storageChallenge.Sent = time.Now()
 	return nil
 }
 

@@ -37,6 +37,10 @@ const (
 	TTL                           = 365 * 24 * time.Hour
 	STORAGE_CHALLENGE_PROBABILITY = 0.1 // Probability that a dat will be used as a storage challenge.
 	STORAGE_CHALLENGE_EVERY       = 10 * time.Second
+	// This doesn't really work on it's own. Maybe measure peer ping time and account for that.
+	// This can be broken, though, as peers can add additional time. To fix that, we can
+	// reward low ping time in the same "reliability" function.
+	STORAGE_CHALLENGE_DEADLINE = 100 * time.Millisecond
 )
 
 type Dave struct {
@@ -284,6 +288,7 @@ func (d *Dave) run() {
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET,
 						Get: &types.Get{PublicKey: challenge.PublicKey, DatKey: challenge.DatKey}},
 						AddrPort: peer.AddrPort}
+					d.peers.StorageChallengeSent(peer.AddrPort)
 				}
 			}
 		case <-getMyAddrPortTick.C:
@@ -418,10 +423,6 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, dat *types.Dat, raddr netip.Addr
 	}
 	d.log(logger.DEBUG, "stored %s", dat.Key)
 	activePeers := d.peers.ListActive(&raddr)
-	// Maybe make this depend on trust, or maybe leave this up to the originator.
-	// This improves reliability, as we may know a closer peer that the originator
-	// is unaware of. This also improves anonymity, as we don't know which peer was
-	// the originator.
 	if len(activePeers) >= FANOUT {
 		d.sendToClosestPeers(activePeers, dat)
 	}
@@ -454,6 +455,10 @@ func (d *Dave) handleGetAck(hasher *blake3.Hasher, dat *types.Dat, raddr netip.A
 	}
 	if challenge.DatKey != dat.Key {
 		return nil
+	}
+	if time.Since(challenge.Sent) > STORAGE_CHALLENGE_DEADLINE {
+		d.peers.StorageChallengeFailed(raddr)
+		return fmt.Errorf("deadline passed, took %s", time.Since(challenge.Sent))
 	}
 	if pow.Nzerobit(dat.Work) < MIN_WORK {
 		d.peers.StorageChallengeFailed(raddr)
