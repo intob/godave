@@ -10,6 +10,7 @@ import (
 	mrand "math/rand"
 	"net/netip"
 	"runtime"
+	"sync"
 	"time"
 
 	"github.com/intob/godave/auth"
@@ -78,8 +79,9 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to init packet processor: %s", err)
 	}
-	go d.run()
 	go d.handlePackets()
+	go d.manageReplicas()
+	go d.run()
 	return d, nil
 }
 
@@ -260,6 +262,29 @@ func (d *Dave) handlePackets() {
 	}
 }
 
+func (d *Dave) manageReplicas() {
+	peerDroppedEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
+	peerAddedEv := d.subSvc.Subscribe(sub.PEER_ADDED)
+	for {
+		select {
+		case ev := <-peerDroppedEv:
+			peer, ok := ev.(peer.PeerCopy)
+			if !ok {
+				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
+				continue
+			}
+			d.replaceReplicasForDroppedPeer(peer)
+		case ev := <-peerAddedEv:
+			peer, ok := ev.(peer.PeerCopy)
+			if !ok {
+				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
+				continue
+			}
+			d.replaceReplicasForNewPeer(peer)
+		}
+	}
+}
+
 func (d *Dave) run() {
 	pingTick := time.NewTicker(network.PING)
 	storageChallengeTick := time.NewTicker(network.STORAGE_CHALLENGE_EVERY)
@@ -272,7 +297,6 @@ func (d *Dave) run() {
 			d.log(logger.ERROR, "failed to send GETMYADDRPORT: no edge is online")
 		}
 	}
-	dropEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
 	for {
 		select {
 		case <-pingTick.C:
@@ -287,13 +311,6 @@ func (d *Dave) run() {
 						UsedSpace: d.UsedSpace(), Capacity: d.Capacity()},
 				}, AddrPort: peer.AddrPort}
 			}
-		case ev := <-dropEv:
-			peer, ok := ev.(peer.PeerCopy)
-			if !ok {
-				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
-				continue
-			}
-			d.reassignReplicas(peer)
 		case <-storageChallengeTick.C:
 			for _, p := range d.peers.RandPeers(network.FANOUT, nil) {
 				challenge, err := d.peers.GetStorageChallenge(p.AddrPort)
@@ -351,12 +368,15 @@ func (d *Dave) run() {
 	}
 }
 
-func (d *Dave) reassignReplicas(p peer.PeerCopy) {
-	work := make(chan store.Entry)
+func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
+	entries := d.store.ListWithReplicaID(p.ID)
+	wg := sync.WaitGroup{}
 	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
 		go func() {
+			defer wg.Done()
 			active := d.peers.ListActive(nil)
-			for e := range work {
+			for e := range entries {
 				// Choose replicas
 				sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
 				for j := range e.Replicas {
@@ -369,11 +389,11 @@ func (d *Dave) reassignReplicas(p peer.PeerCopy) {
 				// Send entry to replicas
 				for i := 0; i < network.FANOUT && i < len(sorted); i++ {
 					replica := sorted[i].Peer
-					if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
+					/*if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
 						d.peers.SetStorageChallenge(replica.AddrPort, &peer.StorageChallenge{
 							PublicKey: e.Dat.PubKey, DatKey: e.Dat.Key,
 							Expires: e.Dat.Time.Add(network.TTL - time.Second)})
-					}
+					}*/
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
 						AddrPort: replica.AddrPort}
 				}
@@ -386,10 +406,38 @@ func (d *Dave) reassignReplicas(p peer.PeerCopy) {
 			}
 		}()
 	}
-	for _, e := range d.store.ListWithReplicaID(p.ID) {
-		work <- e
+	wg.Wait()
+}
+
+func (d *Dave) replaceReplicasForNewPeer(p peer.PeerCopy) {
+	entries := d.store.ListAll()
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for e := range entries {
+				newPeerDist := p.ID ^ peer.IDFromPublicKey(e.Dat.PubKey)
+				replaced := false
+				for j, replicaID := range e.Replicas {
+					if newPeerDist < replicaID^peer.IDFromPublicKey(e.Dat.PubKey) {
+						e.Replicas[j] = p.ID
+						replaced = true
+						d.log(logger.DEBUG, "%v replaced with %v", replicaID, p.ID)
+						break
+					}
+				}
+				if replaced {
+					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+						AddrPort: p.AddrPort}
+					if err := d.store.Write(&e); err != nil {
+						d.log(logger.ERROR, "reassign replicas: failed to update store: %s", err)
+					}
+				}
+			}
+		}()
 	}
-	close(work)
+	wg.Wait()
 }
 
 func (d *Dave) sendGetMyAddrPort() error {

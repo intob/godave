@@ -23,21 +23,23 @@ type StoreCfg struct {
 }
 
 type Store struct {
-	mu     sync.RWMutex
-	table  map[netip.AddrPort]*peer
-	active []*peer // Sorted by trust descending
-	edges  []*peer
-	subSvc *sub.SubscriptionService
-	logger logger.Logger
+	mu          sync.RWMutex
+	table       map[netip.AddrPort]*peer
+	active      map[netip.AddrPort]*peer
+	activeSlice []*peer
+	edges       []*peer
+	subSvc      *sub.SubscriptionService
+	logger      logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
-		table:  make(map[netip.AddrPort]*peer),
-		active: make([]*peer, 0),
-		edges:  make([]*peer, 0),
-		subSvc: cfg.SubSvc,
-		logger: cfg.Logger,
+		table:       make(map[netip.AddrPort]*peer),
+		active:      make(map[netip.AddrPort]*peer),
+		activeSlice: make([]*peer, 0),
+		edges:       make([]*peer, 0),
+		subSvc:      cfg.SubSvc,
+		logger:      cfg.Logger,
 	}
 	go func() {
 		pruneTick := time.NewTicker(network.DEACTIVATE_AFTER)
@@ -243,13 +245,13 @@ func (s *Store) ListActive(exclude *netip.AddrPort) []PeerCopy {
 	list := make([]PeerCopy, len(s.active))
 	if exclude != nil {
 		deref := *exclude
-		for i, p := range s.active {
+		for i, p := range s.activeSlice {
 			if deref != p.addrPort {
 				list[i] = copyFromPeer(p)
 			}
 		}
 	} else {
-		for i, p := range s.active {
+		for i, p := range s.activeSlice {
 			list[i] = copyFromPeer(p)
 		}
 	}
@@ -312,13 +314,13 @@ func (s *Store) TrustWeightedRandPeers(limit int, exclude *netip.AddrPort) []Pee
 func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []PeerCopy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	if len(s.active) == 0 {
+	if len(s.activeSlice) == 0 {
 		return nil
 	}
 	// Create slice of valid indices (excluding the excluded peer)
 	// TODO: consider caching this for a short time.
-	indices := make([]int, 0, len(s.active))
-	for i, p := range s.active {
+	indices := make([]int, 0, len(s.activeSlice))
+	for i, p := range s.activeSlice {
 		if exclude == nil || p.addrPort != *exclude {
 			indices = append(indices, i)
 		}
@@ -329,7 +331,7 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []PeerCopy {
 	for i := 0; i < targetCount; i++ {
 		j := i + mrand.Intn(len(indices)-i)
 		indices[i], indices[j] = indices[j], indices[i]
-		selected = append(selected, copyFromPeer(s.active[indices[i]]))
+		selected = append(selected, copyFromPeer(s.activeSlice[indices[i]]))
 	}
 	return selected
 }
@@ -337,33 +339,46 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []PeerCopy {
 // Drops/deactivates inactive peers. Inactive edges are not dropped, but deactivated.
 func (s *Store) prune() {
 	s.mu.Lock()
-	newActive := make([]*peer, 0, len(s.active))
 	dropped := make([]PeerCopy, 0)
+	now := time.Now()
 	for k, p := range s.table {
-		if p.edge { // Never drop edges, even if they go offline
-			if time.Since(p.authChallengeSolved) < network.DEACTIVATE_AFTER {
-				newActive = append(newActive, p)
+		isActive := now.Sub(p.authChallengeSolved) < network.DEACTIVATE_AFTER
+		_, alreadyActive := s.active[k]
+		if p.edge {
+			if isActive && !alreadyActive {
+				s.active[k] = p
+				s.subSvc.Publish(sub.PEER_ADDED, copyFromPeer(p))
+			} else if !isActive {
+				delete(s.active, k)
 			}
-		} else {
-			if time.Since(p.authChallengeSolved) < network.DROP_AFTER {
-				if time.Since(p.added) > network.ACTIVATE_AFTER &&
-					time.Since(p.authChallengeSolved) < network.DEACTIVATE_AFTER {
-					newActive = append(newActive, p)
-				}
-			} else {
-				dropped = append(dropped, copyFromPeer(p))
-				delete(s.table, k)
-				s.log(logger.ERROR, "dropped %s", p.addrPort)
-			}
+			continue
+		}
+		if now.Sub(p.authChallengeSolved) >= network.DROP_AFTER {
+			dropped = append(dropped, copyFromPeer(p))
+			delete(s.table, k)
+			delete(s.active, k)
+			s.log(logger.ERROR, "dropped %s", p.addrPort)
+			continue
+		}
+		shouldBeActive := isActive && now.Sub(p.added) > network.ACTIVATE_AFTER
+		if shouldBeActive && !alreadyActive {
+			s.active[k] = p
+			s.subSvc.Publish(sub.PEER_ADDED, copyFromPeer(p))
+		} else if !shouldBeActive {
+			delete(s.active, k)
 		}
 	}
-	s.active = newActive
-	//s.log(logger.DEBUG, "pruned, active: %d/%d", len(s.active), len(s.table))
+	s.activeSlice = make([]*peer, 0, len(s.active))
+	for _, p := range s.active {
+		s.activeSlice = append(s.activeSlice, p)
+	}
+	activeCount, totalCount := len(s.active), len(s.table)
 	s.mu.Unlock()
 	for _, d := range dropped {
 		s.subSvc.Publish(sub.PEER_DROPPED, d)
 	}
 	s.subSvc.Publish(sub.PEERS_PRUNED, struct{}{})
+	s.log(logger.DEBUG, "pruned, active: %d/%d", activeCount, totalCount)
 }
 
 func (s *Store) log(level logger.LogLevel, msg string, args ...any) {

@@ -168,7 +168,36 @@ func (s *Store) Read(publicKey ed25519.PublicKey, datKey string) (Entry, error) 
 	return Entry{}, errors.New("not found")
 }
 
-func (s *Store) ListWithReplicaID(id uint64) []Entry {
+func (s *Store) ListAll() <-chan Entry {
+	resultChan := make(chan Entry, 1)
+	jobs := make(chan int, len(s.shards))
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for shardIndex := range jobs {
+				shard := s.shards[shardIndex]
+				shard.mu.RLock()
+				for _, e := range shard.data {
+					resultChan <- e
+				}
+				shard.mu.RUnlock()
+			}
+		}()
+	}
+	go func() {
+		for j := 0; j < len(s.shards); j++ {
+			jobs <- j
+		}
+		close(jobs)
+		wg.Wait()
+		close(resultChan)
+	}()
+	return resultChan
+}
+
+func (s *Store) ListWithReplicaID(id uint64) <-chan Entry {
 	resultChan := make(chan Entry, 1)
 	jobs := make(chan int, len(s.shards))
 	wg := sync.WaitGroup{}
@@ -192,18 +221,14 @@ func (s *Store) ListWithReplicaID(id uint64) []Entry {
 		}()
 	}
 	go func() {
+		for j := 0; j < len(s.shards); j++ {
+			jobs <- j
+		}
+		close(jobs)
 		wg.Wait()
 		close(resultChan)
 	}()
-	for j := 0; j < len(s.shards); j++ {
-		jobs <- j
-	}
-	close(jobs)
-	results := make([]Entry, 0, 100)
-	for result := range resultChan {
-		results = append(results, result)
-	}
-	return results
+	return resultChan
 }
 
 /*
