@@ -368,8 +368,14 @@ func (d *Dave) reassignReplicas(p peer.PeerCopy) {
 				}
 				// Send entry to replicas
 				for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+					replica := sorted[i].Peer
+					if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
+						d.peers.SetStorageChallenge(replica.AddrPort, &peer.StorageChallenge{
+							PublicKey: e.Dat.PubKey, DatKey: e.Dat.Key,
+							Expires: e.Dat.Time.Add(network.TTL - time.Second)})
+					}
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-						AddrPort: sorted[i].Peer.AddrPort}
+						AddrPort: replica.AddrPort}
 				}
 				d.log(logger.ERROR, "updated replicas: %+v", e.Replicas)
 				// Update store
