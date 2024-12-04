@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/intob/godave/types"
+	"github.com/intob/godave/auth"
 )
 
 //const WEIGHTED_RELIABILITY_ALPHA = 0.5
@@ -23,7 +23,7 @@ type peer struct {
 	addrPort                   netip.AddrPort
 	added                      time.Time
 	edge                       bool
-	authChallenge              types.AuthChallenge
+	authChallenge              auth.AuthChallenge
 	publicKey                  ed25519.PublicKey
 	authChallengeSolved        time.Time
 	storageChallenge           *StorageChallenge

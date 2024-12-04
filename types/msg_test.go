@@ -9,6 +9,10 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/intob/godave/auth"
+	"github.com/intob/godave/dat"
+	"github.com/intob/godave/network"
 )
 
 func TestParseAddrs(t *testing.T) {
@@ -95,11 +99,11 @@ func TestParseAddrs(t *testing.T) {
 func TestPongMessageMarshalUnmarshal(t *testing.T) {
 	// Setup test data
 	pubKey, _, _ := ed25519.GenerateKey(nil)
-	solution := &AuthSolution{
-		Challenge: AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
-		Salt:      Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+	solution := &auth.AuthSolution{
+		Challenge: auth.AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
+		Salt:      auth.Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		PublicKey: pubKey,
-		Signature: Signature{},
+		Signature: auth.Signature{},
 	}
 
 	addr1 := netip.MustParseAddrPort("[2001:db8::1]:8080")
@@ -189,11 +193,11 @@ func TestParseAddrs2(t *testing.T) {
 
 func TestPongMessageEdgeCases(t *testing.T) {
 	pubKey, _, _ := ed25519.GenerateKey(nil)
-	solution := &AuthSolution{
-		Challenge: AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
-		Salt:      Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+	solution := &auth.AuthSolution{
+		Challenge: auth.AuthChallenge{1, 2, 3, 4, 5, 6, 7, 8},
+		Salt:      auth.Salt{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
 		PublicKey: pubKey,
-		Signature: Signature{},
+		Signature: auth.Signature{},
 	}
 
 	tests := []struct {
@@ -286,7 +290,7 @@ func BenchmarkMarshalUnmarshalDatMsg(b *testing.B) {
 	}
 	msg := &Msg{
 		Op: OP_PUT,
-		Dat: &Dat{
+		Dat: &dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now(),
@@ -296,7 +300,7 @@ func BenchmarkMarshalUnmarshalDatMsg(b *testing.B) {
 	rand.Read(msg.Dat.Salt[:])
 	rand.Read(msg.Dat.Work[:])
 	rand.Read(msg.Dat.Sig[:])
-	buf := make([]byte, MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -313,7 +317,7 @@ func BenchmarkDatMsgMarshal(b *testing.B) {
 	}
 	msg := &Msg{
 		Op: OP_PUT,
-		Dat: &Dat{
+		Dat: &dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now(),
@@ -323,7 +327,7 @@ func BenchmarkDatMsgMarshal(b *testing.B) {
 	rand.Read(msg.Dat.Salt[:])
 	rand.Read(msg.Dat.Work[:])
 	rand.Read(msg.Dat.Sig[:])
-	buf := make([]byte, MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -338,7 +342,7 @@ func BenchmarkDatMsgUnmarshal(b *testing.B) {
 	}
 	msg := &Msg{
 		Op: OP_PUT,
-		Dat: &Dat{
+		Dat: &dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now(),
@@ -348,7 +352,7 @@ func BenchmarkDatMsgUnmarshal(b *testing.B) {
 	rand.Read(msg.Dat.Salt[:])
 	rand.Read(msg.Dat.Work[:])
 	rand.Read(msg.Dat.Sig[:])
-	buf := make([]byte, MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	n, _ := msg.Marshal(buf)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -436,7 +440,7 @@ func TestMarshalUnmarshalGetMsg(t *testing.T) {
 
 func TestMarshalUnmarshalGetAckMsgNilDat(t *testing.T) {
 	msg := &Msg{Op: OP_GET_ACK}
-	buf := make([]byte, 1+2+DatHeaderSize)
+	buf := make([]byte, 1+2+dat.DAT_HEADER_SIZE)
 	_, err := msg.Marshal(buf)
 	if err == nil {
 		t.Fatal("should error, as dat is nil")
@@ -444,8 +448,8 @@ func TestMarshalUnmarshalGetAckMsgNilDat(t *testing.T) {
 }
 
 func TestMarshalUnmarshalyGetAckMsgEmptyDat(t *testing.T) {
-	msg := &Msg{Op: OP_GET_ACK, Dat: &Dat{}}
-	buf := make([]byte, 1+2+DatHeaderSize)
+	msg := &Msg{Op: OP_GET_ACK, Dat: &dat.Dat{}}
+	buf := make([]byte, 1+2+dat.DAT_HEADER_SIZE)
 	_, err := msg.Marshal(buf)
 	if err != nil {
 		t.Fatal(err)

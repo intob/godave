@@ -1,121 +1,35 @@
 package types
 
 import (
-	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"net/netip"
+
+	"github.com/intob/godave/auth"
+	"github.com/intob/godave/dat"
 )
 
 const (
-	// Max packet size, 1500 MTU is typical, prevents packet fragmentation
-	MaxMsgLen            = 1424
 	OP_PING              = Op(0)
 	OP_PONG              = Op(1)
 	OP_PUT               = Op(2)
-	OP_GET               = Op(3)
-	OP_GET_ACK           = Op(4)
-	OP_GETMYADDRPORT     = Op(5)
-	OP_GETMYADDRPORT_ACK = Op(6)
+	OP_PUT_ACK           = Op(3)
+	OP_GET               = Op(4)
+	OP_GET_ACK           = Op(5)
+	OP_GETMYADDRPORT     = Op(6)
+	OP_GETMYADDRPORT_ACK = Op(7)
 	lenAddrPort          = 18
 )
 
 type Op byte
-type AuthChallenge [8]byte
-type Hash [32]byte
-type Salt [16]byte
-type Signature [64]byte
-
-type AuthSolution struct {
-	Challenge AuthChallenge
-	// Salting the challenge prevents a "chosen-text" attack
-	Salt      Salt
-	PublicKey ed25519.PublicKey
-	Signature Signature
-}
-
-func (sol AuthSolution) Marshal(buf []byte) (int, error) {
-	n := copy(buf, sol.Challenge[:])     // 8
-	n += copy(buf[n:], sol.Salt[:])      // 16
-	n += copy(buf[n:], sol.PublicKey)    // 32
-	n += copy(buf[n:], sol.Signature[:]) // 64
-	if n != 8+16+32+64 {
-		return 0, errors.New("copy failed")
-	}
-	return n, nil
-}
-
-func (sol *AuthSolution) Unmarshal(buf []byte) error {
-	if len(buf) != 8+16+32+64 {
-		return errors.New("invalid buffer length")
-	}
-	n := copy(sol.Challenge[:], buf)
-	n += copy(sol.Salt[:], buf[n:])
-	sol.PublicKey = make([]byte, 32)
-	n += copy(sol.PublicKey, buf[n:])
-	copy(sol.Signature[:], buf[n:])
-	return nil
-}
-
-type Get struct {
-	PublicKey ed25519.PublicKey
-	DatKey    string
-}
-
-func (g Get) Marshal(buf []byte) (int, error) {
-	if len(buf) < 32+1+len(g.DatKey) {
-		return 0, errors.New("buffer too small")
-	}
-	copy(buf, g.PublicKey)
-	buf[32] = byte(len(g.DatKey))
-	copy(buf[33:], g.DatKey)
-	return 32 + 1 + len(g.DatKey), nil
-}
-
-func (g *Get) Unmarshal(buf []byte) error {
-	if len(buf) < 32+1 {
-		return errors.New("buffer too small")
-	}
-	g.PublicKey = make([]byte, 32)
-	copy(g.PublicKey, buf[:32])
-	keyLen := int(buf[32])
-	if len(buf) < 32+1+keyLen {
-		return errors.New("buffer too small for dat key")
-	}
-	g.DatKey = string(buf[33 : 33+keyLen])
-	return nil
-}
-
-type Status struct {
-	UsedSpace int64
-	Capacity  int64
-}
-
-func (s Status) Marshal(buf []byte) (int, error) {
-	if len(buf) < 16 {
-		return 0, errors.New("buffer too small")
-	}
-	binary.LittleEndian.PutUint64(buf[:8], uint64(s.UsedSpace))
-	binary.LittleEndian.PutUint64(buf[8:], uint64(s.Capacity))
-	return 16, nil
-}
-
-func (s *Status) Unmarshal(buf []byte) error {
-	if len(buf) < 16 {
-		return errors.New("buffer too small")
-	}
-	s.UsedSpace = int64(binary.LittleEndian.Uint64(buf[:8]))
-	s.Capacity = int64(binary.LittleEndian.Uint64(buf[8:16]))
-	return nil
-}
 
 type Msg struct {
 	Op            Op
 	AddrPorts     []netip.AddrPort
-	AuthChallenge AuthChallenge
-	AuthSolution  *AuthSolution
-	Dat           *Dat
+	AuthChallenge auth.AuthChallenge
+	AuthSolution  *auth.AuthSolution
+	Dat           *dat.Dat
 	Get           *Get
 	Status        *Status
 }
@@ -127,7 +41,7 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 		if len(buf) < 1+8+16 {
 			return errors.New("buffer too small")
 		}
-		msg.AuthChallenge = AuthChallenge(buf[1:9])
+		msg.AuthChallenge = auth.AuthChallenge(buf[1:9])
 		msg.Status = &Status{}
 		return msg.Status.Unmarshal(buf[9:])
 	case OP_PONG:
@@ -139,7 +53,7 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 				return fmt.Errorf("failed to parse addrports: %w", err)
 			}
 		}
-		msg.AuthSolution = &AuthSolution{}
+		msg.AuthSolution = &auth.AuthSolution{}
 		return msg.AuthSolution.Unmarshal(buf[2+lenAddrs:])
 	case OP_PUT:
 		return msg.unmarshalDat(buf[1:])
@@ -169,7 +83,7 @@ func (msg *Msg) unmarshalDat(buf []byte) error {
 	if int(lenDat) > len(buf)-2 {
 		return errors.New("dat len prefix value is too large")
 	}
-	msg.Dat = &Dat{}
+	msg.Dat = &dat.Dat{}
 	err := msg.Dat.Unmarshal(buf[2:])
 	return err
 }

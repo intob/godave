@@ -13,13 +13,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/cespare/xxhash/v2"
+	"github.com/intob/godave/dat"
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/peer"
-	"github.com/intob/godave/pow"
-	"github.com/intob/godave/types"
 	"lukechampine.com/blake3"
 )
 
@@ -27,19 +26,17 @@ type Store struct {
 	myID           uint64
 	shards         [256]*shard
 	backupFilename string
-	backup         chan *types.Dat
+	backup         chan *dat.Dat
 	kill           <-chan struct{}
 	done           chan<- struct{}
 	capacity       int64
 	usedSpace      atomic.Int64
-	ttl            time.Duration
 	logger         logger.Logger
 }
 
 type StoreCfg struct {
 	MyID           uint64
 	Capacity       int64
-	TTL            time.Duration
 	BackupFilename string
 	Kill           <-chan struct{}
 	Done           chan<- struct{}
@@ -48,14 +45,13 @@ type StoreCfg struct {
 
 type shard struct {
 	mu   sync.RWMutex
-	data map[uint64]types.Dat
+	data map[uint64]dat.Dat
 	heap *priorityHeap
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
 		myID:           cfg.MyID,
-		ttl:            cfg.TTL,
 		capacity:       cfg.Capacity,
 		usedSpace:      atomic.Int64{},
 		backupFilename: cfg.BackupFilename,
@@ -65,12 +61,12 @@ func NewStore(cfg *StoreCfg) *Store {
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{
-			data: make(map[uint64]types.Dat),
+			data: make(map[uint64]dat.Dat),
 			heap: newPriorityHeap(),
 		}
 	}
 	if s.backupFilename != "" {
-		s.backup = make(chan *types.Dat, 1000)
+		s.backup = make(chan *dat.Dat, 1000)
 		go s.writeBackup()
 	} else {
 		close(s.done)
@@ -99,11 +95,11 @@ func (s *Store) Used() int64 {
 	return s.usedSpace.Load()
 }
 
-func (s *Store) Write(dat *types.Dat) error {
+func (s *Store) Write(dat *dat.Dat) error {
 	return s.write(dat, true)
 }
 
-func (s *Store) write(dat *types.Dat, backup bool) error {
+func (s *Store) write(dat *dat.Dat, backup bool) error {
 	if dat == nil {
 		return errors.New("nil dat provided")
 	}
@@ -114,7 +110,7 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	newEntry := &entry{
 		key:      key,
 		distance: peer.IDFromPublicKey(dat.PubKey) ^ s.myID,
-		expires:  dat.Time.Add(s.ttl),
+		expires:  dat.Time.Add(network.TTL),
 	}
 	// Check if updating an existing entry
 	existing, exists := shard.data[key]
@@ -162,7 +158,7 @@ func (s *Store) write(dat *types.Dat, backup bool) error {
 	return nil
 }
 
-func (s *Store) Read(pubKey ed25519.PublicKey, datKey string) (types.Dat, error) {
+func (s *Store) Read(pubKey ed25519.PublicKey, datKey string) (dat.Dat, error) {
 	shardIndex, key := keys(pubKey, datKey)
 	shard := s.shards[shardIndex]
 	shard.mu.RLock()
@@ -170,11 +166,11 @@ func (s *Store) Read(pubKey ed25519.PublicKey, datKey string) (types.Dat, error)
 	if data, exists := shard.data[key]; exists {
 		return data, nil
 	}
-	return types.Dat{}, errors.New("not found")
+	return dat.Dat{}, errors.New("not found")
 }
 
-func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []types.Dat {
-	resultChan := make(chan types.Dat, 1)
+func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []dat.Dat {
+	resultChan := make(chan dat.Dat, 1)
 	jobs := make(chan int, len(s.shards))
 	wg := sync.WaitGroup{}
 	for i := 0; i < runtime.NumCPU(); i++ {
@@ -205,7 +201,7 @@ func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []types.Dat 
 		jobs <- j
 	}
 	close(jobs)
-	results := make([]types.Dat, 0, 100)
+	results := make([]dat.Dat, 0, 100)
 	for result := range resultChan {
 		results = append(results, result)
 	}
@@ -225,7 +221,7 @@ func (s *Store) readBackup() error {
 	size := info.Size()
 	var pos int64
 	lb := make([]byte, 2)
-	hasher := blake3.New(32, nil)
+	h := blake3.New(32, nil)
 	for pos < size {
 		n, err := f.Read(lb)
 		pos += int64(n)
@@ -238,21 +234,17 @@ func (s *Store) readBackup() error {
 		if err != nil {
 			return fmt.Errorf("err reading length-prefixed msg: %w", err)
 		}
-		dat := &types.Dat{}
-		err = dat.Unmarshal(datbuf)
+		d := &dat.Dat{}
+		err = d.Unmarshal(datbuf)
 		if err != nil {
 			return fmt.Errorf("err unmarshalling dat: %w", err)
 		}
-		err = pow.Check(hasher, dat)
+		h.Reset()
+		err = d.Verify(h)
 		if err != nil {
-			s.log(logger.ERROR, "read backup skipped dat: invalid checksum")
-			continue
+			return fmt.Errorf("err verifying dat: %w", err)
 		}
-		if !ed25519.Verify(dat.PubKey, dat.Work[:], dat.Sig[:]) {
-			s.log(logger.ERROR, "read backup skipped dat: invalid signature")
-			continue
-		}
-		s.write(dat, false)
+		s.write(d, false)
 	}
 	return nil
 }
@@ -269,7 +261,7 @@ func (s *Store) writeFreshBackup() error {
 	for _, shard := range s.shards {
 		shard.mu.Lock()
 		for _, d := range shard.data {
-			bin := make([]byte, types.MaxMsgLen)
+			bin := make([]byte, network.MAX_MSG_LEN)
 			n, err := d.Marshal(bin)
 			if err != nil {
 				return err
@@ -300,7 +292,7 @@ func (s *Store) writeBackup() {
 			close(s.done)
 			return
 		case d := <-s.backup:
-			buf := make([]byte, types.MaxMsgLen)
+			buf := make([]byte, network.MAX_MSG_LEN)
 			n, err := d.Marshal(buf)
 			if err != nil {
 				s.log(logger.ERROR, "backup failed to marshal: %s", err)
@@ -328,6 +320,6 @@ func keys(pubKey ed25519.PublicKey, datKey string) (uint8, uint64) {
 	return uint8(sum64 >> 56), sum64
 }
 
-func calculateEntrySize(dat *types.Dat) int64 {
-	return int64(len(dat.Val) + len(dat.Key) + types.DatInMemorySize)
+func calculateEntrySize(d *dat.Dat) int64 {
+	return int64(len(d.Val) + len(d.Key) + dat.DAT_IN_MEMORY_SIZE)
 }

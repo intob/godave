@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/intob/godave/dat"
 	"github.com/intob/godave/peer"
-	"github.com/intob/godave/types"
 )
 
 const (
@@ -22,7 +22,6 @@ func TestStoreWriteAndRead(t *testing.T) {
 	store := NewStore(&StoreCfg{
 		MyID:     1,
 		Capacity: 1024 * 1024, // 1MB
-		TTL:      time.Hour,
 		Kill:     make(chan struct{}),
 		Done:     make(chan struct{}),
 	})
@@ -30,7 +29,7 @@ func TestStoreWriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to generate key pair: %v", err)
 	}
-	testData := &types.Dat{
+	testData := &dat.Dat{
 		PubKey: pub,
 		Key:    "test-key",
 		Val:    []byte("test-value"),
@@ -59,7 +58,6 @@ func TestStorePriorityReplacement(t *testing.T) {
 	store := NewStore(&StoreCfg{
 		MyID:     myID,
 		Capacity: 400,
-		TTL:      2 * time.Hour,
 		Kill:     make(chan struct{}),
 		Done:     make(chan struct{}),
 	})
@@ -92,7 +90,7 @@ func TestStorePriorityReplacement(t *testing.T) {
 		farPub = pubA
 	}
 	// Create data from a "far" peer
-	farData := &types.Dat{
+	farData := &dat.Dat{
 		PubKey: farPub,
 		Key:    dataKey,
 		Val:    []byte("far-peer-data"),
@@ -112,7 +110,7 @@ func TestStorePriorityReplacement(t *testing.T) {
 		t.Errorf("got %s, want far-peer-data", string(result.Val))
 	}
 	// Create data from a "closer" peer with same key
-	closeData := &types.Dat{
+	closeData := &dat.Dat{
 		PubKey: closePub,
 		Key:    dataKey,
 		Val:    []byte("close-peer-data"),
@@ -142,7 +140,6 @@ func TestConcurrentPut(t *testing.T) {
 	pubKey, _, _ := ed25519.GenerateKey(nil)
 	store := NewStore(&StoreCfg{
 		MyID:     peer.IDFromPublicKey(pubKey),
-		TTL:      time.Minute,
 		Done:     make(chan<- struct{}),
 		Capacity: CAPACITY,
 	})
@@ -152,7 +149,7 @@ func TestConcurrentPut(t *testing.T) {
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Write(&types.Dat{
+				store.Write(&dat.Dat{
 					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
@@ -176,7 +173,6 @@ func TestList(t *testing.T) {
 	pubKey, _, _ := ed25519.GenerateKey(nil)
 	store := NewStore(&StoreCfg{
 		MyID:     peer.IDFromPublicKey(pubKey),
-		TTL:      time.Minute,
 		Done:     make(chan<- struct{}),
 		Capacity: CAPACITY,
 	})
@@ -186,7 +182,7 @@ func TestList(t *testing.T) {
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Write(&types.Dat{
+				store.Write(&dat.Dat{
 					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
@@ -209,14 +205,13 @@ func TestStorePrune(t *testing.T) {
 	}
 	store := NewStore(&StoreCfg{
 		MyID:     peer.IDFromPublicKey(storePubKey),
-		TTL:      time.Minute,
 		Done:     make(chan<- struct{}),
 		Capacity: CAPACITY,
 	})
 	// Create dats with zero distance (same as store public key)
-	zeroDats := make([]types.Dat, 5)
+	zeroDats := make([]dat.Dat, 5)
 	for i := range zeroDats {
-		zeroDats[i] = types.Dat{
+		zeroDats[i] = dat.Dat{
 			Key:    fmt.Sprintf("zero_%d", i),
 			Val:    []byte("zero_value"),
 			Time:   time.Now(),
@@ -241,7 +236,7 @@ func TestStorePrune(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				err = store.Write(&types.Dat{
+				err = store.Write(&dat.Dat{
 					Key:    fmt.Sprintf("routine_%d_random_%d", i, j),
 					Val:    []byte("random_value"),
 					Time:   time.Now(),

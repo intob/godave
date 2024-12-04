@@ -1,6 +1,6 @@
 package sub
 
 const (
-	TopicRecvGetAck  = "RECV_GET_ACK"
-	TopicPeersPruned = "PEERS_PRUNED"
+	RECV_GET_ACK = "RECV_GET_ACK"
+	PEERS_PRUNED = "PEERS_PRUNED"
 )

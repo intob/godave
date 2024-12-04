@@ -1,18 +1,19 @@
-package pow
+package dat
 
 import (
 	"testing"
-	"time"
 )
 
 func BenchmarkWork(b *testing.B) {
+	sig := Signature{}
 	for i := 0; i < b.N; i++ {
-		doWorkSingleCore("test", []byte("val"), time.Time{}, 10)
+		doWorkSingleCore(sig, 12)
 	}
 }
 
 func BenchmarkWorkAllCores(b *testing.B) {
+	sig := Signature{}
 	for i := 0; i < b.N; i++ {
-		doWorkAllCores("test", []byte("val"), time.Time{}, 10)
+		doWorkAllCores(sig, 12)
 	}
 }

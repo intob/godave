@@ -1,4 +1,4 @@
-package types
+package dat
 
 import (
 	"crypto/ed25519"
@@ -6,18 +6,23 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/intob/godave/network"
+	"lukechampine.com/blake3"
 )
 
 const (
-	DatInMemorySize = 200
-	DatHeaderSize   = 8 + 16 + 32 + 64 + 32 + 1 + 2
-	DatMaxKVLen     = MaxMsgLen - DatHeaderSize
+	DAT_IN_MEMORY_SIZE = 200
+	DAT_HEADER_SIZE    = 8 + 16 + 32 + 64 + 32 + 1 + 2
+	maxKVLen           = network.MAX_MSG_LEN - DAT_HEADER_SIZE
 )
+
+type Signature [64]byte
 
 type Dat struct {
 	Time   time.Time
 	Salt   Salt
-	Work   Hash
+	Work   Work
 	Sig    Signature
 	PubKey ed25519.PublicKey
 	Key    string
@@ -31,13 +36,13 @@ func (dat Dat) Marshal(buf []byte) (int, error) {
 	if lenKey > 255 {
 		return 0, errors.New("key must be no longer than 255 bytes")
 	}
-	totalNeeded := DatHeaderSize + lenKey + lenVal
+	totalNeeded := DAT_HEADER_SIZE + lenKey + lenVal
 	if len(buf) < totalNeeded {
 		return 0, errors.New("buffer too small")
 	}
 
-	if lenKey+lenVal > DatMaxKVLen {
-		return 0, fmt.Errorf("length of key+val must be no greater than %d bytes", DatMaxKVLen)
+	if lenKey+lenVal > maxKVLen {
+		return 0, fmt.Errorf("length of key+val must be no greater than %d bytes", maxKVLen)
 	}
 	// Copy fixed-length fields
 	n := copy(buf[0:], Ttb(dat.Time)) // 8
@@ -58,7 +63,7 @@ func (dat Dat) Marshal(buf []byte) (int, error) {
 
 func (dat *Dat) Unmarshal(buf []byte) error {
 	// Minimum size check for fixed fields
-	if len(buf) < DatHeaderSize {
+	if len(buf) < DAT_HEADER_SIZE {
 		return errors.New("buffer too small for fixed fields")
 	}
 
@@ -93,7 +98,7 @@ func (dat *Dat) Unmarshal(buf []byte) error {
 	if len(buf) < n+valLen {
 		return errors.New("buffer too small for value")
 	}
-	if keyLen+valLen > DatMaxKVLen {
+	if keyLen+valLen > maxKVLen {
 		return errors.New("total length exceeds maximum")
 	}
 
@@ -101,6 +106,41 @@ func (dat *Dat) Unmarshal(buf []byte) error {
 	dat.Val = make([]byte, valLen)
 	copy(dat.Val, buf[n:])
 
+	return nil
+}
+
+func (d *Dat) Sign(privKey ed25519.PrivateKey) {
+	h := blake3.New(32, nil)
+	h.Write([]byte(d.Key))
+	h.Write(d.Val)
+	h.Write(Ttb(d.Time))
+	sum := h.Sum(nil)
+	d.Sig = Signature(ed25519.Sign(privKey, sum))
+}
+
+// Verify verifies the time, proof-of-work, and signature.
+func (d *Dat) Verify(h *blake3.Hasher) error {
+	if d.Time.After(time.Now()) {
+		return errors.New("time is invalid")
+	}
+	if len(d.PubKey) != ed25519.PublicKeySize {
+		return errors.New("pub key must be 32 bytes")
+	}
+	if Nzerobit(d.Work) < network.MIN_WORK {
+		return errors.New("work is insufficient")
+	}
+	err := CheckWork(h, d.Sig, d.Salt, d.Work)
+	if err != nil {
+		return fmt.Errorf("work invalid: %w", err)
+	}
+	h.Reset()
+	h.Write([]byte(d.Key))
+	h.Write(d.Val)
+	h.Write(Ttb(d.Time))
+	sum := h.Sum(nil)
+	if !ed25519.Verify(d.PubKey, sum, d.Sig[:]) {
+		return errors.New("signature invalid")
+	}
 	return nil
 }
 

@@ -9,50 +9,38 @@ import (
 	"sync"
 	"time"
 
+	"github.com/intob/godave/auth"
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/sub"
-	"github.com/intob/godave/types"
 )
 
 var ErrPeerNotFound = errors.New("peer not found")
 
 type StoreCfg struct {
-	Probe           int           // Inverse of probability that an untrusted peer is chosen
-	ActivateAfter   time.Duration // Time until new peers are candidates for selection
-	DeactivateAfter time.Duration // Time until unresponsive peers are deactivated
-	DropAfter       time.Duration // Time until unresponsive peers are dropped
-	PruneEvery      time.Duration
-	SubSvc          *sub.SubscriptionService
-	Logger          logger.Logger
+	SubSvc *sub.SubscriptionService
+	Logger logger.Logger
 }
 
 type Store struct {
-	mu              sync.RWMutex
-	table           map[netip.AddrPort]*peer
-	active          []*peer // Sorted by trust descending
-	edges           []*peer
-	probe           int
-	activateAfter   time.Duration
-	deactivateAfter time.Duration
-	dropAfter       time.Duration
-	subSvc          *sub.SubscriptionService
-	logger          logger.Logger
+	mu     sync.RWMutex
+	table  map[netip.AddrPort]*peer
+	active []*peer // Sorted by trust descending
+	edges  []*peer
+	subSvc *sub.SubscriptionService
+	logger logger.Logger
 }
 
 func NewStore(cfg *StoreCfg) *Store {
 	s := &Store{
-		table:           make(map[netip.AddrPort]*peer),
-		active:          make([]*peer, 0),
-		edges:           make([]*peer, 0),
-		probe:           cfg.Probe,
-		activateAfter:   cfg.ActivateAfter,
-		deactivateAfter: cfg.DeactivateAfter,
-		dropAfter:       cfg.DropAfter,
-		subSvc:          cfg.SubSvc,
-		logger:          cfg.Logger,
+		table:  make(map[netip.AddrPort]*peer),
+		active: make([]*peer, 0),
+		edges:  make([]*peer, 0),
+		subSvc: cfg.SubSvc,
+		logger: cfg.Logger,
 	}
 	go func() {
-		pruneTick := time.NewTicker(cfg.PruneEvery)
+		pruneTick := time.NewTicker(network.DEACTIVATE_AFTER)
 		for range pruneTick.C {
 			s.prune()
 		}
@@ -111,36 +99,36 @@ func (s *Store) TotalUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
 	return usedSpace, capacity
 }
 
-func (s *Store) CreateAuthChallenge(addrPort netip.AddrPort) (types.AuthChallenge, error) {
+func (s *Store) CreateAuthChallenge(addrPort netip.AddrPort) (auth.AuthChallenge, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
-		return types.AuthChallenge{}, ErrPeerNotFound
+		return auth.AuthChallenge{}, ErrPeerNotFound
 	}
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
 	_, err := rand.Read(peer.authChallenge[:])
 	if err != nil {
-		return types.AuthChallenge{}, err
+		return auth.AuthChallenge{}, err
 	}
 	return peer.authChallenge, nil
 }
 
-func (s *Store) CurrentAuthChallengeAndPubKey(addrPort netip.AddrPort) (types.AuthChallenge, ed25519.PublicKey, error) {
+func (s *Store) CurrentAuthChallengeAndPubKey(addrPort netip.AddrPort) (auth.AuthChallenge, ed25519.PublicKey, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	peer, exists := s.table[addrPort]
 	if !exists {
-		return types.AuthChallenge{}, nil, ErrPeerNotFound
+		return auth.AuthChallenge{}, nil, ErrPeerNotFound
 	}
 	peer.mu.Lock()
 	defer peer.mu.Unlock()
-	if peer.authChallenge == (types.AuthChallenge{}) {
-		return types.AuthChallenge{}, nil, errors.New("challenge is empty")
+	if peer.authChallenge == (auth.AuthChallenge{}) {
+		return auth.AuthChallenge{}, nil, errors.New("challenge is empty")
 	}
 	currentChallenge := peer.authChallenge
-	peer.authChallenge = types.AuthChallenge{}
+	peer.authChallenge = auth.AuthChallenge{}
 	return currentChallenge, peer.publicKey, nil
 }
 
@@ -353,13 +341,13 @@ func (s *Store) prune() {
 	newActive := make([]*peer, 0, len(s.active))
 	for k, p := range s.table {
 		if p.edge { // Never drop edges, even if they go offline
-			if time.Since(p.authChallengeSolved) < s.deactivateAfter {
+			if time.Since(p.authChallengeSolved) < network.DEACTIVATE_AFTER {
 				newActive = append(newActive, p)
 			}
 		} else {
-			if time.Since(p.authChallengeSolved) < s.dropAfter {
-				if time.Since(p.added) > s.activateAfter &&
-					time.Since(p.authChallengeSolved) < s.deactivateAfter {
+			if time.Since(p.authChallengeSolved) < network.DROP_AFTER {
+				if time.Since(p.added) > network.ACTIVATE_AFTER &&
+					time.Since(p.authChallengeSolved) < network.DEACTIVATE_AFTER {
 					newActive = append(newActive, p)
 				}
 			} else {
@@ -370,7 +358,7 @@ func (s *Store) prune() {
 	}
 	s.active = newActive
 	s.log(logger.DEBUG, "pruned, active: %d/%d", len(s.active), len(s.table))
-	s.subSvc.Publish(sub.TopicPeersPruned, struct{}{})
+	s.subSvc.Publish(sub.PEERS_PRUNED, struct{}{})
 }
 
 func (s *Store) log(level logger.LogLevel, msg string, args ...any) {

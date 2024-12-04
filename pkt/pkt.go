@@ -4,6 +4,7 @@ import (
 	"net/netip"
 
 	"github.com/intob/godave/logger"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/types"
 )
 
@@ -61,7 +62,7 @@ func (pp *PacketProcessor) MyAddrPortChan() chan<- netip.AddrPort { return pp.my
 
 func (pp *PacketProcessor) readFromSocket(socket Socket) {
 	var myAddrPort netip.AddrPort
-	buf := make([]byte, types.MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	for {
 		select {
 		case newAddrPort := <-pp.myAddrPort:
@@ -87,7 +88,7 @@ func (pp *PacketProcessor) readFromSocket(socket Socket) {
 }
 
 func (pp *PacketProcessor) writeToSocket(socket Socket) {
-	buf := make([]byte, types.MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	for pkt := range pp.packetsOut {
 		buf = buf[:cap(buf)]
 		n, err := pkt.Msg.Marshal(buf)

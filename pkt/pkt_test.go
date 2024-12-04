@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/intob/godave/dat"
 	"github.com/intob/godave/logger"
-	"github.com/intob/godave/pow"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/types"
 )
 
@@ -23,15 +24,15 @@ func buildMockPacket(buf []byte) (int, error) {
 	}
 	msg := &types.Msg{
 		Op: types.OP_PUT,
-		Dat: &types.Dat{
+		Dat: &dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now().Add(-50 * time.Millisecond),
 			PubKey: pubKey,
 		},
 	}
-	msg.Dat.Work, msg.Dat.Salt = pow.DoWork(msg.Dat.Key, msg.Dat.Val, msg.Dat.Time, 16)
-	msg.Dat.Sig = types.Signature(ed25519.Sign(privKey, msg.Dat.Work[:]))
+	msg.Dat.Sign(privKey)
+	msg.Dat.Work, msg.Dat.Salt = dat.DoWork(msg.Dat.Sig, 16)
 	return msg.Marshal(buf)
 }
 
@@ -44,7 +45,7 @@ func (m *mockReader) WriteToUDPAddrPort(b []byte, addrPort netip.AddrPort) (n in
 }
 
 func BenchmarkProcessor(b *testing.B) {
-	buf := make([]byte, types.MaxMsgLen)
+	buf := make([]byte, network.MAX_MSG_LEN)
 	n, err := buildMockPacket(buf)
 	if err != nil {
 		b.Error(err)
