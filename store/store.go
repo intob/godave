@@ -10,12 +10,10 @@ import (
 	"fmt"
 	"os"
 	"runtime"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/intob/godave/dat"
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/network"
 	"github.com/intob/godave/peer"
@@ -26,7 +24,7 @@ type Store struct {
 	myID           uint64
 	shards         [256]*shard
 	backupFilename string
-	backup         chan *dat.Dat
+	backup         chan *Entry
 	kill           <-chan struct{}
 	done           chan<- struct{}
 	capacity       int64
@@ -45,7 +43,7 @@ type StoreCfg struct {
 
 type shard struct {
 	mu   sync.RWMutex
-	data map[uint64]dat.Dat
+	data map[uint64]Entry
 	heap *priorityHeap
 }
 
@@ -61,12 +59,12 @@ func NewStore(cfg *StoreCfg) *Store {
 	}
 	for i := range s.shards {
 		s.shards[i] = &shard{
-			data: make(map[uint64]dat.Dat),
+			data: make(map[uint64]Entry),
 			heap: newPriorityHeap(),
 		}
 	}
 	if s.backupFilename != "" {
-		s.backup = make(chan *dat.Dat, 1000)
+		s.backup = make(chan *Entry, 1000)
 		go s.writeBackup()
 	} else {
 		close(s.done)
@@ -95,43 +93,44 @@ func (s *Store) Used() int64 {
 	return s.usedSpace.Load()
 }
 
-func (s *Store) Write(dat *dat.Dat) error {
-	return s.write(dat, true)
+func (s *Store) Write(e *Entry) error {
+	return s.write(e, true)
 }
 
-func (s *Store) write(dat *dat.Dat, backup bool) error {
-	if dat == nil {
+func (s *Store) write(e *Entry, backup bool) error {
+	if e == nil {
 		return errors.New("nil dat provided")
 	}
-	shardIndex, key := keys(dat.PubKey, dat.Key)
+	shardIndex, key := keys(e.Dat.PubKey, e.Dat.Key)
 	shard := s.shards[shardIndex]
 	shard.mu.Lock()
 	defer shard.mu.Unlock()
-	newEntry := &entry{
+	newEntry := &heapEntry{
 		key:      key,
-		distance: peer.IDFromPublicKey(dat.PubKey) ^ s.myID,
-		expires:  dat.Time.Add(network.TTL),
+		distance: peer.IDFromPublicKey(e.Dat.PubKey) ^ s.myID,
+		expires:  e.Dat.Time.Add(network.TTL),
 	}
 	// Check if updating an existing entry
 	existing, exists := shard.data[key]
 	if exists {
-		if !existing.PubKey.Equal(dat.PubKey) {
+		if !existing.Dat.PubKey.Equal(e.Dat.PubKey) {
 			return errors.New("public keys don't match")
 		}
-		if existing.Time.After(dat.Time) {
+		if existing.Dat.Time.After(e.Dat.Time) {
 			return errors.New("existing data is newer")
 		}
-		if existing.Time == dat.Time && bytes.Equal(existing.Val, dat.Val) {
+		if existing.Dat.Time == e.Dat.Time && bytes.Equal(existing.Dat.Val, e.Dat.Val) &&
+			existing.Replicas == e.Replicas {
 			return errors.New("existing data matches new data")
 		}
 	}
 	// If at capacity and no existing entry, try to make space
-	newEntrySize := calculateEntrySize(dat)
+	newEntrySize := calculateEntrySize(e)
 	if !exists && s.usedSpace.Load()+newEntrySize > s.capacity {
 		if shard.heap.Len() > 0 {
 			lowest := shard.heap.Peek()
 			if lowest.priority() < newEntry.priority() {
-				removed := heap.Pop(shard.heap).(*entry)
+				removed := heap.Pop(shard.heap).(*heapEntry)
 				removedDat := shard.data[removed.key]
 				delete(shard.data, removed.key)
 				s.usedSpace.Add(-calculateEntrySize(&removedDat))
@@ -148,27 +147,66 @@ func (s *Store) write(dat *dat.Dat, backup bool) error {
 		oldSize := calculateEntrySize(&existing)
 		s.usedSpace.Add(newEntrySize - oldSize)
 	} else {
-		s.usedSpace.Add(calculateEntrySize(dat))
+		s.usedSpace.Add(calculateEntrySize(e))
 	}
-	shard.data[key] = *dat
+	shard.data[key] = *e
 	heap.Push(shard.heap, newEntry)
 	if backup && s.backupFilename != "" {
-		s.backup <- dat
+		s.backup <- e
 	}
 	return nil
 }
 
-func (s *Store) Read(pubKey ed25519.PublicKey, datKey string) (dat.Dat, error) {
-	shardIndex, key := keys(pubKey, datKey)
+func (s *Store) Read(publicKey ed25519.PublicKey, datKey string) (Entry, error) {
+	shardIndex, key := keys(publicKey, datKey)
 	shard := s.shards[shardIndex]
 	shard.mu.RLock()
 	defer shard.mu.RUnlock()
 	if data, exists := shard.data[key]; exists {
 		return data, nil
 	}
-	return dat.Dat{}, errors.New("not found")
+	return Entry{}, errors.New("not found")
 }
 
+func (s *Store) ListWithReplicaID(id uint64) []Entry {
+	resultChan := make(chan Entry, 1)
+	jobs := make(chan int, len(s.shards))
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for shardIndex := range jobs {
+				shard := s.shards[shardIndex]
+				shard.mu.RLock()
+				for _, e := range shard.data {
+					for _, r := range e.Replicas {
+						if r == id {
+							resultChan <- e
+							break
+						}
+					}
+				}
+				shard.mu.RUnlock()
+			}
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+	for j := 0; j < len(s.shards); j++ {
+		jobs <- j
+	}
+	close(jobs)
+	results := make([]Entry, 0, 100)
+	for result := range resultChan {
+		results = append(results, result)
+	}
+	return results
+}
+
+/*
 func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []dat.Dat {
 	resultChan := make(chan dat.Dat, 1)
 	jobs := make(chan int, len(s.shards))
@@ -207,6 +245,7 @@ func (s *Store) List(pubKey ed25519.PublicKey, datKeyPrefix string) []dat.Dat {
 	}
 	return results
 }
+*/
 
 func (s *Store) readBackup() error {
 	f, err := os.Open(s.backupFilename)
@@ -228,23 +267,23 @@ func (s *Store) readBackup() error {
 		if err != nil {
 			return fmt.Errorf("err reading length prefix: %w", err)
 		}
-		datbuf := make([]byte, binary.LittleEndian.Uint16(lb))
-		n, err = f.Read(datbuf)
+		buf := make([]byte, binary.LittleEndian.Uint16(lb)) // TODO: make once & reslice
+		n, err = f.Read(buf)
 		pos += int64(n)
 		if err != nil {
 			return fmt.Errorf("err reading length-prefixed msg: %w", err)
 		}
-		d := &dat.Dat{}
-		err = d.Unmarshal(datbuf)
+		entry := &Entry{}
+		err = entry.Unmarshal(buf)
 		if err != nil {
 			return fmt.Errorf("err unmarshalling dat: %w", err)
 		}
 		h.Reset()
-		err = d.Verify(h)
+		err = entry.Dat.Verify(h)
 		if err != nil {
 			return fmt.Errorf("err verifying dat: %w", err)
 		}
-		s.write(d, false)
+		s.write(entry, false)
 	}
 	return nil
 }
@@ -260,9 +299,9 @@ func (s *Store) writeFreshBackup() error {
 	buf := bufio.NewWriter(f)
 	for _, shard := range s.shards {
 		shard.mu.Lock()
-		for _, d := range shard.data {
+		for _, e := range shard.data {
 			bin := make([]byte, network.MAX_MSG_LEN)
-			n, err := d.Marshal(bin)
+			n, err := e.Marshal(bin)
 			if err != nil {
 				return err
 			}
@@ -312,14 +351,14 @@ func (s *Store) log(level logger.LogLevel, msg string, args ...any) {
 	}
 }
 
-func keys(pubKey ed25519.PublicKey, datKey string) (uint8, uint64) {
+func keys(publicKey ed25519.PublicKey, datKey string) (uint8, uint64) {
 	h := xxhash.New()
-	h.Write(pubKey)
+	h.Write(publicKey)
 	h.WriteString(datKey)
 	sum64 := h.Sum64()
 	return uint8(sum64 >> 56), sum64
 }
 
-func calculateEntrySize(d *dat.Dat) int64 {
-	return int64(len(d.Val) + len(d.Key) + dat.DAT_IN_MEMORY_SIZE)
+func calculateEntrySize(e *Entry) int64 {
+	return int64(len(e.Dat.Val) + len(e.Dat.Key) + 224)
 }

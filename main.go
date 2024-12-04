@@ -60,9 +60,8 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		peers: peer.NewStore(&peer.StoreCfg{
 			SubSvc: subSvc,
 			Logger: cfg.Logger.WithPrefix("/peers")}),
-		logger: cfg.Logger,
 		subSvc: subSvc,
-	}
+		logger: cfg.Logger}
 	for _, addrPort := range cfg.Edges {
 		d.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
@@ -90,25 +89,39 @@ func (d *Dave) Kill() {
 }
 
 func (d *Dave) Put(dat dat.Dat) error {
-	err := d.store.Write(&dat)
-	if err != nil {
-		return fmt.Errorf("failed to put dat in local store: %s", err)
-	}
 	activePeers := d.peers.ListActive(nil)
 	if len(activePeers) == 0 {
 		return errors.New("no active peers")
 	}
-	d.sendToClosestPeers(activePeers, &dat)
+	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
+	entry := &store.Entry{Dat: dat}
+	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+		entry.Replicas[i] = sorted[i].Peer.ID
+	}
+	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+		if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
+			d.peers.SetStorageChallenge(sorted[i].Peer.AddrPort, &peer.StorageChallenge{
+				PublicKey: dat.PubKey, DatKey: dat.Key,
+				Expires: time.Now().Add(network.TTL - time.Second)})
+		}
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: entry},
+			AddrPort: sorted[i].Peer.AddrPort}
+		d.log(logger.DEBUG, "sent to %s (%v)", sorted[i].Peer.AddrPort, sorted[i].Peer.ID)
+	}
+	err := d.store.Write(entry)
+	if err != nil {
+		return fmt.Errorf("failed to write entry to local store: %s", err)
+	}
 	return nil
 }
 
-func (d *Dave) Get(ctx context.Context, get *types.Get) (*dat.Dat, error) {
+func (d *Dave) Get(ctx context.Context, get *types.Get) (*store.Entry, error) {
 	if get == nil {
 		return nil, errors.New("get is nil")
 	}
 	stored, err := d.store.Read(get.PublicKey, get.DatKey)
 	if err == nil {
-		d.log(logger.DEBUG, "found locally: %s", stored.Key)
+		d.log(logger.DEBUG, "found locally: %s", stored.Dat.Key)
 		return &stored, nil
 	}
 	activePeers := d.peers.ListActive(nil)
@@ -135,7 +148,7 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*dat.Dat, error) {
 				d.log(logger.ERROR, "expected event type *pkt.Packet, got %T", pkt)
 				continue
 			}
-			msgDat := pkt.Msg.Dat
+			msgDat := pkt.Msg.Entry.Dat
 			if !bytes.Equal(msgDat.PubKey, get.PublicKey) || msgDat.Key != get.DatKey {
 				continue
 			}
@@ -154,13 +167,13 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*dat.Dat, error) {
 				d.log(logger.ERROR, "verification failed: %s", err)
 				continue
 			}
-			err = d.store.Write(msgDat)
+			err = d.store.Write(pkt.Msg.Entry)
 			if err != nil {
 				d.log(logger.ERROR, "failed to store: %s", err)
 				continue
 			}
 			// TODO: send to nodes that responded with "not found"
-			return msgDat, nil
+			return pkt.Msg.Entry, nil
 		}
 	}
 }
@@ -219,7 +232,10 @@ func (d *Dave) handlePackets() {
 					d.handlePing(hasher, msg, packet.AddrPort)
 				case types.OP_PUT:
 					hasher.Reset()
-					d.handlePut(hasher, msg.Dat)
+					err = d.handlePut(hasher, msg.Entry)
+					if err != nil {
+						d.log(logger.ERROR, "failed to handle PUT: %s", err)
+					}
 				case types.OP_GET:
 					err = d.handleGet(msg.Get, packet.AddrPort)
 					if err != nil {
@@ -256,6 +272,7 @@ func (d *Dave) run() {
 			d.log(logger.ERROR, "failed to send GETMYADDRPORT: no edge is online")
 		}
 	}
+	dropEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
 	for {
 		select {
 		case <-pingTick.C:
@@ -270,6 +287,13 @@ func (d *Dave) run() {
 						UsedSpace: d.UsedSpace(), Capacity: d.Capacity()},
 				}, AddrPort: peer.AddrPort}
 			}
+		case ev := <-dropEv:
+			peer, ok := ev.(peer.PeerCopy)
+			if !ok {
+				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
+				continue
+			}
+			d.reassignReplicas(peer)
 		case <-storageChallengeTick.C:
 			for _, p := range d.peers.RandPeers(network.FANOUT, nil) {
 				challenge, err := d.peers.GetStorageChallenge(p.AddrPort)
@@ -295,14 +319,14 @@ func (d *Dave) run() {
 							if !ok {
 								d.log(logger.ERROR, "expected event *pkt.Packet, got %T", ev)
 							}
-							if !bytes.Equal(challenge.PublicKey, pkt.Msg.Dat.PubKey) {
+							if !bytes.Equal(challenge.PublicKey, pkt.Msg.Entry.Dat.PubKey) {
 								continue
 							}
-							if challenge.DatKey != pkt.Msg.Dat.Key {
+							if challenge.DatKey != pkt.Msg.Entry.Dat.Key {
 								continue
 							}
 							h.Reset()
-							err = pkt.Msg.Dat.Verify(h)
+							err = pkt.Msg.Entry.Dat.Verify(h)
 							if err != nil {
 								d.peers.StorageChallengeFailed(p.AddrPort)
 								d.log(logger.ERROR, "storage challenge failed %s", p.AddrPort)
@@ -325,6 +349,41 @@ func (d *Dave) run() {
 			}
 		}
 	}
+}
+
+func (d *Dave) reassignReplicas(p peer.PeerCopy) {
+	work := make(chan store.Entry)
+	for i := 0; i < runtime.NumCPU(); i++ {
+		go func() {
+			active := d.peers.ListActive(nil)
+			for e := range work {
+				// Choose replicas
+				sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
+				for j := range e.Replicas {
+					if j >= len(sorted) {
+						break
+					}
+					e.Replicas[j] = sorted[j].Peer.ID
+					d.log(logger.ERROR, "selected replica: %s", sorted[j].Peer.AddrPort)
+				}
+				// Send entry to replicas
+				for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+						AddrPort: sorted[i].Peer.AddrPort}
+				}
+				d.log(logger.ERROR, "updated replicas: %+v", e.Replicas)
+				// Update store
+				err := d.store.Write(&e)
+				if err != nil {
+					d.log(logger.ERROR, "reassign replicas: failed to update store: %s", err)
+				}
+			}
+		}()
+	}
+	for _, e := range d.store.ListWithReplicaID(p.ID) {
+		work <- e
+	}
+	close(work)
 }
 
 func (d *Dave) sendGetMyAddrPort() error {
@@ -363,19 +422,21 @@ func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.Add
 	}
 }
 
+/*
 func (d *Dave) sendToClosestPeers(activePeers []peer.PeerCopy, dat *dat.Dat) {
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
 		p := sorted[i].Peer
 		if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
 			d.peers.SetStorageChallenge(p.AddrPort, &peer.StorageChallenge{
-				PublicKey: dat.PubKey, DatKey: dat.Key,
+				PublicKey: entry.Dat.PubKey, DatKey: entry.Dat.Key,
 				Expires: time.Now().Add(network.TTL - time.Second)})
 		}
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Dat: dat},
+		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: entry},
 			AddrPort: p.AddrPort}
 	}
 }
+*/
 
 func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.AddrPort) error {
 	challenge, storedPubKey, err := d.peers.CurrentAuthChallengeAndPubKey(raddr)
@@ -414,28 +475,28 @@ func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.
 	return nil
 }
 
-func (d *Dave) handlePut(hasher *blake3.Hasher, dat *dat.Dat) error {
-	err := dat.Verify(hasher)
+func (d *Dave) handlePut(hasher *blake3.Hasher, entry *store.Entry) error {
+	err := entry.Dat.Verify(hasher)
 	if err != nil {
 		return fmt.Errorf("verification failed: %w", err)
 	}
-	err = d.store.Write(dat)
+	err = d.store.Write(entry)
 	if err != nil {
 		return fmt.Errorf("failed to store: %w", err)
 	}
-	d.log(logger.DEBUG, "stored %s", dat.Key)
+	d.log(logger.DEBUG, "stored %s, replicas: %+v", entry.Dat.Key, entry.Replicas)
 	return nil
 }
 
 func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
-	stored, err := d.store.Read(get.PublicKey, get.DatKey)
+	entry, err := d.store.Read(get.PublicKey, get.DatKey)
 	if err != nil {
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK,
-			Dat: &dat.Dat{PubKey: get.PublicKey, Key: get.DatKey}},
+			Entry: &store.Entry{Dat: dat.Dat{PubKey: get.PublicKey, Key: get.DatKey}}},
 			AddrPort: raddr}
 		return fmt.Errorf("failed to read from store: %s", err)
 	}
-	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Dat: &stored}, AddrPort: raddr}
+	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Entry: &entry}, AddrPort: raddr}
 	return nil
 }
 

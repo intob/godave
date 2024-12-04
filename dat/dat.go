@@ -12,9 +12,8 @@ import (
 )
 
 const (
-	DAT_IN_MEMORY_SIZE = 200
-	DAT_HEADER_SIZE    = 8 + 16 + 32 + 64 + 32 + 1 + 2
-	maxKVLen           = network.MAX_MSG_LEN - DAT_HEADER_SIZE
+	DAT_HEADER_SIZE = 8 + 16 + 32 + 64 + 32 + 1 + 2
+	maxKVLen        = network.MAX_MSG_LEN - DAT_HEADER_SIZE
 )
 
 type Signature [64]byte

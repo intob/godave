@@ -33,22 +33,18 @@ type peer struct {
 }
 
 type PeerCopy struct {
-	ID                         uint64
-	AddrPort                   netip.AddrPort
-	Edge                       bool
-	AuthChallengeSolved        time.Time
-	StorageChallengesCompleted uint32
-	StorageChallengesFailed    uint32
+	ID                  uint64
+	AddrPort            netip.AddrPort
+	PublicKey           ed25519.PublicKey
+	AuthChallengeSolved time.Time
 }
 
 func copyFromPeer(peer *peer) PeerCopy {
 	return PeerCopy{
-		ID:                         peer.id,
-		AddrPort:                   peer.addrPort,
-		Edge:                       peer.edge,
-		AuthChallengeSolved:        peer.authChallengeSolved,
-		StorageChallengesCompleted: peer.storageChallengesCompleted,
-		StorageChallengesFailed:    peer.storageChallengesFailed,
+		ID:                  peer.id,
+		AddrPort:            peer.addrPort,
+		PublicKey:           peer.publicKey,
+		AuthChallengeSolved: peer.authChallengeSolved,
 	}
 }
 

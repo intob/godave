@@ -5,13 +5,13 @@ import (
 	"time"
 )
 
-type entry struct {
+type heapEntry struct {
 	key, distance uint64
 	expires       time.Time
 }
 
 // Priority calculation combines TTL and XOR distance
-func (e *entry) priority() float64 {
+func (e *heapEntry) priority() float64 {
 	timeLeft := time.Until(e.expires).Seconds()
 	if timeLeft <= 0 {
 		return 0 // Expired items get lowest priority
@@ -24,13 +24,13 @@ func (e *entry) priority() float64 {
 }
 
 type priorityHeap struct {
-	entries []*entry
+	entries []*heapEntry
 	lookup  map[uint64]int // Track positions by key
 }
 
 func newPriorityHeap() *priorityHeap {
 	return &priorityHeap{
-		entries: make([]*entry, 0),
+		entries: make([]*heapEntry, 0),
 		lookup:  make(map[uint64]int),
 	}
 }
@@ -41,9 +41,9 @@ func (h *priorityHeap) Update(key uint64) {
 	}
 }
 
-func (h *priorityHeap) Remove(key uint64) *entry {
+func (h *priorityHeap) Remove(key uint64) *heapEntry {
 	if pos, exists := h.lookup[key]; exists {
-		entry := heap.Remove(h, pos).(*entry)
+		entry := heap.Remove(h, pos).(*heapEntry)
 		return entry
 	}
 	return nil
@@ -69,7 +69,7 @@ func (h priorityHeap) Swap(i, j int) {
 }
 
 func (h *priorityHeap) Push(x interface{}) {
-	e := x.(*entry)
+	e := x.(*heapEntry)
 	h.lookup[e.key] = len(h.entries)
 	h.entries = append(h.entries, e)
 }
@@ -86,7 +86,7 @@ func (h *priorityHeap) Pop() interface{} {
 	return x
 }
 
-func (h *priorityHeap) Peek() *entry {
+func (h *priorityHeap) Peek() *heapEntry {
 	if len(h.entries) == 0 {
 		return nil
 	}

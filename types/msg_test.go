@@ -3,7 +3,6 @@ package types
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/binary"
 	"net/netip"
 	"reflect"
@@ -13,6 +12,7 @@ import (
 	"github.com/intob/godave/auth"
 	"github.com/intob/godave/dat"
 	"github.com/intob/godave/network"
+	"github.com/intob/godave/store"
 )
 
 func TestParseAddrs(t *testing.T) {
@@ -283,23 +283,18 @@ func TestUnmarshalGetMyAddrPortAck(t *testing.T) {
 BenchmarkProtobuf-12        				2904609	       412.0 ns/op	     600 B/op	       9 allocs/op
 BenchmarkMarshalUnmarshalDatMsg-12    	 	9422624	       109.4 ns/op	     256 B/op	       4 allocs/op
 */
-func BenchmarkMarshalUnmarshalDatMsg(b *testing.B) {
+func BenchmarkMarshalUnmarshalEntryMsg(b *testing.B) {
 	pubKey, _, err := ed25519.GenerateKey(nil)
 	if err != nil {
 		b.Fatal(err)
 	}
-	msg := &Msg{
-		Op: OP_PUT,
-		Dat: &dat.Dat{
-			Key:    "test",
-			Val:    []byte("test_val"),
-			Time:   time.Now(),
-			PubKey: pubKey,
-		},
-	}
-	rand.Read(msg.Dat.Salt[:])
-	rand.Read(msg.Dat.Work[:])
-	rand.Read(msg.Dat.Sig[:])
+	msg := &Msg{Op: OP_PUT,
+		Entry: &store.Entry{
+			Dat: dat.Dat{
+				Key:    "test",
+				Val:    []byte("test_val"),
+				Time:   time.Now(),
+				PubKey: pubKey}}}
 	buf := make([]byte, network.MAX_MSG_LEN)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -315,18 +310,12 @@ func BenchmarkDatMsgMarshal(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	msg := &Msg{
-		Op: OP_PUT,
-		Dat: &dat.Dat{
+	msg := &Msg{Op: OP_PUT,
+		Entry: &store.Entry{Dat: dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now(),
-			PubKey: pubKey,
-		},
-	}
-	rand.Read(msg.Dat.Salt[:])
-	rand.Read(msg.Dat.Work[:])
-	rand.Read(msg.Dat.Sig[:])
+			PubKey: pubKey}}}
 	buf := make([]byte, network.MAX_MSG_LEN)
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -340,18 +329,12 @@ func BenchmarkDatMsgUnmarshal(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	msg := &Msg{
-		Op: OP_PUT,
-		Dat: &dat.Dat{
+	msg := &Msg{Op: OP_PUT,
+		Entry: &store.Entry{Dat: dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now(),
-			PubKey: pubKey,
-		},
-	}
-	rand.Read(msg.Dat.Salt[:])
-	rand.Read(msg.Dat.Work[:])
-	rand.Read(msg.Dat.Sig[:])
+			PubKey: pubKey}}}
 	buf := make([]byte, network.MAX_MSG_LEN)
 	n, _ := msg.Marshal(buf)
 	b.ReportAllocs()
@@ -448,8 +431,8 @@ func TestMarshalUnmarshalGetAckMsgNilDat(t *testing.T) {
 }
 
 func TestMarshalUnmarshalyGetAckMsgEmptyDat(t *testing.T) {
-	msg := &Msg{Op: OP_GET_ACK, Dat: &dat.Dat{}}
-	buf := make([]byte, 1+2+dat.DAT_HEADER_SIZE)
+	msg := &Msg{Op: OP_GET_ACK, Entry: &store.Entry{Dat: dat.Dat{}}}
+	buf := make([]byte, network.MAX_MSG_LEN)
 	_, err := msg.Marshal(buf)
 	if err != nil {
 		t.Fatal(err)
@@ -459,8 +442,8 @@ func TestMarshalUnmarshalyGetAckMsgEmptyDat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if msg2.Dat == nil {
-		t.Error("expected empty dat, got nil")
+	if msg2.Entry == nil {
+		t.Error("expected empty entry, got nil")
 	}
 }
 

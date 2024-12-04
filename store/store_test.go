@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"fmt"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/intob/godave/dat"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/peer"
 )
 
 const (
-	NUM_PUT     = 1000
+	NUM_PUT     = 100000
 	NUM_ROUTINE = 250
 	CAPACITY    = 1000000000
 )
@@ -29,11 +31,13 @@ func TestStoreWriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to generate key pair: %v", err)
 	}
-	testData := &dat.Dat{
-		PubKey: pub,
-		Key:    "test-key",
-		Val:    []byte("test-value"),
-		Time:   time.Now(),
+	testData := &Entry{
+		Dat: dat.Dat{
+			PubKey: pub,
+			Key:    "test-key",
+			Val:    []byte("test-value"),
+			Time:   time.Now(),
+		},
 	}
 	err = store.Write(testData)
 	if err != nil {
@@ -43,8 +47,8 @@ func TestStoreWriteAndRead(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to read data: %v", err)
 	}
-	if string(result.Val) != string(testData.Val) {
-		t.Errorf("got %s, want %s", string(result.Val), string(testData.Val))
+	if string(result.Dat.Val) != string(testData.Dat.Val) {
+		t.Errorf("got %s, want %s", string(result.Dat.Val), string(testData.Dat.Val))
 	}
 }
 
@@ -90,12 +94,12 @@ func TestStorePriorityReplacement(t *testing.T) {
 		farPub = pubA
 	}
 	// Create data from a "far" peer
-	farData := &dat.Dat{
+	farData := &Entry{Dat: dat.Dat{
 		PubKey: farPub,
 		Key:    dataKey,
 		Val:    []byte("far-peer-data"),
 		Time:   time.Now().Add(-time.Hour),
-	}
+	}}
 	// Write far peer data
 	err = store.Write(farData)
 	if err != nil {
@@ -106,16 +110,16 @@ func TestStorePriorityReplacement(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to read far peer data: %v", err)
 	}
-	if string(result.Val) != "far-peer-data" {
-		t.Errorf("got %s, want far-peer-data", string(result.Val))
+	if string(result.Dat.Val) != "far-peer-data" {
+		t.Errorf("got %s, want far-peer-data", string(result.Dat.Val))
 	}
 	// Create data from a "closer" peer with same key
-	closeData := &dat.Dat{
+	closeData := &Entry{Dat: dat.Dat{
 		PubKey: closePub,
 		Key:    dataKey,
 		Val:    []byte("close-peer-data"),
 		Time:   time.Now(),
-	}
+	}}
 	// Write close peer data
 	err = store.Write(closeData)
 	if err != nil {
@@ -126,8 +130,8 @@ func TestStorePriorityReplacement(t *testing.T) {
 	if err != nil {
 		t.Errorf("failed to read close peer data: %v", err)
 	}
-	if string(result.Val) != "close-peer-data" {
-		t.Errorf("got %s, want close-peer-data", string(result.Val))
+	if string(result.Dat.Val) != "close-peer-data" {
+		t.Errorf("got %s, want close-peer-data", string(result.Dat.Val))
 	}
 	// Verify far peer data was removed
 	_, err = store.Read(farPub, dataKey)
@@ -149,26 +153,57 @@ func TestConcurrentPut(t *testing.T) {
 		go func(routine int) {
 			defer wg.Done()
 			for j := 0; j < NUM_PUT; j++ {
-				store.Write(&dat.Dat{
+				store.Write(&Entry{Dat: dat.Dat{
 					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
 					Val:    []byte("test"),
 					Time:   time.Now(),
 					PubKey: pubKey,
-				})
+				}})
 			}
 		}(i)
 	}
 	wg.Wait()
 	fmt.Println(store.usedSpace.Load())
-	dat, err := store.Read(pubKey, fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1))
+	entry, err := store.Read(pubKey, fmt.Sprintf("routine_%d_test_%d", NUM_ROUTINE-1, NUM_PUT-1))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(dat.Val, []byte("test")) {
-		t.Fatalf("expected value %s, got %s", "test", string(dat.Val))
+	if !bytes.Equal(entry.Dat.Val, []byte("test")) {
+		t.Fatalf("expected value %s, got %s", "test", string(entry.Dat.Val))
 	}
 }
 
+func TestListWithReplicaID(t *testing.T) {
+	pubKey, _, _ := ed25519.GenerateKey(nil)
+	id := peer.IDFromPublicKey(pubKey)
+	store := NewStore(&StoreCfg{
+		MyID:     id,
+		Done:     make(chan<- struct{}),
+		Capacity: CAPACITY,
+	})
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func(routine int) {
+			defer wg.Done()
+			for j := 0; j < NUM_PUT; j++ {
+				store.Write(&Entry{Dat: dat.Dat{
+					Key:    fmt.Sprintf("routine_%d_test_%d", routine, j),
+					Val:    []byte("test"),
+					Time:   time.Now(),
+					PubKey: pubKey,
+				}, Replicas: [network.FANOUT]uint64{0, 1, id}})
+			}
+		}(i)
+	}
+	wg.Wait()
+	entries := store.ListWithReplicaID(id)
+	if len(entries) != NUM_PUT*runtime.NumCPU() {
+		t.Fatalf("expected %d dats, got %d", NUM_PUT*runtime.NumCPU(), len(entries))
+	}
+}
+
+/*
 func TestList(t *testing.T) {
 	pubKey, _, _ := ed25519.GenerateKey(nil)
 	store := NewStore(&StoreCfg{
@@ -197,6 +232,7 @@ func TestList(t *testing.T) {
 		t.Fatalf("expected %d dats, got %d", NUM_PUT, len(dats))
 	}
 }
+*/
 
 func TestStorePrune(t *testing.T) {
 	storePubKey, _, err := ed25519.GenerateKey(nil)
@@ -208,18 +244,18 @@ func TestStorePrune(t *testing.T) {
 		Done:     make(chan<- struct{}),
 		Capacity: CAPACITY,
 	})
-	// Create dats with zero distance (same as store public key)
-	zeroDats := make([]dat.Dat, 5)
-	for i := range zeroDats {
-		zeroDats[i] = dat.Dat{
+	// Create entries with zero distance (same as store public key)
+	zeroEntries := make([]*Entry, 5)
+	for i := range zeroEntries {
+		zeroEntries[i] = &Entry{Dat: dat.Dat{
 			Key:    fmt.Sprintf("zero_%d", i),
 			Val:    []byte("zero_value"),
 			Time:   time.Now(),
 			PubKey: storePubKey,
-		}
-		err = store.Write(&zeroDats[i])
+		}}
+		err = store.Write(zeroEntries[i])
 		if err != nil {
-			t.Fatalf("failed to put zero dat: %s", err)
+			t.Fatalf("failed to put zero entry: %s", err)
 		}
 	}
 	// Create random dats concurrently
@@ -236,12 +272,12 @@ func TestStorePrune(t *testing.T) {
 					t.Error(err)
 					return
 				}
-				err = store.Write(&dat.Dat{
+				err = store.Write(&Entry{Dat: dat.Dat{
 					Key:    fmt.Sprintf("routine_%d_random_%d", i, j),
 					Val:    []byte("random_value"),
 					Time:   time.Now(),
 					PubKey: pub,
-				})
+				}})
 				if err != nil {
 					panic("failed to put dat")
 				}
@@ -249,11 +285,54 @@ func TestStorePrune(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	// Verify all zero-distance dats are retained
-	for _, dat := range zeroDats {
-		_, err := store.Read(dat.PubKey, dat.Key)
+	// Verify all zero-distance entries are retained
+	for _, e := range zeroEntries {
+		_, err := store.Read(e.Dat.PubKey, e.Dat.Key)
 		if err != nil {
-			t.Errorf("zero-distance dat with key %s was pruned", dat.Key)
+			t.Errorf("zero-distance entry with key %s was pruned", e.Dat.Key)
 		}
+	}
+}
+
+func initListByPublicKeyTestStore(a, b ed25519.PublicKey) *Store {
+	store := NewStore(&StoreCfg{
+		MyID:     peer.IDFromPublicKey(a),
+		Done:     make(chan<- struct{}),
+		Capacity: CAPACITY,
+	})
+	wg := sync.WaitGroup{}
+	for i := 0; i < runtime.NumCPU(); i++ {
+		wg.Add(1)
+		go func(routine int) {
+			defer wg.Done()
+			for j := 0; j < NUM_PUT; j++ {
+				store.Write(&Entry{Dat: dat.Dat{
+					Key:    fmt.Sprintf("a_routine_%d_test_%d", routine, j),
+					Val:    []byte("test"),
+					Time:   time.Now(),
+					PubKey: a,
+				}})
+				store.Write(&Entry{Dat: dat.Dat{
+					Key:    fmt.Sprintf("b_routine_%d_test_%d", routine, j),
+					Val:    []byte("test"),
+					Time:   time.Now(),
+					PubKey: b,
+				}})
+			}
+		}(i)
+	}
+	wg.Wait()
+	return store
+}
+
+func BenchmarkListWithReplicaID(b *testing.B) {
+	pubKeyA, _, _ := ed25519.GenerateKey(nil)
+	pubKeyB, _, _ := ed25519.GenerateKey(nil)
+	store := initListByPublicKeyTestStore(pubKeyA, pubKeyB)
+	idA := peer.IDFromPublicKey(pubKeyA)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		store.ListWithReplicaID(idA)
 	}
 }

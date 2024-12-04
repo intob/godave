@@ -9,6 +9,7 @@ import (
 	"github.com/intob/godave/dat"
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/network"
+	"github.com/intob/godave/store"
 	"github.com/intob/godave/types"
 )
 
@@ -22,17 +23,14 @@ func buildMockPacket(buf []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	msg := &types.Msg{
-		Op: types.OP_PUT,
-		Dat: &dat.Dat{
+	msg := &types.Msg{Op: types.OP_PUT,
+		Entry: &store.Entry{Dat: dat.Dat{
 			Key:    "test",
 			Val:    []byte("test_val"),
 			Time:   time.Now().Add(-50 * time.Millisecond),
-			PubKey: pubKey,
-		},
-	}
-	msg.Dat.Sign(privKey)
-	msg.Dat.Work, msg.Dat.Salt = dat.DoWork(msg.Dat.Sig, 16)
+			PubKey: pubKey}}}
+	msg.Entry.Dat.Sign(privKey)
+	msg.Entry.Dat.Work, msg.Entry.Dat.Salt = dat.DoWork(msg.Entry.Dat.Sig, 16)
 	return msg.Marshal(buf)
 }
 
