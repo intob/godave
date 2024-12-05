@@ -376,32 +376,30 @@ func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
 		go func() {
 			defer wg.Done()
 			active := d.peers.ListActive(nil)
-			for e := range entries {
-				// Choose replicas
-				sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
-				for j := range e.Replicas {
-					if j >= len(sorted) {
-						break
+			refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
+			for {
+				select {
+				case <-refreshActive.C:
+					active = d.peers.ListActive(nil)
+				case e, ok := <-entries:
+					if !ok {
+						d.log(logger.ERROR, "replication routine finished")
+						return
 					}
-					e.Replicas[j] = sorted[j].Peer.ID
-					d.log(logger.ERROR, "selected replica: %s", sorted[j].Peer.AddrPort)
-				}
-				// Send entry to replicas
-				for i := 0; i < network.FANOUT && i < len(sorted); i++ {
-					replica := sorted[i].Peer
-					/*if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
-						d.peers.SetStorageChallenge(replica.AddrPort, &peer.StorageChallenge{
-							PublicKey: e.Dat.PubKey, DatKey: e.Dat.Key,
-							Expires: e.Dat.Time.Add(network.TTL - time.Second)})
-					}*/
-					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-						AddrPort: replica.AddrPort}
-				}
-				d.log(logger.ERROR, "updated replicas: %+v", e.Replicas)
-				// Update store
-				err := d.store.Write(&e)
-				if err != nil {
-					d.log(logger.ERROR, "reassign replicas: failed to update store: %s", err)
+					sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
+					for j := range e.Replicas {
+						if j >= len(sorted) {
+							break
+						}
+						e.Replicas[j] = sorted[j].Peer.ID
+					}
+					for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+						replica := sorted[i].Peer
+						d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+							AddrPort: replica.AddrPort}
+					}
+					d.store.Write(&e)
+					time.Sleep(time.Millisecond)
 				}
 			}
 		}()
@@ -423,16 +421,14 @@ func (d *Dave) replaceReplicasForNewPeer(p peer.PeerCopy) {
 					if newPeerDist < replicaID^peer.IDFromPublicKey(e.Dat.PubKey) {
 						e.Replicas[j] = p.ID
 						replaced = true
-						d.log(logger.DEBUG, "%v replaced with %v", replicaID, p.ID)
 						break
 					}
 				}
 				if replaced {
 					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
 						AddrPort: p.AddrPort}
-					if err := d.store.Write(&e); err != nil {
-						d.log(logger.ERROR, "reassign replicas: failed to update store: %s", err)
-					}
+					d.store.Write(&e)
+					time.Sleep(time.Millisecond)
 				}
 			}
 		}()

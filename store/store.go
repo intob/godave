@@ -169,7 +169,7 @@ func (s *Store) Read(publicKey ed25519.PublicKey, datKey string) (Entry, error) 
 }
 
 func (s *Store) ListAll() <-chan Entry {
-	resultChan := make(chan Entry, 1)
+	resultChan := make(chan Entry, 100_000)
 	jobs := make(chan int, len(s.shards))
 	wg := sync.WaitGroup{}
 	for i := 0; i < runtime.NumCPU(); i++ {
@@ -198,7 +198,7 @@ func (s *Store) ListAll() <-chan Entry {
 }
 
 func (s *Store) ListWithReplicaID(id uint64) <-chan Entry {
-	resultChan := make(chan Entry, 1)
+	resultChan := make(chan Entry, 100_000)
 	jobs := make(chan int, len(s.shards))
 	wg := sync.WaitGroup{}
 	for i := 0; i < runtime.NumCPU(); i++ {

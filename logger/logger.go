@@ -49,7 +49,7 @@ func StdOut(buffered bool) chan<- string {
 }
 
 func DevNull() chan<- string {
-	logs := make(chan string, 100)
+	logs := make(chan string, 1000)
 	go func() {
 		for range logs {
 		}
@@ -82,9 +82,15 @@ func (l *DaveLogger) Log(level LogLevel, msg string, args ...any) {
 		return
 	}
 	if l.prefix != "" {
-		l.output <- fmt.Sprintf(l.prefix+" "+msg, args...)
+		select {
+		case l.output <- fmt.Sprintf(l.prefix+" "+msg, args...):
+		default:
+		}
 	} else {
-		l.output <- fmt.Sprintf(msg, args...)
+		select {
+		case l.output <- fmt.Sprintf(msg, args...):
+		default:
+		}
 	}
 }
 
