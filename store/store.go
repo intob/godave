@@ -168,18 +168,21 @@ func (s *Store) Read(publicKey ed25519.PublicKey, datKey string) (Entry, error) 
 }
 
 func (s *Store) ListAll() <-chan Entry {
-	resultChan := make(chan Entry, 100)
+	buffer := make(chan []Entry, 1)
+	out := make(chan Entry, 1)
 	jobs := make(chan int, len(s.shards))
 	go func() {
 		for shardIndex := range jobs {
 			shard := s.shards[shardIndex]
+			result := make([]Entry, 0, len(shard.data))
 			shard.mu.RLock()
 			for _, e := range shard.data {
-				resultChan <- e
+				result = append(result, e)
 			}
 			shard.mu.RUnlock()
+			buffer <- result
 		}
-		close(resultChan)
+		close(buffer)
 	}()
 	go func() {
 		for j := 0; j < len(s.shards); j++ {
@@ -187,7 +190,15 @@ func (s *Store) ListAll() <-chan Entry {
 		}
 		close(jobs)
 	}()
-	return resultChan
+	go func() {
+		for result := range buffer {
+			for _, e := range result {
+				out <- e
+			}
+		}
+		close(out)
+	}()
+	return out
 }
 
 func (s *Store) ListWithReplicaID(id uint64) <-chan Entry {

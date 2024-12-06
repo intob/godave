@@ -163,66 +163,6 @@ func (s *Store) AuthChallengeSolved(addrPort netip.AddrPort) {
 	peer.authChallengeSolved = time.Now()
 }
 
-func (s *Store) GetStorageChallenge(addrPort netip.AddrPort) (StorageChallenge, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	peer, exists := s.table[addrPort]
-	if !exists {
-		return StorageChallenge{}, ErrPeerNotFound
-	}
-	peer.mu.RLock()
-	defer peer.mu.RUnlock()
-	challenge := peer.storageChallenge
-	if challenge == nil {
-		return StorageChallenge{}, errors.New("challenge is nil")
-	}
-	return *challenge, nil
-}
-
-func (s *Store) SetStorageChallenge(addrPort netip.AddrPort, challenge *StorageChallenge) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	peer, exists := s.table[addrPort]
-	if !exists {
-		return ErrPeerNotFound
-	}
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
-	if peer.storageChallenge != nil && peer.storageChallenge.Expires.After(time.Now()) {
-		return errors.New("peer already has a valid challenge")
-	}
-	peer.storageChallenge = challenge
-	return nil
-}
-
-func (s *Store) StorageChallengeCompleted(addrPort netip.AddrPort) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	peer, exists := s.table[addrPort]
-	if !exists {
-		return ErrPeerNotFound
-	}
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
-	peer.storageChallenge = nil
-	peer.storageChallengesCompleted++
-	return nil
-}
-
-func (s *Store) StorageChallengeFailed(addrPort netip.AddrPort) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	peer, exists := s.table[addrPort]
-	if !exists {
-		return ErrPeerNotFound
-	}
-	peer.mu.Lock()
-	defer peer.mu.Unlock()
-	peer.storageChallenge = nil
-	peer.storageChallengesFailed++
-	return nil
-}
-
 func (s *Store) IsEdge(addrPort netip.AddrPort) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -347,7 +287,6 @@ func (s *Store) prune() {
 		if p.edge {
 			if isActive && !alreadyActive {
 				s.active[k] = p
-				s.subSvc.Publish(sub.PEER_ADDED, copyFromPeer(p))
 			} else if !isActive {
 				delete(s.active, k)
 			}
@@ -363,7 +302,6 @@ func (s *Store) prune() {
 		shouldBeActive := isActive && now.Sub(p.added) > network.ACTIVATE_AFTER
 		if shouldBeActive && !alreadyActive {
 			s.active[k] = p
-			s.subSvc.Publish(sub.PEER_ADDED, copyFromPeer(p))
 		} else if !shouldBeActive {
 			delete(s.active, k)
 		}

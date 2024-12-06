@@ -9,27 +9,16 @@ import (
 	"github.com/intob/godave/auth"
 )
 
-//const WEIGHTED_RELIABILITY_ALPHA = 0.5
-
-type StorageChallenge struct {
-	PublicKey ed25519.PublicKey
-	DatKey    string
-	Expires   time.Time
-}
-
 type peer struct {
-	mu                         sync.RWMutex
-	id                         uint64
-	addrPort                   netip.AddrPort
-	added                      time.Time
-	edge                       bool
-	authChallenge              auth.AuthChallenge
-	publicKey                  ed25519.PublicKey
-	authChallengeSolved        time.Time
-	storageChallenge           *StorageChallenge
-	storageChallengesCompleted uint32
-	storageChallengesFailed    uint32
-	capacity, usedSpace        int64
+	mu                  sync.RWMutex
+	id                  uint64
+	addrPort            netip.AddrPort
+	added               time.Time
+	edge                bool
+	authChallenge       auth.AuthChallenge
+	publicKey           ed25519.PublicKey
+	authChallengeSolved time.Time
+	capacity, usedSpace int64
 }
 
 type PeerCopy struct {
@@ -47,14 +36,3 @@ func copyFromPeer(peer *peer) PeerCopy {
 		AuthChallengeSolved: peer.authChallengeSolved,
 	}
 }
-
-/*
-func (p Peer) Reliability() float64 {
-	if p.pingsSent == 0 {
-		return 0
-	}
-	baseScore := float64(p.pongsReceived) / float64(p.pingsSent)
-	reliabilityScore := baseScore * (1 - math.Exp(-WEIGHTED_RELIABILITY_ALPHA*float64(p.pingsSent)))
-	return reliabilityScore
-}
-*/
