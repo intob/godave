@@ -10,7 +10,6 @@ import (
 	mrand "math/rand"
 	"net/netip"
 	"runtime"
-	"sync"
 	"time"
 
 	"github.com/intob/godave/auth"
@@ -63,6 +62,7 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 			Logger: cfg.Logger.WithPrefix("/peers")}),
 		subSvc: subSvc,
 		logger: cfg.Logger}
+	d.log(logger.ERROR, "MY ID: %d", d.myID)
 	for _, addrPort := range cfg.Edges {
 		d.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
 	}
@@ -91,16 +91,23 @@ func (d *Dave) Kill() {
 }
 
 func (d *Dave) Put(dat dat.Dat) error {
-	activePeers := d.peers.ListActive(nil)
-	if len(activePeers) == 0 {
+	activePeers := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
+	if len(activePeers) == 1 {
 		return errors.New("no active peers")
 	}
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
 	entry := &store.Entry{Dat: dat}
+	err := d.store.Write(entry)
+	if err != nil {
+		return fmt.Errorf("failed to write entry to local store: %s", err)
+	}
 	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
 		entry.Replicas[i] = sorted[i].Peer.ID
 	}
 	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+		if sorted[i].Peer.ID == d.myID {
+			continue
+		}
 		if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
 			d.peers.SetStorageChallenge(sorted[i].Peer.AddrPort, &peer.StorageChallenge{
 				PublicKey: dat.PubKey, DatKey: dat.Key,
@@ -109,10 +116,6 @@ func (d *Dave) Put(dat dat.Dat) error {
 		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: entry},
 			AddrPort: sorted[i].Peer.AddrPort}
 		d.log(logger.DEBUG, "sent to %s (%v)", sorted[i].Peer.AddrPort, sorted[i].Peer.ID)
-	}
-	err := d.store.Write(entry)
-	if err != nil {
-		return fmt.Errorf("failed to write entry to local store: %s", err)
 	}
 	return nil
 }
@@ -262,29 +265,6 @@ func (d *Dave) handlePackets() {
 	}
 }
 
-func (d *Dave) manageReplicas() {
-	peerDroppedEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
-	peerAddedEv := d.subSvc.Subscribe(sub.PEER_ADDED)
-	for {
-		select {
-		case ev := <-peerDroppedEv:
-			peer, ok := ev.(peer.PeerCopy)
-			if !ok {
-				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
-				continue
-			}
-			d.replaceReplicasForDroppedPeer(peer)
-		case ev := <-peerAddedEv:
-			peer, ok := ev.(peer.PeerCopy)
-			if !ok {
-				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
-				continue
-			}
-			d.replaceReplicasForNewPeer(peer)
-		}
-	}
-}
-
 func (d *Dave) run() {
 	pingTick := time.NewTicker(network.PING)
 	storageChallengeTick := time.NewTicker(network.STORAGE_CHALLENGE_EVERY)
@@ -368,85 +348,118 @@ func (d *Dave) run() {
 	}
 }
 
-func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
-	entries := d.store.ListWithReplicaID(p.ID)
-	wg := sync.WaitGroup{}
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			active := d.peers.ListActive(nil)
-			refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
-			for {
-				select {
-				case <-refreshActive.C:
-					active = d.peers.ListActive(nil)
-				case e, ok := <-entries:
-					if !ok {
-						d.log(logger.ERROR, "replication routine finished")
-						return
-					}
-					sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
-					for j := range e.Replicas {
-						if j >= len(sorted) {
-							break
-						}
-						e.Replicas[j] = sorted[j].Peer.ID
-					}
-					for i := 0; i < network.FANOUT && i < len(sorted); i++ {
-						replica := sorted[i].Peer
-						d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-							AddrPort: replica.AddrPort}
-					}
-					d.store.Write(&e)
-					time.Sleep(time.Millisecond)
-				}
+func (d *Dave) manageReplicas() {
+	peerDroppedEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
+	peerAddedEv := d.subSvc.Subscribe(sub.PEER_ADDED)
+	for {
+		select {
+		case ev := <-peerDroppedEv:
+			peer, ok := ev.(peer.PeerCopy)
+			if !ok {
+				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
+				continue
 			}
-		}()
+			go d.replaceReplicasForDroppedPeer(peer)
+		case ev := <-peerAddedEv:
+			peer, ok := ev.(peer.PeerCopy)
+			if !ok {
+				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
+				continue
+			}
+			//go d.replaceReplicasForNewPeer(peer)
+		}
 	}
-	wg.Wait()
 }
 
-func (d *Dave) replaceReplicasForNewPeer(p peer.PeerCopy) {
-	entries := d.store.ListAll()
-	wg := sync.WaitGroup{}
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for e := range entries {
-				newPeerDist := p.ID ^ peer.IDFromPublicKey(e.Dat.PubKey)
-				replaced := false
-				for j, replicaID := range e.Replicas {
-					if newPeerDist < replicaID^peer.IDFromPublicKey(e.Dat.PubKey) {
-						e.Replicas[j] = p.ID
-						replaced = true
+// TODO: FIND AN ELEGANT WAY TO DECIDE WHO TO PROPAGATE THE UPDATE TO
+// IDEALS:
+// 1. ONLY THE NEW REPLICA(S) ARE UPDATED (MAYBE THERE ARE MULTIPLE,
+// AS NEW PEERS COULD HAVE JOINED THAT ARE CLOSER THAN CURRENT REPLICAS).
+// 2. ONLY ONE OF THE EXISTING REPLICAS IS RESPONSIBLE FOR THIS UPDATE
+func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
+	entries := d.store.ListWithReplicaID(p.ID)
+	active := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
+	refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
+	defer refreshActive.Stop()
+	for {
+		select {
+		case <-refreshActive.C:
+			active = append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
+		case e, ok := <-entries:
+			if !ok {
+				d.log(logger.ERROR, "replication done: replaced %d with new peers", p.ID)
+				return
+			}
+			sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
+
+			//notify := make([]int, 0, network.FANOUT-1)
+
+			oldReplicas := e.Replicas
+
+			// The leader is responsible for propagating the update.
+			// The leader is the node with the largest ID.
+			var leader uint64
+			for j, r := range e.Replicas {
+				if r > leader && r != p.ID {
+					leader = r
+				}
+				if j < len(sorted) {
+					e.Replicas[j] = sorted[j].Peer.ID
+				}
+			}
+
+			d.store.Write(&e)
+
+			if leader != d.myID {
+				continue
+			}
+
+			d.log(logger.DEBUG, "I'M THE LEADER")
+
+			// Send to all replicas that are not present in oldReplicas
+			for i, r := range e.Replicas {
+				var found bool
+				for _, r2 := range oldReplicas {
+					if r == r2 {
+						found = true
 						break
 					}
 				}
-				if replaced {
-					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-						AddrPort: p.AddrPort}
-					d.store.Write(&e)
-					time.Sleep(time.Millisecond)
+				if found {
+					continue
 				}
+				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+					AddrPort: sorted[i].Peer.AddrPort}
+				time.Sleep(time.Millisecond)
 			}
-		}()
-	}
-	wg.Wait()
-}
-
-func (d *Dave) sendGetMyAddrPort() error {
-	for _, p := range d.peers.Edges() {
-		if time.Since(p.AuthChallengeSolved) < network.DEACTIVATE_AFTER {
-			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
-				AddrPort: p.AddrPort}
-			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort)
-			return nil
 		}
 	}
-	return errors.New("failed to send MYADDRPORT")
 }
+
+// The bottleneck of this process of replicating is the network.
+// As such, this routine and the caled ListWithReplicaID run on
+// just one core.
+/*
+func (d *Dave) replaceReplicasForNewPeer(p peer.PeerCopy) {
+	for e := range d.store.ListAll() {
+		newPeerDist := p.ID ^ peer.IDFromPublicKey(e.Dat.PubKey)
+		replaced := false
+		for j, replicaID := range e.Replicas {
+			if newPeerDist < replicaID^peer.IDFromPublicKey(e.Dat.PubKey) {
+				e.Replicas[j] = p.ID
+				replaced = true
+				break
+			}
+		}
+		if replaced {
+			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+				AddrPort: p.AddrPort}
+			d.store.Write(&e)
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+*/
 
 func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.AddrPort) {
 	d.peers.AddPeer(raddr, false)
@@ -471,22 +484,6 @@ func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.Add
 		d.log(logger.ERROR, "failed to set peer used space & capacity: %s", err)
 	}
 }
-
-/*
-func (d *Dave) sendToClosestPeers(activePeers []peer.PeerCopy, dat *dat.Dat) {
-	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
-	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
-		p := sorted[i].Peer
-		if mrand.Float64() <= network.STORAGE_CHALLENGE_PROBABILITY {
-			d.peers.SetStorageChallenge(p.AddrPort, &peer.StorageChallenge{
-				PublicKey: entry.Dat.PubKey, DatKey: entry.Dat.Key,
-				Expires: time.Now().Add(network.TTL - time.Second)})
-		}
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: entry},
-			AddrPort: p.AddrPort}
-	}
-}
-*/
 
 func (d *Dave) handlePong(h *blake3.Hasher, msg *types.Msg, raddr, myAddr netip.AddrPort) error {
 	challenge, storedPubKey, err := d.peers.CurrentAuthChallengeAndPubKey(raddr)
@@ -548,6 +545,18 @@ func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
 	}
 	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Entry: &entry}, AddrPort: raddr}
 	return nil
+}
+
+func (d *Dave) sendGetMyAddrPort() error {
+	for _, p := range d.peers.Edges() {
+		if time.Since(p.AuthChallengeSolved) < network.DEACTIVATE_AFTER {
+			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
+				AddrPort: p.AddrPort}
+			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort)
+			return nil
+		}
+	}
+	return errors.New("failed to send MYADDRPORT")
 }
 
 func (d *Dave) log(level logger.LogLevel, msg string, args ...any) {

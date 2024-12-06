@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime"
 	"sync"
 	"sync/atomic"
 
@@ -169,66 +168,65 @@ func (s *Store) Read(publicKey ed25519.PublicKey, datKey string) (Entry, error) 
 }
 
 func (s *Store) ListAll() <-chan Entry {
-	resultChan := make(chan Entry, 100_000)
+	resultChan := make(chan Entry, 100)
 	jobs := make(chan int, len(s.shards))
-	wg := sync.WaitGroup{}
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for shardIndex := range jobs {
-				shard := s.shards[shardIndex]
-				shard.mu.RLock()
-				for _, e := range shard.data {
-					resultChan <- e
-				}
-				shard.mu.RUnlock()
+	go func() {
+		for shardIndex := range jobs {
+			shard := s.shards[shardIndex]
+			shard.mu.RLock()
+			for _, e := range shard.data {
+				resultChan <- e
 			}
-		}()
-	}
+			shard.mu.RUnlock()
+		}
+		close(resultChan)
+	}()
 	go func() {
 		for j := 0; j < len(s.shards); j++ {
 			jobs <- j
 		}
 		close(jobs)
-		wg.Wait()
-		close(resultChan)
 	}()
 	return resultChan
 }
 
 func (s *Store) ListWithReplicaID(id uint64) <-chan Entry {
-	resultChan := make(chan Entry, 100_000)
-	jobs := make(chan int, len(s.shards))
-	wg := sync.WaitGroup{}
-	for i := 0; i < runtime.NumCPU(); i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for shardIndex := range jobs {
-				shard := s.shards[shardIndex]
-				shard.mu.RLock()
-				for _, e := range shard.data {
-					for _, r := range e.Replicas {
-						if r == id {
-							resultChan <- e
-							break
-						}
+	buffer := make(chan []Entry, 1)
+	out := make(chan Entry, 1)
+	jobs := make(chan int)
+	go func() {
+		for shardIndex := range jobs {
+			shard := s.shards[shardIndex]
+			result := make([]Entry, 0, 100)
+			shard.mu.RLock()
+			for _, e := range shard.data {
+				for _, r := range e.Replicas {
+					if r == id {
+						result = append(result, e)
+						break
 					}
 				}
-				shard.mu.RUnlock()
 			}
-		}()
-	}
+			shard.mu.RUnlock()
+			buffer <- result
+		}
+		close(buffer)
+	}()
 	go func() {
 		for j := 0; j < len(s.shards); j++ {
 			jobs <- j
 		}
 		close(jobs)
-		wg.Wait()
-		close(resultChan)
 	}()
-	return resultChan
+	go func() {
+		for buf := range buffer {
+			for _, r := range buf {
+				out <- r
+			}
+		}
+		close(out)
+	}()
+	return out
 }
 
 /*
