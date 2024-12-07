@@ -13,7 +13,7 @@ import (
 	"github.com/intob/godave/types"
 )
 
-const bufferSize = 320 * 1024 // 320KB
+const BUFFER_SIZE = 640 * 1024 // 320KB
 
 type TCPService struct {
 	listener   *net.TCPListener
@@ -21,9 +21,22 @@ type TCPService struct {
 	logger     logger.Logger
 }
 
-type MessageWriter struct {
-	Messages chan<- []byte
-	Errors   <-chan error
+type ConnWriter struct {
+	Conn   net.Conn
+	Writer *bufio.Writer
+}
+
+func Dial(udpAddrPort netip.AddrPort) (*ConnWriter, error) {
+	tcpAddrPort := net.TCPAddrFromAddrPort(udpAddrPort)
+	tcpAddrPort.Port = tcpAddrPort.Port + 1
+	conn, err := net.Dial("tcp", tcpAddrPort.String())
+	if err != nil {
+		return nil, err
+	}
+	return &ConnWriter{
+		Writer: bufio.NewWriterSize(conn, BUFFER_SIZE),
+		Conn:   conn,
+	}, nil
 }
 
 // NewTCPService creates a listner that accepts TCP connections. The UDP port is
@@ -47,34 +60,6 @@ func NewTCPService(udpAddr *net.UDPAddr, log logger.Logger) (*TCPService, error)
 
 func (t *TCPService) Messages() <-chan *types.Msg { return t.messagesIn }
 
-func (t *TCPService) Dial(udpAddrPort netip.AddrPort) (*MessageWriter, error) {
-	tcpAddrPort := net.TCPAddrFromAddrPort(udpAddrPort)
-	tcpAddrPort.Port = tcpAddrPort.Port + 1
-	conn, err := net.Dial("tcp", tcpAddrPort.String())
-	if err != nil {
-		return nil, err
-	}
-	messages := make(chan []byte, 1)
-	errors := make(chan error, 1)
-	go func() {
-		writer := bufio.NewWriterSize(conn, bufferSize)
-		defer writer.Flush()
-		defer conn.Close()
-		defer close(errors)
-		msgBuf := make([]byte, network.MAX_MSG_LEN+2)
-		for m := range messages {
-			binary.LittleEndian.PutUint16(msgBuf, uint16(len(m)))
-			copy(msgBuf[2:], m)
-			_, err = writer.Write(msgBuf[:len(m)+2])
-			if err != nil {
-				errors <- err
-				continue
-			}
-		}
-	}()
-	return &MessageWriter{messages, errors}, nil
-}
-
 func (t *TCPService) acceptConnections() {
 	for {
 		conn, err := t.listener.Accept()
@@ -88,7 +73,7 @@ func (t *TCPService) acceptConnections() {
 
 func (t *TCPService) handleConnection(conn net.Conn) {
 	defer conn.Close()
-	reader := bufio.NewReaderSize(conn, bufferSize)
+	reader := bufio.NewReaderSize(conn, BUFFER_SIZE)
 	lenBuf := make([]byte, 2)
 	msgBuf := make([]byte, network.MAX_MSG_LEN)
 	for {

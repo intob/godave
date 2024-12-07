@@ -6,7 +6,7 @@ const (
 	// Max packet size, 1500 MTU is typical, prevents packet fragmentation
 	MAX_MSG_LEN = 1424
 	// Number of peers selected when sending dats.
-	FANOUT = 3
+	FANOUT = 5
 	// Inverse of probability that a peer is selected regardless of trust.
 	PROBE = 12
 	// Maximum number of peer descriptors in a PONG message.

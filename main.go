@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -111,15 +112,16 @@ func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan 
 		defer close(errors)
 		sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(publicKey), activePeers)
 		replicas := [network.FANOUT]uint64{}
-		writers := make([]*tcp.MessageWriter, 0, network.FANOUT)
-		defer func(writers []*tcp.MessageWriter) {
+		writers := make([]*tcp.ConnWriter, 0, network.FANOUT)
+		defer func(writers []*tcp.ConnWriter) {
 			for _, w := range writers {
-				close(w.Messages)
+				w.Writer.Flush()
+				w.Conn.Close()
 			}
 		}(writers)
 		for i := 0; i < network.FANOUT && i < len(sorted); i++ {
 			if sorted[i].Peer.ID != d.myID {
-				w, err := d.tcp.Dial(sorted[i].Peer.AddrPort)
+				w, err := tcp.Dial(sorted[i].Peer.AddrPort)
 				if err != nil {
 					d.log(logger.ERROR, "failed to dial: %s", err)
 					continue
@@ -128,7 +130,7 @@ func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan 
 			}
 			replicas[i] = sorted[i].Peer.ID
 		}
-		mbuf := make([]byte, network.MAX_MSG_LEN)
+		mbuf := make([]byte, network.MAX_MSG_LEN+2)
 		for dat := range dats {
 			e := &store.Entry{Dat: dat, Replicas: replicas}
 			err := d.store.Write(e)
@@ -140,20 +142,14 @@ func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan 
 				return
 			}
 			m := &types.Msg{Op: types.OP_PUT, Entry: e}
-			n, err := m.Marshal(mbuf)
+			n, err := m.Marshal(mbuf[2:])
+			binary.LittleEndian.PutUint16(mbuf, uint16(n))
 			if err != nil {
 				errors <- fmt.Errorf("failed to marshal message: %w", err)
 				return
 			}
 			for _, w := range writers {
-				wbuf := make([]byte, n)
-				copy(wbuf, mbuf[:n])
-				w.Messages <- wbuf
-				select {
-				case err := <-w.Errors:
-					errors <- err
-				default:
-				}
+				w.Writer.Write(mbuf[:n+2])
 			}
 		}
 	}()
@@ -217,7 +213,6 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*store.Entry, error) {
 				d.log(logger.ERROR, "failed to store: %s", err)
 				continue
 			}
-			// TODO: send to nodes that responded with "not found"
 			return pkt.Msg.Entry, nil
 		}
 	}
@@ -358,98 +353,9 @@ func (d *Dave) managePeerDiscovery() {
 }
 
 func (d *Dave) manageReplicas() {
-	peerDroppedEv := d.subSvc.Subscribe(sub.PEER_DROPPED)
-	refresh := time.NewTicker(10 * time.Minute)
-	for {
-		select {
-		case ev := <-peerDroppedEv:
-			peer, ok := ev.(peer.PeerCopy)
-			if !ok {
-				d.log(logger.ERROR, "expected type peer.PeerCopy, got %T", peer)
-				continue
-			}
-			d.replaceReplicasForDroppedPeer(peer)
-		case <-refresh.C:
-			d.replaceReplicas()
-		}
-	}
-}
-
-func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
-	entries := d.store.ListWithReplicaID(p.ID)
-	active := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
-	refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
-	writers := make(map[uint64]*tcp.MessageWriter)
-	mbuf := make([]byte, network.MAX_MSG_LEN)
-	for {
-		select {
-		case <-refreshActive.C:
-			active = append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
-		case e, ok := <-entries:
-			if !ok {
-				d.log(logger.ERROR, "replication done: replaced %d with new peers", p.ID)
-				for _, w := range writers {
-					close(w.Messages)
-				}
-				return
-			}
-			sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
-			oldReplicas := e.Replicas
-			var replicaChanged bool
-			var leader uint64
-			for j, r := range e.Replicas {
-				if r > leader && r != p.ID {
-					leader = r
-				}
-				if j < len(sorted) && e.Replicas[j] != sorted[j].Peer.ID {
-					e.Replicas[j] = sorted[j].Peer.ID
-					replicaChanged = true
-				}
-			}
-			if !replicaChanged {
-				continue
-			}
-			d.store.Write(&e)
-			if leader != d.myID {
-				continue
-			}
-			msg := &types.Msg{Op: types.OP_PUT, Entry: &e}
-			n, err := msg.Marshal(mbuf)
-			if err != nil {
-				d.log(logger.ERROR, "failed to marshal: %s", err)
-				continue
-			}
-			for i, r := range e.Replicas {
-				var found bool
-				for _, r2 := range oldReplicas {
-					if r == r2 {
-						found = true
-						break
-					}
-				}
-				if found {
-					continue
-				}
-				target := sorted[i].Peer
-				writer, ok := writers[target.ID]
-				if !ok {
-					var err error
-					writers[target.ID], err = d.tcp.Dial(target.AddrPort)
-					if err != nil {
-						d.log(logger.ERROR, "failed to dial TCP: %s", err)
-					}
-					writer = writers[target.ID]
-				}
-				wbuf := make([]byte, len(mbuf))
-				copy(wbuf, mbuf[:n])
-				writer.Messages <- wbuf
-				select {
-				case err := <-writer.Errors:
-					d.log(logger.ERROR, "error from TCP writer: %s", err)
-				default:
-				}
-			}
-		}
+	refresh := time.NewTicker(time.Minute)
+	for range refresh.C {
+		d.replaceReplicas()
 	}
 }
 
@@ -457,6 +363,8 @@ func (d *Dave) replaceReplicas() {
 	active := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
 	refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
 	entries := d.store.ListAll()
+	writers := make(map[uint64]*tcp.ConnWriter)
+	mbuf := make([]byte, network.MAX_MSG_LEN+2)
 	for {
 		select {
 		case <-refreshActive.C:
@@ -486,6 +394,13 @@ func (d *Dave) replaceReplicas() {
 			if leader != d.myID {
 				continue
 			}
+			msg := &types.Msg{Op: types.OP_PUT, Entry: &e}
+			n, err := msg.Marshal(mbuf[2:])
+			binary.LittleEndian.PutUint16(mbuf, uint16(n))
+			if err != nil {
+				d.log(logger.ERROR, "failed to marshal message: %s", err)
+				continue
+			}
 			for i, r := range e.Replicas {
 				var found bool
 				for _, r2 := range oldReplicas {
@@ -497,9 +412,20 @@ func (d *Dave) replaceReplicas() {
 				if found {
 					continue
 				}
-				d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-					AddrPort: sorted[i].Peer.AddrPort}
-				time.Sleep(time.Millisecond)
+				target := sorted[i].Peer
+				writer, ok := writers[target.ID]
+				if !ok {
+					var err error
+					writers[target.ID], err = tcp.Dial(target.AddrPort)
+					if err != nil {
+						d.log(logger.ERROR, "failed to dial TCP: %s", err)
+					}
+					writer = writers[target.ID]
+				}
+				_, err := writer.Writer.Write(mbuf[:n+2])
+				if err != nil {
+					d.log(logger.ERROR, "failed to write to TCP buffer: %s", err)
+				}
 			}
 		}
 	}

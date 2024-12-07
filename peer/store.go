@@ -279,7 +279,7 @@ func (s *Store) RandPeers(limit int, exclude *netip.AddrPort) []PeerCopy {
 // Drops/deactivates inactive peers. Inactive edges are not dropped, but deactivated.
 func (s *Store) prune() {
 	s.mu.Lock()
-	dropped := make([]PeerCopy, 0)
+	//dropped := make([]PeerCopy, 0)
 	now := time.Now()
 	for k, p := range s.table {
 		isActive := now.Sub(p.authChallengeSolved) < network.DEACTIVATE_AFTER
@@ -293,7 +293,7 @@ func (s *Store) prune() {
 			continue
 		}
 		if now.Sub(p.authChallengeSolved) >= network.DROP_AFTER {
-			dropped = append(dropped, copyFromPeer(p))
+			//dropped = append(dropped, copyFromPeer(p))
 			delete(s.table, k)
 			delete(s.active, k)
 			s.log(logger.ERROR, "dropped %s", p.addrPort)
@@ -312,9 +312,9 @@ func (s *Store) prune() {
 	}
 	activeCount, totalCount := len(s.active), len(s.table)
 	s.mu.Unlock()
-	for _, d := range dropped {
+	/*for _, d := range dropped {
 		s.subSvc.Publish(sub.PEER_DROPPED, d)
-	}
+	}*/
 	s.subSvc.Publish(sub.PEERS_PRUNED, struct{}{})
 	s.log(logger.DEBUG, "pruned, active: %d/%d", activeCount, totalCount)
 }
