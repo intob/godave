@@ -73,9 +73,6 @@ func NewStore(cfg *StoreCfg) *Store {
 }
 
 func (s *Store) ReadBackup() error {
-	if s.backupFilename == "" {
-		return fmt.Errorf("backup filename is unset")
-	}
 	err := s.readBackup()
 	if err != nil {
 		return fmt.Errorf("error reading backup: %s", err)

@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"runtime"
 	"time"
@@ -16,10 +17,11 @@ import (
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/network"
 	"github.com/intob/godave/peer"
-	"github.com/intob/godave/pkt"
 	"github.com/intob/godave/store"
 	"github.com/intob/godave/sub"
+	"github.com/intob/godave/tcp"
 	"github.com/intob/godave/types"
+	"github.com/intob/godave/udp"
 	"lukechampine.com/blake3"
 )
 
@@ -30,15 +32,16 @@ type Dave struct {
 	killStore, killStoreDone chan struct{}
 	peers                    *peer.Store
 	store                    *store.Store
-	pproc                    *pkt.PacketProcessor
+	udp                      *udp.UDPService
+	tcp                      *tcp.TCPService
 	logger                   logger.Logger
 	subSvc                   *sub.SubscriptionService
 }
 
 type DaveCfg struct {
-	// A UDP socket. Normally from net.ListenUDP. This interface can be mocked
-	// to build simulations.
-	Socket pkt.Socket
+	// UDP listen address:port. A TCP listener will be created on the next port,
+	// for example if this is on port 40, dave will listen for TCP connections on port 41.
+	UdpListenAddr *net.UDPAddr
 	// Node private key. The last 32 bytes are the public key. The node ID is
 	// derived from the first 8 bytes of the public key.
 	PrivateKey     ed25519.PrivateKey
@@ -52,6 +55,14 @@ type DaveCfg struct {
 
 func NewDave(cfg *DaveCfg) (*Dave, error) {
 	subSvc := sub.NewSubscriptionService(100)
+	tcpSvc, err := tcp.NewTCPService(cfg.UdpListenAddr, cfg.Logger.WithPrefix("/tcp"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to init TCP service: %w", err)
+	}
+	udpSvc, err := udp.NewUDPService(cfg.UdpListenAddr, cfg.Logger.WithPrefix("/udp"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to init UDP service: %w", err)
+	}
 	d := &Dave{
 		privateKey: cfg.PrivateKey, publicKey: cfg.PrivateKey.Public().(ed25519.PublicKey),
 		myID:      peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
@@ -60,27 +71,27 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 			SubSvc: subSvc,
 			Logger: cfg.Logger.WithPrefix("/peers")}),
 		subSvc: subSvc,
+		udp:    udpSvc,
+		tcp:    tcpSvc,
 		logger: cfg.Logger}
 	d.log(logger.ERROR, "MY ID: %d", d.myID)
 	for _, addrPort := range cfg.Edges {
-		d.peers.AddPeer(pkt.MapToIPv6(addrPort), true)
+		d.peers.AddPeer(udp.MapToIPv6(addrPort), true)
 	}
 	d.store = store.NewStore(&store.StoreCfg{
 		MyID:           peer.IDFromPublicKey(cfg.PrivateKey.Public().(ed25519.PublicKey)),
 		Capacity:       cfg.ShardCapacity,
 		BackupFilename: cfg.BackupFilename, Kill: d.killStore, Done: d.killStoreDone,
 		Logger: cfg.Logger.WithPrefix("/dats")})
-	err := d.store.ReadBackup()
-	if err != nil {
-		d.log(logger.ERROR, "failed to read backup: %s", err)
+	if cfg.BackupFilename != "" {
+		err = d.store.ReadBackup()
+		if err != nil {
+			d.log(logger.ERROR, "failed to read backup: %s", err)
+		}
 	}
-	d.pproc, err = pkt.NewPacketProcessor(cfg.Socket, cfg.Logger.WithPrefix("/pproc"))
-	if err != nil {
-		return nil, fmt.Errorf("failed to init packet processor: %s", err)
-	}
-	go d.handlePackets()
+	go d.handleMessages()
 	go d.manageReplicas()
-	go d.run()
+	go d.managePeerDiscovery()
 	return d, nil
 }
 
@@ -89,29 +100,64 @@ func (d *Dave) Kill() {
 	<-d.killStoreDone
 }
 
-func (d *Dave) Put(dat dat.Dat) error {
+func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan error, error) {
 	activePeers := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
 	if len(activePeers) == 1 {
-		return errors.New("no active peers")
+		return nil, nil, errors.New("no active peers")
 	}
-	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(dat.PubKey), activePeers)
-	entry := &store.Entry{Dat: dat}
-	err := d.store.Write(entry)
-	if err != nil {
-		return fmt.Errorf("failed to write entry to local store: %s", err)
-	}
-	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
-		entry.Replicas[i] = sorted[i].Peer.ID
-	}
-	for i := 0; i < network.FANOUT && i < len(sorted); i++ {
-		if sorted[i].Peer.ID == d.myID {
-			continue
+	dats := make(chan dat.Dat, runtime.NumCPU())
+	errors := make(chan error, 1)
+	go func() {
+		defer close(errors)
+		sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(publicKey), activePeers)
+		replicas := [network.FANOUT]uint64{}
+		writers := make([]*tcp.MessageWriter, 0, network.FANOUT)
+		defer func(writers []*tcp.MessageWriter) {
+			for _, w := range writers {
+				close(w.Messages)
+			}
+		}(writers)
+		for i := 0; i < network.FANOUT && i < len(sorted); i++ {
+			if sorted[i].Peer.ID != d.myID {
+				w, err := d.tcp.Dial(sorted[i].Peer.AddrPort)
+				if err != nil {
+					d.log(logger.ERROR, "failed to dial: %s", err)
+					continue
+				}
+				writers = append(writers, w)
+			}
+			replicas[i] = sorted[i].Peer.ID
 		}
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: entry},
-			AddrPort: sorted[i].Peer.AddrPort}
-		d.log(logger.DEBUG, "sent to %s (%v)", sorted[i].Peer.AddrPort, sorted[i].Peer.ID)
-	}
-	return nil
+		mbuf := make([]byte, network.MAX_MSG_LEN)
+		for dat := range dats {
+			e := &store.Entry{Dat: dat, Replicas: replicas}
+			err := d.store.Write(e)
+			if err != nil {
+				select {
+				case errors <- fmt.Errorf("failed to write entry to local store: %s", err):
+				default:
+				}
+				return
+			}
+			m := &types.Msg{Op: types.OP_PUT, Entry: e}
+			n, err := m.Marshal(mbuf)
+			if err != nil {
+				errors <- fmt.Errorf("failed to marshal message: %w", err)
+				return
+			}
+			for _, w := range writers {
+				wbuf := make([]byte, n)
+				copy(wbuf, mbuf[:n])
+				w.Messages <- wbuf
+				select {
+				case err := <-w.Errors:
+					errors <- err
+				default:
+				}
+			}
+		}
+	}()
+	return dats, errors, nil
 }
 
 func (d *Dave) Get(ctx context.Context, get *types.Get) (*store.Entry, error) {
@@ -132,7 +178,7 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*store.Entry, error) {
 	sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(get.PublicKey), activePeers)
 	count := min(network.FANOUT, len(sorted))
 	for i := 0; i < count; i++ {
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET, Get: get},
+		d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_GET, Get: get},
 			AddrPort: sorted[i].Peer.AddrPort}
 	}
 	hasher := blake3.New(32, nil)
@@ -142,7 +188,7 @@ func (d *Dave) Get(ctx context.Context, get *types.Get) (*store.Entry, error) {
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		case e := <-evch:
-			pkt, ok := e.(*pkt.Packet)
+			pkt, ok := e.(*udp.Packet)
 			if !ok {
 				d.log(logger.ERROR, "expected event type *pkt.Packet, got %T", pkt)
 				continue
@@ -208,50 +254,25 @@ func (d *Dave) NetworkUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
 	return d.peers.TotalUsedSpaceAndCapacity()
 }
 
-func (d *Dave) handlePackets() {
+func (d *Dave) handleMessages() {
 	for i := 0; i < runtime.NumCPU(); i++ {
 		go func() {
 			hasher := blake3.New(32, nil)
 			var myAddrPort netip.AddrPort
-			for packet := range d.pproc.In() {
-				msg := &types.Msg{}
-				err := msg.Unmarshal(packet.Data)
-				if err != nil {
-					d.log(logger.ERROR, "failed to unmarshal packet: %s", err)
-				}
-				switch msg.Op {
-				case types.OP_PONG:
-					hasher.Reset()
-					err := d.handlePong(hasher, msg, packet.AddrPort, myAddrPort)
-					if err != nil {
-						d.log(logger.ERROR, "failed to handle PONG: %s", err)
+			udpPackets := d.udp.In()
+			tcpMessages := d.tcp.Messages()
+			for {
+				select {
+				case packet := <-udpPackets:
+					d.handleUDPPacket(hasher, myAddrPort, packet)
+				case m := <-tcpMessages:
+					if m.Op != types.OP_PUT || m.Entry == nil {
+						continue
 					}
-				case types.OP_PING:
 					hasher.Reset()
-					d.handlePing(hasher, msg, packet.AddrPort)
-				case types.OP_PUT:
-					hasher.Reset()
-					err = d.handlePut(hasher, msg.Entry)
+					err := d.handlePut(hasher, m.Entry)
 					if err != nil {
-						d.log(logger.ERROR, "failed to handle PUT: %s", err)
-					}
-				case types.OP_GET:
-					err = d.handleGet(msg.Get, packet.AddrPort)
-					if err != nil {
-						d.log(logger.DEBUG, "failed to handle GET: %s", err)
-					}
-				case types.OP_GET_ACK:
-					d.subSvc.Publish(sub.RECV_GET_ACK, &pkt.Packet{Msg: msg, AddrPort: packet.AddrPort})
-				case types.OP_GETMYADDRPORT:
-					d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
-						AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
-				case types.OP_GETMYADDRPORT_ACK:
-					// Only accept from edge peers
-					if d.peers.IsEdge(packet.AddrPort) && len(msg.AddrPorts) == 1 {
-						myAddrPort = msg.AddrPorts[0]
-						d.pproc.MyAddrPortChan() <- myAddrPort
-					} else {
-						d.log(logger.ERROR, "rejected MYADDRPORT_ACK from %s", packet.AddrPort)
+						d.log(logger.ERROR, "failed to handle TCP PUT: %s", err)
 					}
 				}
 			}
@@ -259,7 +280,50 @@ func (d *Dave) handlePackets() {
 	}
 }
 
-func (d *Dave) run() {
+func (d *Dave) handleUDPPacket(hasher *blake3.Hasher, myAddrPort netip.AddrPort, packet *udp.RawPacket) {
+	msg := &types.Msg{}
+	err := msg.Unmarshal(packet.Data)
+	if err != nil {
+		d.log(logger.ERROR, "failed to unmarshal packet: %s", err)
+	}
+	switch msg.Op {
+	case types.OP_PONG:
+		hasher.Reset()
+		err := d.handlePong(hasher, msg, packet.AddrPort, myAddrPort)
+		if err != nil {
+			d.log(logger.ERROR, "failed to handle PONG: %s", err)
+		}
+	case types.OP_PING:
+		hasher.Reset()
+		d.handlePing(hasher, msg, packet.AddrPort)
+	case types.OP_PUT:
+		hasher.Reset()
+		err = d.handlePut(hasher, msg.Entry)
+		if err != nil {
+			d.log(logger.ERROR, "failed to handle PUT: %s", err)
+		}
+	case types.OP_GET:
+		err = d.handleGet(msg.Get, packet.AddrPort)
+		if err != nil {
+			d.log(logger.DEBUG, "failed to handle GET: %s", err)
+		}
+	case types.OP_GET_ACK:
+		d.subSvc.Publish(sub.RECV_GET_ACK, &udp.Packet{Msg: msg, AddrPort: packet.AddrPort})
+	case types.OP_GETMYADDRPORT:
+		d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT_ACK,
+			AddrPorts: []netip.AddrPort{packet.AddrPort}}, AddrPort: packet.AddrPort}
+	case types.OP_GETMYADDRPORT_ACK:
+		// Only accept from edge peers
+		if d.peers.IsEdge(packet.AddrPort) && len(msg.AddrPorts) == 1 {
+			myAddrPort = msg.AddrPorts[0]
+			d.udp.MyAddrPortChan() <- myAddrPort
+		} else {
+			d.log(logger.ERROR, "rejected MYADDRPORT_ACK from %s", packet.AddrPort)
+		}
+	}
+}
+
+func (d *Dave) managePeerDiscovery() {
 	pingTick := time.NewTicker(network.PING)
 	getMyAddrPortTick := time.NewTicker(network.GETMYADDRPORT_EVERY)
 	if len(d.peers.Edges()) == 0 {
@@ -279,7 +343,7 @@ func (d *Dave) run() {
 					d.log(logger.ERROR, "failed to create challenge: %s", err)
 					continue
 				}
-				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PING,
+				d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_PING,
 					AuthChallenge: challenge, Status: &types.Status{
 						UsedSpace: d.UsedSpace(), Capacity: d.Capacity()},
 				}, AddrPort: peer.AddrPort}
@@ -311,16 +375,12 @@ func (d *Dave) manageReplicas() {
 	}
 }
 
-// TODO: FIND AN ELEGANT WAY TO DECIDE WHO TO PROPAGATE THE UPDATE TO
-// IDEALS:
-// 1. ONLY THE NEW REPLICA(S) ARE UPDATED (MAYBE THERE ARE MULTIPLE,
-// AS NEW PEERS COULD HAVE JOINED THAT ARE CLOSER THAN CURRENT REPLICAS).
-// 2. ONLY ONE OF THE EXISTING REPLICAS IS RESPONSIBLE FOR THIS UPDATE
 func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
 	entries := d.store.ListWithReplicaID(p.ID)
 	active := append(d.peers.ListActive(nil), peer.PeerCopy{ID: d.myID})
 	refreshActive := time.NewTicker(network.DEACTIVATE_AFTER)
-	defer refreshActive.Stop()
+	writers := make(map[uint64]*tcp.MessageWriter)
+	mbuf := make([]byte, network.MAX_MSG_LEN)
 	for {
 		select {
 		case <-refreshActive.C:
@@ -328,6 +388,9 @@ func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
 		case e, ok := <-entries:
 			if !ok {
 				d.log(logger.ERROR, "replication done: replaced %d with new peers", p.ID)
+				for _, w := range writers {
+					close(w.Messages)
+				}
 				return
 			}
 			sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(e.Dat.PubKey), active)
@@ -350,6 +413,12 @@ func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
 			if leader != d.myID {
 				continue
 			}
+			msg := &types.Msg{Op: types.OP_PUT, Entry: &e}
+			n, err := msg.Marshal(mbuf)
+			if err != nil {
+				d.log(logger.ERROR, "failed to marshal: %s", err)
+				continue
+			}
 			for i, r := range e.Replicas {
 				var found bool
 				for _, r2 := range oldReplicas {
@@ -361,9 +430,24 @@ func (d *Dave) replaceReplicasForDroppedPeer(p peer.PeerCopy) {
 				if found {
 					continue
 				}
-				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
-					AddrPort: sorted[i].Peer.AddrPort}
-				time.Sleep(time.Millisecond)
+				target := sorted[i].Peer
+				writer, ok := writers[target.ID]
+				if !ok {
+					var err error
+					writers[target.ID], err = d.tcp.Dial(target.AddrPort)
+					if err != nil {
+						d.log(logger.ERROR, "failed to dial TCP: %s", err)
+					}
+					writer = writers[target.ID]
+				}
+				wbuf := make([]byte, len(mbuf))
+				copy(wbuf, mbuf[:n])
+				writer.Messages <- wbuf
+				select {
+				case err := <-writer.Errors:
+					d.log(logger.ERROR, "error from TCP writer: %s", err)
+				default:
+				}
 			}
 		}
 	}
@@ -413,7 +497,7 @@ func (d *Dave) replaceReplicas() {
 				if found {
 					continue
 				}
-				d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
+				d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_PUT, Entry: &e},
 					AddrPort: sorted[i].Peer.AddrPort}
 				time.Sleep(time.Millisecond)
 			}
@@ -433,7 +517,7 @@ func (d *Dave) handlePing(hasher *blake3.Hasher, msg *types.Msg, raddr netip.Add
 	hasher.Write(msg.AuthChallenge[:])
 	hasher.Write(salt)
 	sig := ed25519.Sign(d.privateKey, hasher.Sum(nil))
-	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_PONG,
+	d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_PONG,
 		AuthSolution: &auth.AuthSolution{Challenge: msg.AuthChallenge,
 			Salt:      auth.Salt(salt),
 			PublicKey: d.publicKey,
@@ -498,19 +582,19 @@ func (d *Dave) handlePut(hasher *blake3.Hasher, entry *store.Entry) error {
 func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
 	entry, err := d.store.Read(get.PublicKey, get.DatKey)
 	if err != nil {
-		d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK,
+		d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK,
 			Entry: &store.Entry{Dat: dat.Dat{PubKey: get.PublicKey, Key: get.DatKey}}},
 			AddrPort: raddr}
 		return fmt.Errorf("failed to read from store: %s", err)
 	}
-	d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Entry: &entry}, AddrPort: raddr}
+	d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_GET_ACK, Entry: &entry}, AddrPort: raddr}
 	return nil
 }
 
 func (d *Dave) sendGetMyAddrPort() error {
 	for _, p := range d.peers.Edges() {
 		if time.Since(p.AuthChallengeSolved) < network.DEACTIVATE_AFTER {
-			d.pproc.Out() <- &pkt.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
+			d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_GETMYADDRPORT},
 				AddrPort: p.AddrPort}
 			d.log(logger.DEBUG, "sent GETMYADDRPORT to %s", p.AddrPort)
 			return nil

@@ -12,7 +12,7 @@ const (
 	// Maximum number of peer descriptors in a PONG message.
 	NPEER_LIMIT = 5
 	// Minimum amount of acceptable work in number of leading zero bits.
-	MIN_WORK = 16
+	MIN_WORK = 8
 	// Period between pinging peers.
 	PING = 1 * time.Second
 	// Time until new peers are activated.
