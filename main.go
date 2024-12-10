@@ -517,6 +517,12 @@ func (d *Dave) handleGet(get *types.Get, raddr netip.AddrPort) error {
 	return nil
 }
 
+// TODO: Improve this by not relying on edge nodes. Rather, we can simply collect responses
+// from a range of randomly-selected peers. This would relieve edge nodes from the burden of
+// responding to these GETMYADDRPORT packets. It also continues to work correctly in the
+// event that edge nodes temporarily go offline.
+// This distributed IP-lookup is just as important for allowing nodes with dynamic IPs to
+// advertise a service to the network, as it is for preventing loopbacks.
 func (d *Dave) sendGetMyAddrPort() error {
 	for _, p := range d.peers.Edges() {
 		if time.Since(p.AuthChallengeSolved) < network.DEACTIVATE_AFTER {
