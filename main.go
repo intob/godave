@@ -353,7 +353,7 @@ func (d *Dave) managePeerDiscovery() {
 }
 
 func (d *Dave) manageReplicas() {
-	refresh := time.NewTicker(time.Minute)
+	refresh := time.NewTicker(network.REPLICATE_EVERY)
 	for range refresh.C {
 		d.replaceReplicas()
 	}

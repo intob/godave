@@ -27,4 +27,6 @@ const (
 	// if new data has a higher priority. Priority is a function of age and
 	// XOR distance.
 	TTL = 365 * 24 * time.Hour
+	// Period between evaluating replicas of each entry.
+	REPLICATE_EVERY = 10 * time.Minute
 )
