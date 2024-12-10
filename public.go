@@ -119,12 +119,6 @@ func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan 
 		sorted := peer.SortPeersByDistance(peer.IDFromPublicKey(publicKey), activePeers)
 		replicas := [network.FANOUT]uint64{}
 		writers := make([]*tcp.ConnWriter, 0, network.FANOUT)
-		defer func(writers []*tcp.ConnWriter) {
-			for _, w := range writers {
-				w.Writer.Flush()
-				w.Conn.Close()
-			}
-		}(writers)
 		for i := 0; i < network.FANOUT && i < len(sorted); i++ {
 			if sorted[i].Peer.ID != d.myID {
 				w, err := tcp.Dial(sorted[i].Peer.AddrPort)
@@ -136,6 +130,12 @@ func (d *Dave) BatchWriter(publicKey ed25519.PublicKey) (chan<- dat.Dat, <-chan 
 			}
 			replicas[i] = sorted[i].Peer.ID
 		}
+		defer func(writers []*tcp.ConnWriter) {
+			for _, w := range writers {
+				w.Writer.Flush()
+				w.Conn.Close()
+			}
+		}(writers)
 		mbuf := make([]byte, network.MAX_MSG_LEN+2)
 		for dat := range dats {
 			e := &store.Entry{Dat: dat, Replicas: replicas}
