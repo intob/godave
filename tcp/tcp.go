@@ -7,13 +7,14 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/intob/godave/logger"
 	"github.com/intob/godave/network"
 	"github.com/intob/godave/types"
 )
 
-const BUFFER_SIZE = 640 * 1024 // 320KB
+const BUFFER_SIZE = 32 * 1024 // 32KB
 
 type TCPService struct {
 	listener   *net.TCPListener
@@ -77,7 +78,12 @@ func (t *TCPService) handleConnection(conn net.Conn) {
 	lenBuf := make([]byte, 2)
 	msgBuf := make([]byte, network.MAX_MSG_LEN)
 	for {
-		_, err := io.ReadFull(reader, lenBuf)
+		err := conn.SetReadDeadline(time.Now().Add(time.Second))
+		if err != nil {
+			t.log(logger.ERROR, "failed to set read deadline: %s", err)
+			return
+		}
+		_, err = io.ReadFull(reader, lenBuf)
 		if err != nil {
 			t.log(logger.ERROR, "failed to read length prefix from TCP conn: %s", err)
 			return
@@ -98,6 +104,7 @@ func (t *TCPService) handleConnection(conn net.Conn) {
 			t.log(logger.ERROR, "failed to unmarshal message: %s", err)
 			return
 		}
+		t.log(logger.DEBUG, "got message: %+v", m)
 		t.messagesIn <- m
 	}
 }
