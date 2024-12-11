@@ -38,12 +38,12 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 	msg.Op = Op(buf[0])
 	switch msg.Op {
 	case OP_PING:
-		if len(buf) < 1+8+16 {
+		if len(buf) < 1+32+16 {
 			return errors.New("buffer too small")
 		}
-		msg.AuthChallenge = auth.AuthChallenge(buf[1:9])
+		msg.AuthChallenge = auth.AuthChallenge(buf[1:33])
 		msg.Status = &Status{}
-		return msg.Status.Unmarshal(buf[9:])
+		return msg.Status.Unmarshal(buf[33:])
 	case OP_PONG:
 		lenAddrs := uint8(buf[1])
 		if lenAddrs > 0 {
@@ -95,7 +95,7 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 	n := 1
 	switch msg.Op {
 	case OP_PING:
-		if len(buf) < 1+8 {
+		if len(buf) < 1+32 {
 			return 0, errors.New("buffer too small")
 		}
 		n += copy(buf[1:], msg.AuthChallenge[:])

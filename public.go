@@ -38,8 +38,9 @@ type Dave struct {
 }
 
 type DaveCfg struct {
-	// UDP listen address:port. A TCP listener will be created on the next port,
-	// for example if this is on port 40, dave will listen for TCP connections on port 41.
+	// UDP listen address:port. IP must be a pure IPv6 address. For localhost, use [::1].
+	// A TCP listener will be created on the next port, for example if this is on port 40,
+	// dave will listen for TCP connections on port 41.
 	UdpListenAddr *net.UDPAddr
 	// Node private key. The last 32 bytes are the public key. The node ID is
 	// derived from the first 8 bytes of the public key.
