@@ -10,7 +10,7 @@ const (
 	// Inverse of probability that a peer is selected regardless of trust.
 	PROBE = 12
 	// Maximum number of peer descriptors in a PONG message.
-	NPEER_LIMIT = 5
+	NPEER_LIMIT = 12
 	// Minimum amount of acceptable work in number of leading zero bits.
 	MIN_WORK = 8
 	// Period between pinging peers.
