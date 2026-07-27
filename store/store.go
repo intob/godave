@@ -382,6 +382,10 @@ func (s *Store) log(level logger.LogLevel, msg string, args ...any) {
 	}
 }
 
+// TODO: Use a cryptographically secure hash function to compute the keys.
+// An attacker could potentially find a collision with someone else's entry.
+// This attack would be similar to:
+// http://emboss.github.io/blog/2012/12/14/breaking-murmur-hash-flooding-dos-reloaded/
 func keys(publicKey ed25519.PublicKey, datKey string) (uint8, uint64) {
 	h := xxhash.New()
 	h.Write(publicKey)

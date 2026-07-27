@@ -7,6 +7,7 @@ import (
 	"net/netip"
 
 	"github.com/intob/godave/auth"
+	"github.com/intob/godave/network"
 	"github.com/intob/godave/store"
 )
 
@@ -19,6 +20,7 @@ const (
 	OP_GET_ACK           = Op(5)
 	OP_GETMYADDRPORT     = Op(6)
 	OP_GETMYADDRPORT_ACK = Op(7)
+	OP_NOTIFY            = Op(8)
 	lenAddrPort          = 18
 )
 
@@ -32,6 +34,7 @@ type Msg struct {
 	Entry         *store.Entry
 	Get           *Get
 	Status        *Status
+	Body          []byte
 }
 
 func (msg *Msg) Unmarshal(buf []byte) error {
@@ -68,6 +71,18 @@ func (msg *Msg) Unmarshal(buf []byte) error {
 			return fmt.Errorf("failed to parse addrport: %w", err)
 		}
 		msg.AddrPorts = []netip.AddrPort{addrPort}
+	case OP_NOTIFY:
+		if len(buf) < 1+2 {
+			return errors.New("buffer too small")
+		}
+		lenBody := binary.LittleEndian.Uint16(buf[1:3])
+		if lenBody > network.MAX_MSG_LEN-3 {
+			return errors.New("body len prefix is invalid")
+		}
+		if len(buf) < 3+int(lenBody) {
+			return errors.New("buffer too small for body")
+		}
+		msg.Body = buf[3 : 3+lenBody]
 	}
 	return nil
 }
@@ -148,6 +163,13 @@ func (msg *Msg) Marshal(buf []byte) (int, error) {
 		binary.LittleEndian.PutUint16(buf[n:n+2], msg.AddrPorts[0].Port())
 		n += 2
 		return n, nil
+	case OP_NOTIFY:
+		if len(msg.Body) > network.MAX_MSG_LEN-3 {
+			return 0, errors.New("body is too large")
+		}
+		binary.LittleEndian.PutUint16(buf[1:3], uint16(len(msg.Body)))
+		n += copy(buf[3:], msg.Body)
+		return n + 2, nil
 	}
 	return 0, errors.New("unknown op code")
 }

@@ -90,6 +90,12 @@ func (d *Dave) handleUDPPacket(hasher *blake3.Hasher, myAddrPort netip.AddrPort,
 		} else {
 			d.log(logger.ERROR, "rejected MYADDRPORT_ACK from %s", packet.AddrPort)
 		}
+	case types.OP_NOTIFY:
+		select {
+		case d.notify <- udp.Packet{Msg: msg, AddrPort: packet.AddrPort}:
+		default:
+			d.log(logger.DEBUG, "received NOTIFY, but failed to send on channel (no receiver)")
+		}
 	}
 }
 

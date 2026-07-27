@@ -469,3 +469,24 @@ func BenchmarkMarshalUnmarshalGet(b *testing.B) {
 		}
 	}
 }
+
+func TestMarshalUnmarshalNotify(t *testing.T) {
+	body := []byte("some test")
+	m := &Msg{Op: OP_NOTIFY, Body: body}
+	buf := make([]byte, network.MAX_MSG_LEN)
+	n, err := m.Marshal(buf)
+	if err != nil {
+		t.Fatalf("failed to marshal: %s", err)
+	}
+	if n != 12 {
+		t.Fatalf("marshal returned n=%d, expected 12", n)
+	}
+	m2 := &Msg{}
+	err = m2.Unmarshal(buf)
+	if err != nil {
+		t.Fatalf("failed to unmarshal: %s", err)
+	}
+	if !bytes.Equal(m2.Body, m.Body) {
+		t.Fatalf("expected body to be %s, got %s", m.Body, m2.Body)
+	}
+}

@@ -90,3 +90,22 @@ Edge nodes serve as bootstrap peers, and are permanently retained in the peer ta
 - Concurrent shard processing
 - Configurable pruning intervals
 - Priority heap for data prioritisation, O(log n) inserts
+
+## To Do
+
+### Direct messaging
+
+Dave works great for storage, but it should also work for real-time communication. Currently, a writer can only write to their own keyed namespace. This makes building things like chat applications impractical.
+
+We need to devise a way for peers to communicate directly. I think that a custom message type is all that is missing to build a chat application. With this, applications can be free to handle these messages as they please.
+
+A sender could then add a new message to the network with key [RECIPIENT_PUB_KEY]_[MESSAGE_INDEX].
+Then, the sender could notify the recipient directly with the new message type, containing the new key. If the value fits in the packet also, it could be included.
+
+With this, it would be trivial to implement apps with real-time communication. An app simply subscribes to this new message type.
+
+###  Support for KV pairs larger than UDP packet size
+
+With an automatic fallback to TCP, we can support KV pairs larger than a single UDP packet. This would make the network more versatile, with no performance cost. Users can choose to keep messages below the UDP packet size limit to avoid the TCP fallback.
+
+A good implementation would require connection pooling, because requesters are likely to get multiple KV pairs. This connection pool could be implemented in the TCP package. The Dial method could first check a map of connections. We would also need a cleanup routine to close connections that have not been used recently.

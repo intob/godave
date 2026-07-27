@@ -35,6 +35,7 @@ type Dave struct {
 	tcp                      *tcp.TCPService
 	logger                   logger.Logger
 	subSvc                   *sub.SubscriptionService
+	notify                   chan udp.Packet
 }
 
 type DaveCfg struct {
@@ -74,7 +75,8 @@ func NewDave(cfg *DaveCfg) (*Dave, error) {
 		subSvc: subSvc,
 		udp:    udpSvc,
 		tcp:    tcpSvc,
-		logger: cfg.Logger}
+		logger: cfg.Logger,
+		notify: make(chan udp.Packet, 1)}
 	d.log(logger.ERROR, "MY ID: %d", d.myID)
 	for _, addrPort := range cfg.Edges {
 		d.peers.AddPeer(udp.MapToIPv6(addrPort), true)
@@ -260,10 +262,27 @@ func (d *Dave) ActivePeerCount() int {
 	return d.peers.CountActive()
 }
 
+// ActivePeers returns all peers that are currently activated.
+func (d *Dave) ActivePeers() []peer.PeerCopy {
+	return d.peers.ListActive(nil)
+}
+
 // NetworkUsedSpaceAndCapacity returns the used space and capacity of the network.
 // This value is only an approximation. There is currently no way to know if nodes
 // are lying. Nodes are not incentivised to lie, because there is no reward or
 // penalty either way.
 func (d *Dave) NetworkUsedSpaceAndCapacity() (usedSpace, capacity uint64) {
 	return d.peers.TotalUsedSpaceAndCapacity()
+}
+
+// NotifyMessages returns a channel to receive all OP_NOTIFY messages.
+func (d *Dave) NotifyMessages() <-chan udp.Packet {
+	return d.notify
+}
+
+// TODO: implement NOTIFY_ACK, and subscribe to reply.
+// Resend up to 3 times until NOTIFY_ACK is received.
+func (d *Dave) Notify(addrPort netip.AddrPort, body []byte) error {
+	d.udp.Out() <- &udp.Packet{Msg: &types.Msg{Op: types.OP_NOTIFY, Body: body}, AddrPort: addrPort}
+	return nil
 }
